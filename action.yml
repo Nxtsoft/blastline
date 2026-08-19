@@ -1,4 +1,4 @@
-name: blastline
+name: Blastline Test Impact
 description: Graph-backed test impact and blast radius for PRs, built on CGraph
 branding:
   icon: target
