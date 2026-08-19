@@ -88,3 +88,21 @@ tests of ~670. The subsets are tiny because the graph is blind, not because the 
 - All runs were double-executed; selection was byte-identical every time.
 - `ALL` rows count the proxy as trivially satisfied (a full run cannot miss a test); the
   subset-rows-only line is the number that matters for safety.
+
+## Addendum (2026-08-19): after the CGraph fix
+
+CGraph issues #39/#40 were root-caused to one bug (import stubs squatting real node ids on
+extension-spelled specifiers) and fixed in taylor009/CGraph#42. Re-running the identical
+20-commit es-toolkit replay with the fixed binary:
+
+| es-toolkit (configured) | before fix | after fix |
+|---|---|---|
+| graph | 858 file nodes, 1,667 edges (1.1/file) | 1,508/1,508 file nodes, 9,793 edges (6.49/file) |
+| subset rate | 6/20 | **18/20** |
+| proxy on subset rows | **1/8** (unsafe) | **41/41** (zero missed) |
+| mean selection | 0.22% (blind-graph artifact) | 4.7% of ~670 tests |
+| deterministic | yes | yes |
+
+The two remaining ALLs are honest fail-opens on commits touching files outside the graph.
+The sparse-graph guard no longer fires (density 6.49 > floor 3) — exactly the designed
+behavior: guard until the graph is trustworthy, select once it is.

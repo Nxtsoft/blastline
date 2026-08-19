@@ -88,7 +88,7 @@ export function handleRequest(req: JsonRpcRequest): JsonRpcResponse | null {
       return ok(id, {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "blastline", version: "0.0.0" },
+        serverInfo: { name: "blastline", version: "0.1.0" },
       });
     case "notifications/initialized":
       return null;

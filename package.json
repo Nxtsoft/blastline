@@ -1,6 +1,6 @@
 {
   "name": "blastline",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Graph-backed test impact and blast radius for CI and PRs, built on CGraph",
   "license": "MIT",
   "type": "module",
