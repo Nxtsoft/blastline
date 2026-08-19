@@ -2,6 +2,7 @@
 
 <img src="assets/hero.svg" alt="blastline — graph-backed test impact and blast radius" width="100%">
 
+[![npm](https://img.shields.io/npm/v/blastline?style=flat-square&color=f5a651)](https://www.npmjs.com/package/blastline)
 [![License: MIT](https://img.shields.io/badge/License-MIT-f5a651?style=flat-square)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white)](tsconfig.json)
 [![CI](https://img.shields.io/github/actions/workflow/status/Nxtsoft/blastline/ci.yml?style=flat-square&label=CI)](https://github.com/Nxtsoft/blastline/actions)
@@ -80,18 +81,17 @@ The benchmark also caught CGraph silently deleting 650 of es-toolkit's 1,508 fil
 
 ## Quick start
 
-Prerequisites: Node 20+ (or [Bun](https://bun.sh)), a [CGraph](https://github.com/taylor009/CGraph) binary on PATH, and a git repo.
+Prerequisites: Node 20+, a [CGraph](https://github.com/taylor009/CGraph) binary on PATH, and a git repo.
 
 ```sh
-git clone https://github.com/Nxtsoft/blastline && cd blastline
-bun install && bun run build
+npm install -g blastline        # or zero-install: npx blastline ...
 
-cgraph --root /path/to/repo/src --out /path/to/repo/cgraph-out   # build the graph once
-node dist/cli.js tests main..HEAD --repo /path/to/repo | xargs vitest run
-node dist/cli.js blast main..HEAD --repo /path/to/repo           # dependents with file:line
+cgraph --root ./src --out cgraph-out          # build the graph once
+blastline tests main..HEAD | xargs vitest run
+blastline blast main..HEAD                    # dependents with file:line
 ```
 
-An npm package (`npm install -g blastline`) is the immediate next step; the CLI, Action, and MCP server all run from this repo today.
+Working from source (contributors): `git clone https://github.com/Nxtsoft/blastline && cd blastline && bun install && bun run build`, then `node dist/cli.js …`.
 
 ## GitHub Action
 
@@ -117,7 +117,7 @@ Outputs: `kind` (`subset` or `all`) and `tests` (newline-separated files), so a 
 ```json
 {
   "mcpServers": {
-    "blastline": { "command": "node", "args": ["/path/to/blastline/dist/cli.js", "mcp"] }
+    "blastline": { "command": "blastline", "args": ["mcp"] }
   }
 }
 ```
@@ -160,7 +160,7 @@ blastline mcp                                # MCP server over stdio
 
 v0.1 scope, stated plainly: **TypeScript** repos, **Vitest/Jest** detection, **GitHub Actions**. The pipeline is unit-tested (43 tests) and replay-benchmarked; the Action and MCP server are exercised end-to-end in CI.
 
-Next, in order: the npm package · Python and Go (CGraph already extracts both — only test detectors and runner adapters are new) · CGraph daemon freshness pinning, so CI selections carry a content-root proof of the exact source tree they were computed from (the mtime staleness guard stands in until then) · cross-repo selection over [CGraph seam graphs](https://github.com/taylor009/CGraph).
+Next, in order: Python and Go (CGraph already extracts both — only test detectors and runner adapters are new) · CGraph daemon freshness pinning, so CI selections carry a content-root proof of the exact source tree they were computed from (the mtime staleness guard stands in until then) · cross-repo selection over [CGraph seam graphs](https://github.com/taylor009/CGraph).
 
 ## Contributing
 
