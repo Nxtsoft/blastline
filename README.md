@@ -36,3 +36,5 @@ bun run test
 ```
 
 MIT.
+
+<!-- exercised the Action comment path on a real PR (phase 4 e2e) -->
