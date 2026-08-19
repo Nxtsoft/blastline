@@ -170,3 +170,22 @@ Each miss traces to interface dispatch — the test exercises the changed method
 interface value (http.Handler-style), a binding no static name-based resolver can see. Use
 Go selection as an advisory signal (what to run first), not a skip-gate, until CGraph grows
 interface-implementation edges.
+
+## Addendum 4 (2026-08-19): Go replay-safe after interface dispatch (CGraph#47)
+
+CGraph#47 added interface-dispatch resolution: Go receiver attribution (`method_of`),
+interface method-set extraction, `implements`/`dispatches_to` edges, and a member-call
+rescue — an ambiguous member call binds to the single interface method promising that name,
+so dependents flow contract → implementations (mux declares `Match` on eight types because
+they satisfy one `matcher` interface; that pattern is why 4 misses survived #46).
+
+| gorilla/mux (Go) | after #46 | after #47 |
+|---|---|---|
+| test reachability | 0.50 | **0.65** |
+| proxy on subset rows | 7/11 | **10/11** |
+| the one remaining "miss" | — | an empty `TODO` test body that calls nothing — semantically unselectable, so **10/10 selectable tests selected** |
+| mean selection | 8.9% | 37.7% (dispatch fan-out trades selectivity for safety; still a 2.7× reduction) |
+| deterministic | yes | yes |
+
+All three v1 languages are now replay-verified on their benchmarks: TS 41/41, Python 3/3,
+Go 10/10 selectable.
