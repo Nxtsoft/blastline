@@ -2,7 +2,7 @@
 
 Graph-backed test impact and blast radius for CI and PRs, built on [CGraph](https://github.com/taylor009/CGraph).
 
-**Status: pre-release; core CLI works.** The selection pipeline (diff → graph nodes → transitive dependents → impacted tests, with fail-open rules) is implemented and tested — see [the proposal](openspec/changes/bootstrap-blastline/proposal.md) for design and remaining phases (benchmark harness, GitHub Action, MCP server, daemon freshness pinning).
+**Status: pre-release; CLI, GitHub Action, and MCP server all work.** The selection pipeline (diff → graph nodes → transitive dependents → impacted tests, with fail-open rules) is implemented, unit-tested, and [benchmarked on historical commits](openspec/changes/bootstrap-blastline/bench-results.md) — see [the proposal](openspec/changes/bootstrap-blastline/proposal.md) for design. Remaining before launch: CGraph daemon freshness pinning (content-root proofs) and the fixes for CGraph issues [#39](https://github.com/taylor009/CGraph/issues/39)/[#40](https://github.com/taylor009/CGraph/issues/40).
 
 ```sh
 # graph the repo once (CGraph), then select tests for a diff
@@ -26,6 +26,27 @@ Selection is a **safe superset** ("run at least these"), deterministic, and fail
 ## v1 scope
 
 TypeScript repos, Vitest/Jest, GitHub Actions. Python and Go follow — CGraph already extracts them; only test detectors and runner adapters are new.
+
+## Use from a coding agent (MCP)
+
+`blastline mcp` serves two stdio MCP tools — `blastline_tests` and `blastline_blast` — so an
+agent can check what its edit reaches *before* opening a PR. Register it (Claude Code
+`.mcp.json` shown; any MCP client works):
+
+```json
+{
+  "mcpServers": {
+    "blastline": { "command": "blastline", "args": ["mcp"] }
+  }
+}
+```
+
+The agent workflow: keep a CGraph graph warm for the repo (`cgraph --root ./src --out cgraph-out`,
+or the CGraph daemon's persisted export), then before finalizing an edit call
+`blastline_blast` with `repo` + `range` (or the pending `diff` text) to see every transitive
+dependent with file:line, and `blastline_tests` to get the exact test files to run. A
+`kind: "all"` answer means the graph can't vouch for the diff — run the full suite; the
+`reasons` say why. Both tools accept `graph_path`, `ignore` regexes, and `min_density`.
 
 ## Development
 

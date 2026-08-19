@@ -1,11 +1,7 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { renderComment } from "./comment.js";
-import { loadGraph } from "./graph.js";
-import { fileMtimeMs, select } from "./select.js";
-import type { Selection } from "./types.js";
+import { serveStdio } from "./mcp.js";
+import { runSelection } from "./run.js";
 
 const USAGE = `blastline — graph-backed test impact and blast radius (built on CGraph)
 
@@ -13,6 +9,7 @@ usage:
   blastline tests <base>..<head> [options]     list test files impacted by the diff
   blastline blast <base>..<head> [options]     list transitive dependents of the diff
   blastline comment <base>..<head> [options]   render the selection as PR-comment markdown
+  blastline mcp                                serve the MCP tools (blastline_tests, blastline_blast) over stdio
 
 options:
   --repo <path>        repository to diff (default: cwd)
@@ -40,78 +37,54 @@ if (command === undefined || command === "--help" || command === "-h") {
   console.log(USAGE);
   process.exit(0);
 }
-if (command !== "tests" && command !== "blast" && command !== "comment")
-  fail(`blastline: unknown command "${command}"\n\n${USAGE}`);
+if (command === "mcp") {
+  serveStdio();
+} else {
+  if (command !== "tests" && command !== "blast" && command !== "comment")
+    fail(`blastline: unknown command "${command}"\n\n${USAGE}`);
 
-function opt(name: string): string | undefined {
-  const i = argv.indexOf(`--${name}`);
-  return i === -1 ? undefined : argv[i + 1];
-}
-function optAll(name: string): string[] {
-  const out: string[] = [];
-  argv.forEach((a, i) => {
-    if (a === `--${name}` && argv[i + 1] !== undefined) out.push(argv[i + 1] as string);
-  });
-  return out;
-}
+  const opt = (name: string): string | undefined => {
+    const i = argv.indexOf(`--${name}`);
+    return i === -1 ? undefined : argv[i + 1];
+  };
+  const optAll = (name: string): string[] => {
+    const out: string[] = [];
+    argv.forEach((a, i) => {
+      if (a === `--${name}` && argv[i + 1] !== undefined) out.push(argv[i + 1] as string);
+    });
+    return out;
+  };
 
-const repo = resolve(opt("repo") ?? process.cwd());
-const range = argv.slice(1).find((a) => a.includes("..") && !a.startsWith("--"));
-const diffFile = opt("diff-file");
-if (!range && !diffFile) fail("blastline: provide <base>..<head> or --diff-file\n\n" + USAGE);
+  const range = argv.slice(1).find((a) => a.includes("..") && !a.startsWith("--"));
+  const diffFile = opt("diff-file");
+  if (!range && !diffFile) fail("blastline: provide <base>..<head> or --diff-file\n\n" + USAGE);
 
-const git = (...args: string[]): string =>
-  execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-
-const diffText = diffFile ? readFileSync(diffFile, "utf8") : git("diff", "--unified=0", range as string);
-
-const graphPath = opt("graph") ?? resolve(repo, "cgraph-out/graph.json");
-const ignoreRegexes = optAll("ignore").map((p) => new RegExp(p));
-const maxFilesRaw = opt("max-files");
-const minDensityRaw = opt("min-density");
-
-let selection: Selection;
-try {
-  const graph = loadGraph(graphPath);
-  const baseGraphPath = opt("base-graph");
-  const baseGraph = baseGraphPath ? loadGraph(baseGraphPath) : undefined;
-
-  let headCommitMs: number | undefined;
-  if (!diffFile && range) {
-    const head = range.split("..").pop() as string;
-    headCommitMs = Number(git("log", "-1", "--format=%ct", head).trim()) * 1000;
-  }
-
-  selection = select(diffText, {
-    graph,
-    ...(baseGraph !== undefined && { baseGraph }),
-    ...(ignoreRegexes.length > 0 && { ignore: (p: string) => ignoreRegexes.some((r) => r.test(p)) }),
+  const maxFilesRaw = opt("max-files");
+  const minDensityRaw = opt("min-density");
+  const selection = runSelection({
+    repo: opt("repo") ?? process.cwd(),
+    ...(range !== undefined && { range }),
+    ...(diffFile !== undefined && { diffFile }),
+    ...(opt("graph") !== undefined && { graphPath: opt("graph") as string }),
+    ...(opt("base-graph") !== undefined && { baseGraphPath: opt("base-graph") as string }),
+    ignore: optAll("ignore"),
     ...(maxFilesRaw !== undefined && { maxFiles: Number(maxFilesRaw) }),
     ...(minDensityRaw !== undefined && { minDensity: Number(minDensityRaw) }),
-    ...(fileMtimeMs(graphPath) !== undefined && { graphMtimeMs: fileMtimeMs(graphPath) as number }),
-    ...(headCommitMs !== undefined && { headCommitMs }),
   });
-} catch (e) {
-  selection = {
-    kind: "all",
-    reasons: [
-      { kind: "graph-unavailable", detail: `cannot load graph at ${graphPath}: ${(e as Error).message}` },
-    ],
-  };
-}
 
-if (command === "comment") {
-  console.log(renderComment(selection, range ?? diffFile ?? ""));
-  process.exit(0);
+  if (command === "comment") {
+    console.log(renderComment(selection, range ?? diffFile ?? ""));
+    process.exit(0);
+  }
+  if (argv.includes("--json")) {
+    console.log(JSON.stringify(selection, null, 2));
+    process.exit(0);
+  }
+  if (selection.kind === "all") {
+    console.log("ALL");
+    for (const r of selection.reasons) console.error(`fail-open: ${JSON.stringify(r)}`);
+    process.exit(0);
+  }
+  const lines = command === "tests" ? selection.tests : selection.blast;
+  for (const line of lines) console.log(line);
 }
-if (argv.includes("--json")) {
-  console.log(JSON.stringify(selection, null, 2));
-  process.exit(0);
-}
-if (selection.kind === "all") {
-  console.log("ALL");
-  for (const r of selection.reasons) console.error(`fail-open: ${JSON.stringify(r)}`);
-  process.exit(0);
-}
-const lines = command === "tests" ? selection.tests : selection.blast;
-for (const line of lines) console.log(line);
