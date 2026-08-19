@@ -159,7 +159,7 @@ blastline mcp                                # MCP server over stdio
 
 ## Status & roadmap
 
-Scope, stated plainly: **TypeScript** (Vitest/Jest) is the production path — replay-benchmarked and safe. **Python** (pytest conventions) and **Go** (`*_test.go`) detectors and runner recipes are in, and the pipeline works end-to-end where the graph carries test-to-code edges — but on real repos today CGraph's Go receiver-method calls and Python imports/instantiations under-resolve, so the `disconnected-tests` guard fails open to full runs there (measured: tests reach 11% of mux's symbols, 7% of itsdangerous's, vs 52-100% on healthy TS graphs; upstream issues filed). The pipeline is unit-tested (48 tests) and replay-benchmarked on five repos; the Action and MCP server are exercised end-to-end in CI.
+Scope, stated plainly: **TypeScript** (Vitest/Jest) and **Python** (pytest conventions) are replay-verified — on their benchmarks every surviving author-co-changed test was selected (TS 41/41 on es-toolkit, Python 3/3 on itsdangerous after CGraph#46 rebuilt Python import resolution). **Go** (`*_test.go`) works and is much better after CGraph#46 (method calls now resolve project-wide; test reachability on mux 0.11 → 0.50) but its replay still missed 4 of 11 co-changed tests — all interface-dispatch bindings no static resolver can see — so treat Go selection as an advisory signal, not a skip-gate, until CGraph grows interface-implementation edges. The pipeline is unit-tested (48 tests) and replay-benchmarked on five repos; the Action and MCP server are exercised end-to-end in CI.
 
 Runner recipes per ecosystem:
 
@@ -169,7 +169,7 @@ blastline tests main..HEAD | xargs pytest                                      #
 blastline tests main..HEAD | xargs -n1 dirname | sort -u | xargs go test       # Go (tests run per package)
 ```
 
-Next, in order: the upstream CGraph fixes that un-gate Python and Go selection · CGraph daemon freshness pinning, so CI selections carry a content-root proof of the exact source tree they were computed from (the mtime staleness guard stands in until then) · cross-repo selection over [CGraph seam graphs](https://github.com/taylor009/CGraph).
+Next, in order: CGraph interface-implementation edges (the last gap for Go) · CGraph daemon freshness pinning, so CI selections carry a content-root proof of the exact source tree they were computed from (the mtime staleness guard stands in until then) · cross-repo selection over [CGraph seam graphs](https://github.com/taylor009/CGraph).
 
 ## Contributing
 

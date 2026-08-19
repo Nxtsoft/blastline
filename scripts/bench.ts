@@ -40,6 +40,10 @@ function argAll(name: string): string[] {
 
 const repo = arg("repo");
 const srcRoot = arg("src-root", "src");
+// Extraction root may differ from the commit filter: itsdangerous keeps tests/
+// outside src/, so the graph must cover the whole repo while commits are
+// filtered to source changes.
+const graphRoot = arg("graph-root", srcRoot);
 const n = Number(arg("n", "20"));
 const cgraphBin = process.env["CGRAPH_BIN"] ?? "cgraph";
 const ignoreRes = argAll("ignore").map((r) => new RegExp(r));
@@ -83,7 +87,7 @@ for (const commit of commits) {
   git("worktree", "add", "--force", "--detach", wt, commit);
 
   const t0 = Date.now();
-  execFileSync(cgraphBin, ["--root", join(wt, srcRoot), "--out", graphOut], { stdio: "ignore" });
+  execFileSync(cgraphBin, ["--root", join(wt, graphRoot), "--out", graphOut], { stdio: "ignore" });
   const graphMs = Date.now() - t0;
   const graph = loadGraph(join(graphOut, "graph.json"));
   const allTests = testFiles(graph).size;
@@ -98,7 +102,7 @@ for (const commit of commits) {
     }
     git("worktree", "add", "--force", "--detach", baseWt, `${commit}~1`);
     const baseOut = join(work, "graph-base");
-    execFileSync(cgraphBin, ["--root", join(baseWt, srcRoot), "--out", baseOut], { stdio: "ignore" });
+    execFileSync(cgraphBin, ["--root", join(baseWt, graphRoot), "--out", baseOut], { stdio: "ignore" });
     baseGraph = loadGraph(join(baseOut, "graph.json"));
   }
 
@@ -117,9 +121,12 @@ for (const commit of commits) {
 
   // Safety proxy: selection computed from non-test changes must contain the
   // author's co-changed tests. Rebuild a diff without the test-file hunks.
+  // A test deleted by the commit cannot appear in a head-graph selection and
+  // cannot be run — only surviving co-changed tests are scoreable.
   const coChangedTests = changed
+    .filter((f) => f.status !== "deleted")
     .map((f) => f.path)
-    .filter((p) => (srcRoot === "." || p.startsWith(`${srcRoot}/`)) && isTestPath(p));
+    .filter((p) => (graphRoot === "." || p.startsWith(`${graphRoot}/`)) && isTestPath(p));
   let coHit = 0;
   const missed: string[] = [];
   const nonTestDiff = diffText

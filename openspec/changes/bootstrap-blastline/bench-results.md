@@ -145,3 +145,28 @@ correct, not a miss (2 of mux's 11 apparent misses were this artifact).
 CGraph extraction quality — Go receiver-method call resolution and Python import /
 instantiation resolution, filed upstream with reproducers. When those land, the guard
 stops firing by itself, exactly as happened with es-toolkit and #42.
+
+## Addendum 3 (2026-08-19): Python and Go after CGraph#46
+
+taylor009/CGraph#46 (fixes #44/#45) added method-aware member-call resolution and a real
+Python import pipeline. Test reachability on the reproducer repos: gorilla/mux 0.11 → 0.50,
+pallets/itsdangerous 0.07 → 1.00 — both clear the disconnected-tests floor, so selection
+un-gates. Re-running the 20-commit replays with the fixed binary (and two harness
+corrections: commits filtered to source changes via --graph-root, and co-changed tests that
+the commit itself deleted are unscoreable):
+
+| | gorilla/mux (Go) | pallets/itsdangerous (Python) |
+|---|---|---|
+| subset rate | 20/20 | 18/20 |
+| proxy on subset rows | 7/11 | **3/3 (zero missed)** |
+| mean selection | 8.9% of suite | 2-5 of 5 tests on code commits |
+| deterministic | yes | yes |
+
+**Python selection is now safe on this benchmark** — every surviving author-co-changed test
+was selected.
+
+**Go is improved but not yet safe to gate on**: 4 of 11 co-changed tests were still missed.
+Each miss traces to interface dispatch — the test exercises the changed method through an
+interface value (http.Handler-style), a binding no static name-based resolver can see. Use
+Go selection as an advisory signal (what to run first), not a skip-gate, until CGraph grows
+interface-implementation edges.
