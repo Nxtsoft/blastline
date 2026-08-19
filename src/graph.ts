@@ -63,21 +63,41 @@ export function indexGraph(nodes: GraphNode[], links: GraphLink[]): CodeGraph {
   }
   const incoming = new Map<string, string[]>();
   for (const l of links) {
-    const list = incoming.get(l.target) ?? [];
-    list.push(l.source);
-    incoming.set(l.target, list);
+    const [from, to] = dependencyDirection(l);
+    const list = incoming.get(to) ?? [];
+    list.push(from);
+    incoming.set(to, list);
   }
   return { nodes, links, byId, byFile, incoming };
 }
 
 /**
- * Resolve a repo-relative diff path to the graph nodes of that file.
- * Graph source_file paths are absolute; match on exact path-boundary suffix.
+ * Every CGraph relation points dependency-ward at the source (CALLS
+ * caller->callee, imports importer->imported) — except two seam contract
+ * relations that read the other way: "endpoint CONSUMED_AT call-site" and
+ * "schema MIRRORED_BY type" mean the TARGET depends on the SOURCE. Flip them
+ * so a provider-side change flows contract -> consumer code -> consumer tests.
+ * Non-seam graphs never carry these relations, so behavior is unchanged there.
+ */
+export function dependencyDirection(link: GraphLink): [from: string, to: string] {
+  return link.relation === "CONSUMED_AT" || link.relation === "MIRRORED_BY"
+    ? [link.target, link.source]
+    : [link.source, link.target];
+}
+
+/**
+ * Resolve a repo-relative diff path to the graph nodes of that file, matching
+ * on exact path-boundary suffix. Returns the UNION across every matching
+ * source_file: in a fused seam graph one changed provider file can be both a
+ * real code file (absolute path) and a schema node's canonical file (a
+ * repo-relative string), and extra seeds only ever widen the superset — the
+ * safe direction.
  */
 export function nodesForPath(graph: CodeGraph, relPath: string): GraphNode[] {
   const suffix = `/${relPath}`;
+  const matches: GraphNode[] = [];
   for (const [abs, nodes] of graph.byFile) {
-    if (abs.endsWith(suffix) || abs === relPath) return nodes;
+    if (abs.endsWith(suffix) || abs === relPath) matches.push(...nodes);
   }
-  return [];
+  return matches;
 }

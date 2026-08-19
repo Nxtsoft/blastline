@@ -111,6 +111,19 @@ Working from source (contributors): `git clone https://github.com/Nxtsoft/blastl
 
 Outputs: `kind` (`subset` or `all`) and `tests` (newline-separated files), so a downstream job can run only the selected tests. The comment shows the impacted tests and a collapsible blast radius; on fail-open it says "run the full suite" and why. Supply `graph-path` from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
 
+## Cross-repo selection over seam graphs
+
+For microservice estates, point blastline at a [CGraph seam](https://github.com/Nxtsoft/CGraph) — the fused graph that joins per-service code graphs at their wire contracts:
+
+```sh
+cgraph seam gen  --seam seam.json --graphs backend=backend/graph.json --out drop
+cgraph seam fuse --seam drop/chunk_00.json   --graph backend=backend/graph.json --graph ml-api=ml-api/graph.json --out fused
+
+blastline tests main..HEAD --repo ./ml-api --graph fused/graph.json
+```
+
+A provider-side change then selects **consumer-side tests across the repo boundary**: a schema node is anchored to its canonical file, so editing it seeds the contract, and the walk crosses `RESPONDS_WITH` → the endpoint → `CONSUMED_AT`/`MIRRORED_BY` (dependency-flipped — the consumer depends on the contract, not vice versa) → the consumer's call sites and mirror types → their tests. Consumer-only changes never flow backwards into the provider. Verified end-to-end against a real `seam gen`/`seam fuse` pipeline: one provider schema edit selected exactly the consumer's test, with the contract chain in the blast radius.
+
 ## Use with coding agents
 
 `blastline mcp` speaks MCP over stdio: newline-delimited JSON-RPC 2.0 implementing `initialize`, `tools/list`, and `tools/call` (protocol `2024-11-05`) — the same surface CGraph's own MCP server speaks.
@@ -169,7 +182,7 @@ blastline tests main..HEAD | xargs pytest                                      #
 blastline tests main..HEAD | xargs -n1 dirname | sort -u | xargs go test       # Go (tests run per package)
 ```
 
-Freshness pinning shipped in 0.3.0: CGraph one-shot builds embed a sha256-merkle-v1 content root, every subset carries it as provenance (CLI JSON, MCP payloads, and the PR-comment footer), `--expect-root` pins a selection to an exact tree, and `--daemon-verify` pins against the live CGraph daemon's root — verified end-to-end against a running graphd (match → subset; edited tree → fail-open naming both roots). Next: cross-repo selection over [CGraph seam graphs](https://github.com/Nxtsoft/CGraph).
+Freshness pinning shipped in 0.3.0: CGraph one-shot builds embed a sha256-merkle-v1 content root, every subset carries it as provenance (CLI JSON, MCP payloads, and the PR-comment footer), `--expect-root` pins a selection to an exact tree, and `--daemon-verify` pins against the live CGraph daemon's root — verified end-to-end against a running graphd (match → subset; edited tree → fail-open naming both roots). Cross-repo selection over seam graphs shipped in 0.4.0 (see above) — the proposal roadmap is complete.
 
 ## Contributing
 

@@ -1,0 +1,209 @@
+{
+  "directed": true,
+  "graph": {
+    "build_state": 1
+  },
+  "multigraph": false,
+  "nodes": [
+    {
+      "id": "p_file",
+      "label": "schemas/score.ts",
+      "type": "file",
+      "source_file": "/svc/ml-api/src/schemas/score.ts",
+      "source_location": {
+        "start_line": 1,
+        "end_line": 1
+      },
+      "properties": {
+        "community": "ml-api"
+      }
+    },
+    {
+      "id": "p_type",
+      "label": "ScoreResult",
+      "type": "type",
+      "source_file": "/svc/ml-api/src/schemas/score.ts",
+      "source_location": {
+        "start_line": 2,
+        "end_line": 8
+      },
+      "properties": {
+        "community": "ml-api"
+      }
+    },
+    {
+      "id": "service:ml-api",
+      "label": "ml-api",
+      "type": "service",
+      "properties": {
+        "community": "ml-api"
+      }
+    },
+    {
+      "id": "service:backend",
+      "label": "backend",
+      "type": "service",
+      "properties": {
+        "community": "backend"
+      }
+    },
+    {
+      "id": "endpoint:ml-api:POST /v3/score",
+      "label": "POST /v3/score",
+      "type": "endpoint",
+      "properties": {
+        "community": "ml-api"
+      }
+    },
+    {
+      "id": "schema:ml-api:v3:ScoreResult",
+      "label": "ScoreResult",
+      "type": "schema",
+      "source_file": "ml-api/src/schemas/score.ts",
+      "properties": {
+        "community": "ml-api",
+        "canonical": "ml-api/src/schemas/score.ts"
+      }
+    },
+    {
+      "id": "c_file",
+      "label": "src/score.ts",
+      "type": "file",
+      "source_file": "/svc/backend/src/score.ts",
+      "source_location": {
+        "start_line": 1,
+        "end_line": 1
+      },
+      "properties": {
+        "community": "backend"
+      }
+    },
+    {
+      "id": "c_fn",
+      "label": "scoreModel",
+      "type": "function",
+      "source_file": "/svc/backend/src/score.ts",
+      "source_location": {
+        "start_line": 3,
+        "end_line": 12
+      },
+      "properties": {
+        "community": "backend"
+      }
+    },
+    {
+      "id": "c_mirror",
+      "label": "MyScore",
+      "type": "type",
+      "source_file": "/svc/backend/src/types.ts",
+      "source_location": {
+        "start_line": 2,
+        "end_line": 6
+      },
+      "properties": {
+        "community": "backend"
+      }
+    },
+    {
+      "id": "c_types_file",
+      "label": "src/types.ts",
+      "type": "file",
+      "source_file": "/svc/backend/src/types.ts",
+      "source_location": {
+        "start_line": 1,
+        "end_line": 1
+      },
+      "properties": {
+        "community": "backend"
+      }
+    },
+    {
+      "id": "c_test_file",
+      "label": "src/score.test.ts",
+      "type": "file",
+      "source_file": "/svc/backend/src/score.test.ts",
+      "source_location": {
+        "start_line": 1,
+        "end_line": 1
+      },
+      "properties": {
+        "community": "backend"
+      }
+    },
+    {
+      "id": "c_test_fn",
+      "label": "scores",
+      "type": "function",
+      "source_file": "/svc/backend/src/score.test.ts",
+      "source_location": {
+        "start_line": 3,
+        "end_line": 9
+      },
+      "properties": {
+        "community": "backend"
+      }
+    }
+  ],
+  "links": [
+    {
+      "source": "p_file",
+      "target": "p_type",
+      "relation": "contains"
+    },
+    {
+      "source": "c_file",
+      "target": "c_fn",
+      "relation": "contains"
+    },
+    {
+      "source": "c_types_file",
+      "target": "c_mirror",
+      "relation": "contains"
+    },
+    {
+      "source": "c_test_file",
+      "target": "c_test_fn",
+      "relation": "contains"
+    },
+    {
+      "source": "c_test_fn",
+      "target": "c_fn",
+      "relation": "CALLS"
+    },
+    {
+      "source": "c_test_file",
+      "target": "c_file",
+      "relation": "imports_from"
+    },
+    {
+      "source": "c_fn",
+      "target": "c_mirror",
+      "relation": "references"
+    },
+    {
+      "source": "service:backend",
+      "target": "endpoint:ml-api:POST /v3/score",
+      "relation": "CONSUMES"
+    },
+    {
+      "source": "endpoint:ml-api:POST /v3/score",
+      "target": "service:ml-api",
+      "relation": "SERVED_BY"
+    },
+    {
+      "source": "endpoint:ml-api:POST /v3/score",
+      "target": "schema:ml-api:v3:ScoreResult",
+      "relation": "RESPONDS_WITH"
+    },
+    {
+      "source": "endpoint:ml-api:POST /v3/score",
+      "target": "c_fn",
+      "relation": "CONSUMED_AT"
+    },
+    {
+      "source": "schema:ml-api:v3:ScoreResult",
+      "target": "c_mirror",
+      "relation": "MIRRORED_BY"
+    }
+  ]
+}

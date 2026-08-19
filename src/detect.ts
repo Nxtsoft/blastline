@@ -1,4 +1,5 @@
 import type { CodeGraph } from "./graph.js";
+import { dependencyDirection } from "./graph.js";
 
 /**
  * Test-file conventions per ecosystem:
@@ -42,9 +43,10 @@ export function testFiles(graph: CodeGraph): Set<string> {
 export function testReachability(graph: CodeGraph): number | null {
   const outgoing = new Map<string, string[]>();
   for (const l of graph.links) {
-    const list = outgoing.get(l.source) ?? [];
-    list.push(l.target);
-    outgoing.set(l.source, list);
+    const [from, to] = dependencyDirection(l);
+    const list = outgoing.get(from) ?? [];
+    list.push(to);
+    outgoing.set(from, list);
   }
   const seeds = graph.nodes
     .filter((n) => n.source_file && isTestPath(n.source_file))

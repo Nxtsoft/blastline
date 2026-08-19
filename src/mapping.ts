@@ -55,6 +55,12 @@ export function mapDiffToSeeds(
 
     const fileNode = headNodes.find((n) => n.type === "file");
     const symbols = headNodes.filter((n) => n.type !== "file" && n.source_location);
+    // A non-file node anchored to this file WITHOUT a span (a seam contract
+    // node — a schema whose canonical file this is) is file-scoped: any change
+    // to the file touches it. Seed it unconditionally.
+    for (const n of headNodes) {
+      if (n.type !== "file" && !n.source_location) seeds.add(n.id);
+    }
     const baseSymbols = baseNodes.filter((n) => n.type !== "file" && n.source_location);
     const baseFileNode = baseNodes.find((n) => n.type === "file");
 

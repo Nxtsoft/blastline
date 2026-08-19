@@ -189,3 +189,20 @@ they satisfy one `matcher` interface; that pattern is why 4 misses survived #46)
 
 All three v1 languages are now replay-verified on their benchmarks: TS 41/41, Python 3/3,
 Go 10/10 selectable.
+
+## Addendum 5 (2026-08-19): cross-repo selection over seam graphs (0.4.0)
+
+blastline now consumes CGraph fused seam graphs. Two mechanics: (1) `CONSUMED_AT` and
+`MIRRORED_BY` are dependency-flipped when building the traversal index (the consumer depends
+on the contract, not vice versa), applied to both the dependents walk and the reachability
+guard; (2) path→node mapping unions all suffix matches and seeds location-less file-anchored
+nodes (a schema node anchored to its canonical file) unconditionally — extra seeds only widen
+the superset.
+
+Verified against a real `seam gen`/`seam fuse` pipeline (two TS services, one contract): a
+one-line provider schema edit selected exactly the consumer repo's test, blast radius showing
+endpoint → consumer call site → mirror type → consumer service; a consumer-only edit selected
+the same test WITHOUT flowing backwards into the provider. Known scope limit, stated: the
+seam anchors consumer call sites and mirrors, not provider handler functions — a provider
+change reaches consumers via its schema/endpoint files, which is what the seam spec encodes
+today.
