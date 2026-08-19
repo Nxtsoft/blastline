@@ -17,6 +17,7 @@ const TOOL_INPUT_SCHEMA = {
     base_graph_path: { type: "string", description: "graph.json for base — improves deletion mapping" },
     ignore: { type: "array", items: { type: "string" }, description: "regexes for paths declared irrelevant" },
     min_density: { type: "number", description: "edges-per-file floor (default 3)" },
+    min_test_reachability: { type: "number", description: "test-reachability floor, 0-1 (default 0.25)" },
     max_files: { type: "number", description: "fail open above this many changed files (default 200)" },
   },
   required: ["repo"],
@@ -69,6 +70,7 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
     ...(typeof args["base_graph_path"] === "string" && { baseGraphPath: args["base_graph_path"] }),
     ...(Array.isArray(args["ignore"]) && { ignore: args["ignore"] as string[] }),
     ...(typeof args["min_density"] === "number" && { minDensity: args["min_density"] }),
+    ...(typeof args["min_test_reachability"] === "number" && { minTestReachability: args["min_test_reachability"] }),
     ...(typeof args["max_files"] === "number" && { maxFiles: args["max_files"] }),
   });
   const payload =

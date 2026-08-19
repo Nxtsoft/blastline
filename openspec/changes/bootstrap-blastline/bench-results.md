@@ -106,3 +106,42 @@ extension-spelled specifiers) and fixed in taylor009/CGraph#42. Re-running the i
 The two remaining ALLs are honest fail-opens on commits touching files outside the graph.
 The sparse-graph guard no longer fires (density 6.49 > floor 3) — exactly the designed
 behavior: guard until the graph is trustworthy, select once it is.
+
+## Addendum 2 (2026-08-19): Python and Go
+
+Detectors added for pytest defaults (`test_*.py`, `*_test.py`) and Go (`*_test.go`); the
+pipeline is language-agnostic beyond that. Fixture-level end-to-end works for both (a
+symbol edit selects the co-located test via a resolved cross-file CALLS edge). Replaying
+20 commits per real repo told a different story:
+
+| | gorilla/mux (Go) | pallets/itsdangerous (Python) |
+|---|---|---|
+| subset rate (pre-guard) | 20/20 | 17/20 |
+| proxy on subset rows (pre-guard) | ~2/11 real | 0 selected on every subset |
+| root cause | receiver-method calls (`r.Match()`) resolve to **zero** cross-file edges — route.go's 53 symbols have no incoming CALLS from any other file | **no import edges at all**, and class instantiations (`Signer(...)`) / method calls don't resolve — tests/ are disconnected from src/ |
+| edges/file density | 32.6 (passes the sparse guard) | 13.5 (passes the sparse guard) |
+
+Both graphs pass the density floor while being blind for selection — a guard blind spot.
+The fix is a second structural guard, **test reachability**: the fraction of non-test
+symbols forward-reachable from the repo's tests. Measured across all benched graphs it
+separates cleanly:
+
+| graph | coverage |
+|---|---|
+| es-toolkit (fixed) | 1.00 |
+| blastline | 0.62 |
+| webapp | 0.52 |
+| **gorilla/mux** | **0.11** |
+| **itsdangerous** | **0.07** |
+
+`disconnected-tests` now fails open below a 0.25 floor (`--min-test-reachability`). With
+the guard, both repos replay as honest ALLs instead of false subsets.
+
+Also fixed in the harness: test-only commits (the author added a test, changed no code)
+are no longer scored against the proxy — an empty selection from an empty code diff is
+correct, not a miss (2 of mux's 11 apparent misses were this artifact).
+
+**Status:** Python and Go are detector-complete and pipeline-verified, gated on upstream
+CGraph extraction quality — Go receiver-method call resolution and Python import /
+instantiation resolution, filed upstream with reproducers. When those land, the guard
+stops firing by itself, exactly as happened with es-toolkit and #42.

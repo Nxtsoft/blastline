@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { testFiles } from "./detect.js";
+import { testFiles, testReachability } from "./detect.js";
 import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
 import { dependents } from "./impact.js";
@@ -20,6 +20,14 @@ export interface SelectOptions {
    * under-extracted graph must produce ALL, not a confidently tiny subset.
    */
   minDensity?: number;
+  /**
+   * Fail open when tests can forward-reach less than this fraction of the
+   * repo's non-test symbols (default 0.25). Catches graphs that pass the
+   * density floor but are blind for selection — no resolved edges from tests
+   * into the implementation (measured: broken extraction sits at 0.07-0.11,
+   * healthy graphs at 0.52-1.00).
+   */
+  minTestReachability?: number;
   /** graph.json mtime (ms) and head-commit time (ms) for the staleness guard */
   graphMtimeMs?: number;
   headCommitMs?: number;
@@ -45,6 +53,15 @@ export function select(diffText: string, opts: SelectOptions): Selection {
         threshold: minDensity,
       });
     }
+  }
+  const minReach = opts.minTestReachability ?? 0.25;
+  const coverage = testReachability(opts.graph);
+  if (coverage !== null && coverage < minReach) {
+    reasons.push({
+      kind: "disconnected-tests",
+      coverage: Math.round(coverage * 100) / 100,
+      threshold: minReach,
+    });
   }
   if (
     opts.graphMtimeMs !== undefined &&

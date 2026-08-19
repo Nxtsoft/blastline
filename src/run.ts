@@ -18,6 +18,7 @@ export interface RunOptions {
   ignore?: string[];
   maxFiles?: number;
   minDensity?: number;
+  minTestReachability?: number;
 }
 
 /**
@@ -54,6 +55,7 @@ export function runSelection(o: RunOptions): Selection {
       ...(regexes.length > 0 && { ignore: (p: string) => regexes.some((r) => r.test(p)) }),
       ...(o.maxFiles !== undefined && { maxFiles: o.maxFiles }),
       ...(o.minDensity !== undefined && { minDensity: o.minDensity }),
+      ...(o.minTestReachability !== undefined && { minTestReachability: o.minTestReachability }),
       ...(fileMtimeMs(graphPath) !== undefined && { graphMtimeMs: fileMtimeMs(graphPath) as number }),
       ...(headCommitMs !== undefined && { headCommitMs }),
     });

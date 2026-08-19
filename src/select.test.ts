@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { loadGraph } from "./graph.js";
+import { indexGraph, loadGraph } from "./graph.js";
 import { select } from "./select.js";
 
 const FIXTURE = fileURLToPath(new URL("./testdata/mini-graph.json", import.meta.url));
@@ -62,6 +62,20 @@ describe("select", () => {
     expect(sel.kind).toBe("all");
     if (sel.kind !== "all") return;
     expect(sel.reasons[0]).toEqual({ kind: "sparse-graph", edgesPerFile: 2, threshold: 3 });
+  });
+
+
+  it("fails open when tests cannot reach the code (disconnected-tests)", () => {
+    // Sever every edge leaving the test file: tests still exist, but they can
+    // reach nothing — the exact shape broken Go/Python extraction produces.
+    const severed = indexGraph(
+      g.nodes,
+      g.links.filter((l) => l.source !== "f_test"),
+    );
+    const sel = select(DIFF_IN_PARSE, { graph: severed, minDensity: 0 });
+    expect(sel.kind).toBe("all");
+    if (sel.kind !== "all") return;
+    expect(sel.reasons[0]).toEqual({ kind: "disconnected-tests", coverage: 0, threshold: 0.25 });
   });
 
   it("is deterministic: identical inputs produce identical output", () => {

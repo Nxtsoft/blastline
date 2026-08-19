@@ -19,6 +19,7 @@ options:
   --ignore <regex>     repo-relative paths declared irrelevant (repeatable)
   --max-files <n>      fail open when the diff touches more files (default 200)
   --min-density <n>    fail open below this edges-per-file floor (default 3)
+  --min-test-reachability <f>  fail open when tests reach under this fraction of code (default 0.25)
   --json               structured output
 
 Selection is a safe superset: "run at least these." Any file the graph cannot
@@ -61,6 +62,7 @@ if (command === "mcp") {
 
   const maxFilesRaw = opt("max-files");
   const minDensityRaw = opt("min-density");
+  const minReachRaw = opt("min-test-reachability");
   const selection = runSelection({
     repo: opt("repo") ?? process.cwd(),
     ...(range !== undefined && { range }),
@@ -70,6 +72,7 @@ if (command === "mcp") {
     ignore: optAll("ignore"),
     ...(maxFilesRaw !== undefined && { maxFiles: Number(maxFilesRaw) }),
     ...(minDensityRaw !== undefined && { minDensity: Number(minDensityRaw) }),
+    ...(minReachRaw !== undefined && { minTestReachability: Number(minReachRaw) }),
   });
 
   if (command === "comment") {

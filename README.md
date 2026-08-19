@@ -59,6 +59,7 @@ Fail-open triggers, each a typed reason in the output:
 | `unmapped-file` | a changed file has no graph node (configs, lockfiles, assets) — declare irrelevant paths with `--ignore` |
 | `stale-graph` | `graph.json` is older than the head commit |
 | `sparse-graph` | the graph averages under 3 edges per file — an under-extracted graph produces subsets that look smart and are blind, so blastline refuses |
+| `disconnected-tests` | tests can forward-reach under 25% of the code's symbols — the graph passed the density floor but is blind for selection (how broken Go/Python extraction presents) |
 | `diff-too-large` | the diff touches more files than `--max-files` (default 200) |
 | `graph-unavailable` | no readable `graph.json` |
 
@@ -158,9 +159,17 @@ blastline mcp                                # MCP server over stdio
 
 ## Status & roadmap
 
-v0.1 scope, stated plainly: **TypeScript** repos, **Vitest/Jest** detection, **GitHub Actions**. The pipeline is unit-tested (43 tests) and replay-benchmarked; the Action and MCP server are exercised end-to-end in CI.
+Scope, stated plainly: **TypeScript** (Vitest/Jest) is the production path — replay-benchmarked and safe. **Python** (pytest conventions) and **Go** (`*_test.go`) detectors and runner recipes are in, and the pipeline works end-to-end where the graph carries test-to-code edges — but on real repos today CGraph's Go receiver-method calls and Python imports/instantiations under-resolve, so the `disconnected-tests` guard fails open to full runs there (measured: tests reach 11% of mux's symbols, 7% of itsdangerous's, vs 52-100% on healthy TS graphs; upstream issues filed). The pipeline is unit-tested (48 tests) and replay-benchmarked on five repos; the Action and MCP server are exercised end-to-end in CI.
 
-Next, in order: Python and Go (CGraph already extracts both — only test detectors and runner adapters are new) · CGraph daemon freshness pinning, so CI selections carry a content-root proof of the exact source tree they were computed from (the mtime staleness guard stands in until then) · cross-repo selection over [CGraph seam graphs](https://github.com/taylor009/CGraph).
+Runner recipes per ecosystem:
+
+```sh
+blastline tests main..HEAD | xargs vitest run                                  # TS/JS
+blastline tests main..HEAD | xargs pytest                                      # Python
+blastline tests main..HEAD | xargs -n1 dirname | sort -u | xargs go test       # Go (tests run per package)
+```
+
+Next, in order: the upstream CGraph fixes that un-gate Python and Go selection · CGraph daemon freshness pinning, so CI selections carry a content-root proof of the exact source tree they were computed from (the mtime staleness guard stands in until then) · cross-repo selection over [CGraph seam graphs](https://github.com/taylor009/CGraph).
 
 ## Contributing
 

@@ -119,17 +119,21 @@ for (const commit of commits) {
   // author's co-changed tests. Rebuild a diff without the test-file hunks.
   const coChangedTests = changed
     .map((f) => f.path)
-    .filter((p) => p.startsWith(`${srcRoot}/`) && isTestPath(p));
+    .filter((p) => (srcRoot === "." || p.startsWith(`${srcRoot}/`)) && isTestPath(p));
   let coHit = 0;
   const missed: string[] = [];
-  if (coChangedTests.length > 0) {
-    const nonTestDiff = diffText
-      .split(/^(?=diff --git )/m)
-      .filter((chunk) => {
-        const m = /^diff --git a\/(.+) b\//.exec(chunk);
-        return !m || !isTestPath(m[1] as string);
-      })
-      .join("");
+  const nonTestDiff = diffText
+    .split(/^(?=diff --git )/m)
+    .filter((chunk) => {
+      const m = /^diff --git a\/(.+) b\//.exec(chunk);
+      return !m || !isTestPath(m[1] as string);
+    })
+    .join("");
+  // A test-only commit has no code change to select from — scoring its
+  // co-changed tests against an empty selection penalizes nothing real.
+  const hasCodeChange = /^diff --git /m.test(nonTestDiff);
+  const scoredCoChanged = hasCodeChange ? coChangedTests.length : 0;
+  if (scoredCoChanged > 0) {
     const proxySel = select(nonTestDiff, { graph, ignore, ...(baseGraph !== undefined && { baseGraph }) });
     for (const t of coChangedTests) {
       const hit = proxySel.kind === "all" || proxySel.tests.some((abs) => abs.endsWith(`/${t}`));
@@ -145,7 +149,7 @@ for (const commit of commits) {
     reasons: sel.kind === "all" ? sel.reasons.map((r) => JSON.stringify(r)) : [],
     selected: sel.kind === "subset" ? sel.tests.length : allTests,
     totalTests: allTests,
-    coChanged: coChangedTests.length,
+    coChanged: scoredCoChanged,
     coChangedHit: coHit,
     missed,
     deterministic,

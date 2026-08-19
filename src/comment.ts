@@ -13,6 +13,8 @@ export function renderComment(selection: Selection, range: string): string {
             return `- graph is stale: expected ${r.expected}, got ${r.actual}`;
           case "sparse-graph":
             return `- graph looks under-extracted: ${r.edgesPerFile} edges/file (floor ${r.threshold})`;
+          case "disconnected-tests":
+            return `- tests can reach only ${Math.round(r.coverage * 100)}% of the code in the graph (floor ${Math.round(r.threshold * 100)}%) — selection would be blind`;
           case "diff-too-large":
             return `- diff touches ${r.files} files (limit ${r.limit})`;
           case "extraction-warning":
