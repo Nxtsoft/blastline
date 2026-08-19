@@ -24,6 +24,7 @@ export type FailOpenReason =
   | { kind: "stale-graph"; expected: string; actual: string }
   | { kind: "extraction-warning"; path: string }
   | { kind: "diff-too-large"; files: number; limit: number }
+  | { kind: "sparse-graph"; edgesPerFile: number; threshold: number }
   | { kind: "graph-unavailable"; detail: string };
 
 /** The outcome of a selection: either a concrete test set or ALL with reasons. */

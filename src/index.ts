@@ -1,3 +1,4 @@
+export { renderComment } from "./comment.js";
 export { isTestPath, testFiles } from "./detect.js";
 export { parseUnifiedDiff } from "./diff.js";
 export { indexGraph, loadGraph, nodesForPath } from "./graph.js";

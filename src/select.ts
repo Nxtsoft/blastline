@@ -13,6 +13,13 @@ export interface SelectOptions {
   ignore?: (path: string) => boolean;
   /** fail open when the diff touches more files than this (default 200) */
   maxFiles?: number;
+  /**
+   * Fail open when the graph averages fewer edges per file node than this
+   * (default 3). Healthy TS extraction runs ~9-10 edges/file; the benchmark's
+   * pathological case (es-toolkit, CGraph issues #39/#40) sits at ~1.9 — an
+   * under-extracted graph must produce ALL, not a confidently tiny subset.
+   */
+  minDensity?: number;
   /** graph.json mtime (ms) and head-commit time (ms) for the staleness guard */
   graphMtimeMs?: number;
   headCommitMs?: number;
@@ -26,6 +33,18 @@ export function select(diffText: string, opts: SelectOptions): Selection {
   const maxFiles = opts.maxFiles ?? 200;
   if (changed.length > maxFiles) {
     reasons.push({ kind: "diff-too-large", files: changed.length, limit: maxFiles });
+  }
+  const minDensity = opts.minDensity ?? 3;
+  const fileNodeCount = opts.graph.nodes.filter((n) => n.type === "file").length;
+  if (fileNodeCount > 0) {
+    const edgesPerFile = opts.graph.links.length / fileNodeCount;
+    if (edgesPerFile < minDensity) {
+      reasons.push({
+        kind: "sparse-graph",
+        edgesPerFile: Math.round(edgesPerFile * 100) / 100,
+        threshold: minDensity,
+      });
+    }
   }
   if (
     opts.graphMtimeMs !== undefined &&

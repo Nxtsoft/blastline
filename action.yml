@@ -1,0 +1,111 @@
+name: blastline
+description: Graph-backed test impact and blast radius for PRs, built on CGraph
+branding:
+  icon: target
+  color: orange
+
+inputs:
+  range:
+    description: "git range <base>..<head>; defaults to the PR's base..head"
+    required: false
+    default: ""
+  src-root:
+    description: repo-relative source root CGraph extracted (informational; graph-path decides)
+    required: false
+    default: src
+  graph-path:
+    description: path to CGraph graph.json for head (default <repo>/cgraph-out/graph.json)
+    required: false
+    default: ""
+  base-graph-path:
+    description: optional graph.json for the base commit (improves deletion mapping)
+    required: false
+    default: ""
+  ignore:
+    description: newline-separated regexes for paths declared irrelevant to tests
+    required: false
+    default: ""
+  min-density:
+    description: edges-per-file floor below which selection fails open (default 3)
+    required: false
+    default: ""
+  comment:
+    description: post/update the PR comment (needs github-token, pull_request event)
+    required: false
+    default: "true"
+  github-token:
+    description: token used to post the PR comment
+    required: false
+    default: ""
+
+outputs:
+  kind:
+    description: '"subset" or "all"'
+    value: ${{ steps.select.outputs.kind }}
+  tests:
+    description: newline-separated impacted test files (empty when kind=all)
+    value: ${{ steps.select.outputs.tests }}
+
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: latest
+
+    - name: Install blastline
+      shell: bash
+      run: bun install --frozen-lockfile --cwd "$GITHUB_ACTION_PATH"
+
+    - name: Select impacted tests
+      id: select
+      shell: bash
+      env:
+        INPUT_RANGE: ${{ inputs.range }}
+        INPUT_GRAPH: ${{ inputs.graph-path }}
+        INPUT_BASE_GRAPH: ${{ inputs.base-graph-path }}
+        INPUT_IGNORE: ${{ inputs.ignore }}
+        INPUT_MIN_DENSITY: ${{ inputs.min-density }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: |
+        set -euo pipefail
+        range="$INPUT_RANGE"
+        if [ -z "$range" ]; then
+          if [ -n "${PR_BASE_SHA:-}" ]; then range="${PR_BASE_SHA}..HEAD"; else range="HEAD~1..HEAD"; fi
+        fi
+        args=(tests "$range" --repo "$GITHUB_WORKSPACE" --json)
+        [ -n "$INPUT_GRAPH" ] && args+=(--graph "$INPUT_GRAPH")
+        [ -n "$INPUT_BASE_GRAPH" ] && args+=(--base-graph "$INPUT_BASE_GRAPH")
+        [ -n "$INPUT_MIN_DENSITY" ] && args+=(--min-density "$INPUT_MIN_DENSITY")
+        while IFS= read -r pat; do
+          [ -n "$pat" ] && args+=(--ignore "$pat")
+        done <<< "$INPUT_IGNORE"
+        bun "$GITHUB_ACTION_PATH/src/cli.ts" "${args[@]}" > selection.json
+        cat selection.json
+        kind=$(bun -e 'console.log(JSON.parse(require("fs").readFileSync("selection.json","utf8")).kind)')
+        echo "kind=$kind" >> "$GITHUB_OUTPUT"
+        {
+          echo "tests<<BLASTLINE_EOF"
+          bun -e 'const s=JSON.parse(require("fs").readFileSync("selection.json","utf8")); if(s.kind==="subset") console.log(s.tests.join("\n"))'
+          echo "BLASTLINE_EOF"
+        } >> "$GITHUB_OUTPUT"
+        # render the comment body from the same selection
+        cmdargs=(comment "$range" --repo "$GITHUB_WORKSPACE")
+        [ -n "$INPUT_GRAPH" ] && cmdargs+=(--graph "$INPUT_GRAPH")
+        [ -n "$INPUT_BASE_GRAPH" ] && cmdargs+=(--base-graph "$INPUT_BASE_GRAPH")
+        [ -n "$INPUT_MIN_DENSITY" ] && cmdargs+=(--min-density "$INPUT_MIN_DENSITY")
+        while IFS= read -r pat; do
+          [ -n "$pat" ] && cmdargs+=(--ignore "$pat")
+        done <<< "$INPUT_IGNORE"
+        bun "$GITHUB_ACTION_PATH/src/cli.ts" "${cmdargs[@]}" > blastline-comment.md
+
+    - name: Post PR comment
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' && inputs.github-token != '' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+        gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --edit-last --body-file blastline-comment.md \
+          || gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file blastline-comment.md

@@ -2,14 +2,17 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { renderComment } from "./comment.js";
 import { loadGraph } from "./graph.js";
 import { fileMtimeMs, select } from "./select.js";
+import type { Selection } from "./types.js";
 
 const USAGE = `blastline — graph-backed test impact and blast radius (built on CGraph)
 
 usage:
-  blastline tests <base>..<head> [options]   list test files impacted by the diff
-  blastline blast <base>..<head> [options]   list transitive dependents of the diff
+  blastline tests <base>..<head> [options]     list test files impacted by the diff
+  blastline blast <base>..<head> [options]     list transitive dependents of the diff
+  blastline comment <base>..<head> [options]   render the selection as PR-comment markdown
 
 options:
   --repo <path>        repository to diff (default: cwd)
@@ -18,6 +21,7 @@ options:
   --diff-file <path>   read a unified-0 diff from a file instead of running git
   --ignore <regex>     repo-relative paths declared irrelevant (repeatable)
   --max-files <n>      fail open when the diff touches more files (default 200)
+  --min-density <n>    fail open below this edges-per-file floor (default 3)
   --json               structured output
 
 Selection is a safe superset: "run at least these." Any file the graph cannot
@@ -36,7 +40,8 @@ if (command === undefined || command === "--help" || command === "-h") {
   console.log(USAGE);
   process.exit(0);
 }
-if (command !== "tests" && command !== "blast") fail(`blastline: unknown command "${command}"\n\n${USAGE}`);
+if (command !== "tests" && command !== "blast" && command !== "comment")
+  fail(`blastline: unknown command "${command}"\n\n${USAGE}`);
 
 function opt(name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -61,40 +66,44 @@ const git = (...args: string[]): string =>
 const diffText = diffFile ? readFileSync(diffFile, "utf8") : git("diff", "--unified=0", range as string);
 
 const graphPath = opt("graph") ?? resolve(repo, "cgraph-out/graph.json");
-let graph;
-try {
-  graph = loadGraph(graphPath);
-} catch (e) {
-  const detail = `cannot load graph at ${graphPath}: ${(e as Error).message}`;
-  if (opt("json") !== undefined || argv.includes("--json")) {
-    console.log(JSON.stringify({ kind: "all", reasons: [{ kind: "graph-unavailable", detail }] }));
-  } else {
-    console.log("ALL");
-    console.error(`fail-open: graph-unavailable — ${detail}`);
-  }
-  process.exit(0);
-}
-const baseGraphPath = opt("base-graph");
-const baseGraph = baseGraphPath ? loadGraph(baseGraphPath) : undefined;
-
 const ignoreRegexes = optAll("ignore").map((p) => new RegExp(p));
 const maxFilesRaw = opt("max-files");
+const minDensityRaw = opt("min-density");
 
-let headCommitMs: number | undefined;
-if (!diffFile && range) {
-  const head = range.split("..").pop() as string;
-  headCommitMs = Number(git("log", "-1", "--format=%ct", head).trim()) * 1000;
+let selection: Selection;
+try {
+  const graph = loadGraph(graphPath);
+  const baseGraphPath = opt("base-graph");
+  const baseGraph = baseGraphPath ? loadGraph(baseGraphPath) : undefined;
+
+  let headCommitMs: number | undefined;
+  if (!diffFile && range) {
+    const head = range.split("..").pop() as string;
+    headCommitMs = Number(git("log", "-1", "--format=%ct", head).trim()) * 1000;
+  }
+
+  selection = select(diffText, {
+    graph,
+    ...(baseGraph !== undefined && { baseGraph }),
+    ...(ignoreRegexes.length > 0 && { ignore: (p: string) => ignoreRegexes.some((r) => r.test(p)) }),
+    ...(maxFilesRaw !== undefined && { maxFiles: Number(maxFilesRaw) }),
+    ...(minDensityRaw !== undefined && { minDensity: Number(minDensityRaw) }),
+    ...(fileMtimeMs(graphPath) !== undefined && { graphMtimeMs: fileMtimeMs(graphPath) as number }),
+    ...(headCommitMs !== undefined && { headCommitMs }),
+  });
+} catch (e) {
+  selection = {
+    kind: "all",
+    reasons: [
+      { kind: "graph-unavailable", detail: `cannot load graph at ${graphPath}: ${(e as Error).message}` },
+    ],
+  };
 }
 
-const selection = select(diffText, {
-  graph,
-  ...(baseGraph !== undefined && { baseGraph }),
-  ...(ignoreRegexes.length > 0 && { ignore: (p: string) => ignoreRegexes.some((r) => r.test(p)) }),
-  ...(maxFilesRaw !== undefined && { maxFiles: Number(maxFilesRaw) }),
-  ...(fileMtimeMs(graphPath) !== undefined && { graphMtimeMs: fileMtimeMs(graphPath) as number }),
-  ...(headCommitMs !== undefined && { headCommitMs }),
-});
-
+if (command === "comment") {
+  console.log(renderComment(selection, range ?? diffFile ?? ""));
+  process.exit(0);
+}
 if (argv.includes("--json")) {
   console.log(JSON.stringify(selection, null, 2));
   process.exit(0);

@@ -1,0 +1,44 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - run: bun run test
+
+  action-selftest:
+    # Exercises the composite action end-to-end. Runners have no CGraph
+    # binary and the repo ships no graph.json, so the honest outcome is
+    # kind=all with a graph-unavailable reason — assert exactly that.
+    # On pull_request events the action also posts the real PR comment.
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: blastline
+        uses: ./
+        with:
+          range: HEAD~1..HEAD
+          github-token: ${{ github.token }}
+      - name: Assert honest fail-open
+        env:
+          KIND: ${{ steps.blastline.outputs.kind }}
+        run: |
+          set -euo pipefail
+          echo "kind=$KIND"
+          test "$KIND" = "all"
+          grep -q "graph-unavailable" selection.json
+          grep -q "Run the full suite" blastline-comment.md
