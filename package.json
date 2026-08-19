@@ -1,0 +1,40 @@
+{
+  "name": "blastline",
+  "version": "0.0.0",
+  "description": "Graph-backed test impact and blast radius for CI and PRs, built on CGraph",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "blastline": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nxtsoft/blastline.git"
+  },
+  "keywords": [
+    "test-impact-analysis",
+    "blast-radius",
+    "code-graph",
+    "ci",
+    "cgraph",
+    "affected-tests"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
