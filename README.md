@@ -2,9 +2,18 @@
 
 Graph-backed test impact and blast radius for CI and PRs, built on [CGraph](https://github.com/taylor009/CGraph).
 
-**Status: pre-release scaffold.** The pipeline is specified but not yet implemented — see [the proposal](openspec/changes/bootstrap-blastline/proposal.md) for the full design, scope, and phased plan. What exists today: the diff parser (`src/diff.ts`, tested) and the CLI shell.
+**Status: pre-release; core CLI works.** The selection pipeline (diff → graph nodes → transitive dependents → impacted tests, with fail-open rules) is implemented and tested — see [the proposal](openspec/changes/bootstrap-blastline/proposal.md) for design and remaining phases (benchmark harness, GitHub Action, MCP server, daemon freshness pinning).
 
-## What it will do
+```sh
+# graph the repo once (CGraph), then select tests for a diff
+cgraph --root ./src --out cgraph-out
+blastline tests main..HEAD | xargs vitest run
+blastline blast main..HEAD          # transitive dependents with file:line
+```
+
+Selection prints `ALL` (with machine-readable reasons on stderr) whenever the graph can't vouch for the diff — unmapped files, a graph older than the head commit, or an oversized diff. `--ignore <regex>` declares paths irrelevant (docs, content) so they don't force full runs; `--json` gives structured output.
+
+## What it does
 
 One pipeline — `git diff base..head` → changed graph nodes → transitive dependents via CGraph's `impact` query → intersect with the test-node set — behind three surfaces:
 

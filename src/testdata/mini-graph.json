@@ -1,0 +1,28 @@
+{
+  "directed": true,
+  "graph": {},
+  "multigraph": false,
+  "nodes": [
+    { "id": "f_lib", "label": "src/lib.ts", "type": "file", "source_file": "/repo/src/lib.ts", "source_location": { "start_line": 1, "end_line": 1 } },
+    { "id": "fn_parse", "label": "parse", "type": "function", "source_file": "/repo/src/lib.ts", "source_location": { "start_line": 3, "end_line": 20 } },
+    { "id": "fn_inner", "label": "innerHelper", "type": "function", "source_file": "/repo/src/lib.ts", "source_location": { "start_line": 8, "end_line": 12 } },
+    { "id": "fn_other", "label": "other", "type": "function", "source_file": "/repo/src/lib.ts", "source_location": { "start_line": 22, "end_line": 30 } },
+    { "id": "f_consumer", "label": "src/consumer.ts", "type": "file", "source_file": "/repo/src/consumer.ts", "source_location": { "start_line": 1, "end_line": 1 } },
+    { "id": "fn_use", "label": "use", "type": "function", "source_file": "/repo/src/consumer.ts", "source_location": { "start_line": 2, "end_line": 9 } },
+    { "id": "f_test", "label": "src/lib.test.ts", "type": "file", "source_file": "/repo/src/lib.test.ts", "source_location": { "start_line": 1, "end_line": 1 } },
+    { "id": "f_index", "label": "src/index.ts", "type": "file", "source_file": "/repo/src/index.ts", "source_location": { "start_line": 1, "end_line": 1 } },
+    { "id": "f_free", "label": "src/free.ts", "type": "file", "source_file": "/repo/src/free.ts", "source_location": { "start_line": 1, "end_line": 1 } }
+  ],
+  "links": [
+    { "source": "f_lib", "target": "fn_parse", "relation": "contains" },
+    { "source": "f_lib", "target": "fn_inner", "relation": "contains" },
+    { "source": "f_lib", "target": "fn_other", "relation": "contains" },
+    { "source": "fn_parse", "target": "fn_inner", "relation": "CALLS" },
+    { "source": "f_consumer", "target": "fn_use", "relation": "contains" },
+    { "source": "fn_use", "target": "fn_parse", "relation": "CALLS" },
+    { "source": "f_consumer", "target": "f_lib", "relation": "imports_from" },
+    { "source": "f_test", "target": "fn_parse", "relation": "imports" },
+    { "source": "f_test", "target": "f_lib", "relation": "imports_from" },
+    { "source": "f_index", "target": "f_lib", "relation": "re_exports" }
+  ]
+}

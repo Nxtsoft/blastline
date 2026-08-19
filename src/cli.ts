@@ -1,26 +1,108 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { loadGraph } from "./graph.js";
+import { fileMtimeMs, select } from "./select.js";
+
 const USAGE = `blastline — graph-backed test impact and blast radius (built on CGraph)
 
 usage:
-  blastline tests <base>..<head>   list tests impacted by the diff
-  blastline blast <base>..<head>   list transitive dependents of the diff
+  blastline tests <base>..<head> [options]   list test files impacted by the diff
+  blastline blast <base>..<head> [options]   list transitive dependents of the diff
 
-status: pre-release scaffold. The selection pipeline lands in phase 2 of
-openspec/changes/bootstrap-blastline/proposal.md; nothing is implemented yet.`;
+options:
+  --repo <path>        repository to diff (default: cwd)
+  --graph <path>       CGraph graph.json for head (default: <repo>/cgraph-out/graph.json)
+  --base-graph <path>  graph.json for base — improves pure-deletion mapping
+  --diff-file <path>   read a unified-0 diff from a file instead of running git
+  --ignore <regex>     repo-relative paths declared irrelevant (repeatable)
+  --max-files <n>      fail open when the diff touches more files (default 200)
+  --json               structured output
 
-const [, , command] = process.argv;
+Selection is a safe superset: "run at least these." Any file the graph cannot
+vouch for fails open to ALL, with the reason printed. One-shot graphs cannot be
+freshness-pinned (daemon pinning is planned); a graph older than the head
+commit fails open as stale.`;
 
-switch (command) {
-  case undefined:
-  case "--help":
-  case "-h":
-    console.log(USAGE);
-    process.exit(0);
-  case "tests":
-  case "blast":
-    console.error(`blastline ${command}: not implemented yet (phase 2 — see openspec/changes/bootstrap-blastline/proposal.md)`);
-    process.exit(2);
-  default:
-    console.error(`blastline: unknown command "${command}"\n\n${USAGE}`);
-    process.exit(2);
+function fail(message: string): never {
+  console.error(message);
+  process.exit(2);
 }
+
+const argv = process.argv.slice(2);
+const command = argv[0];
+if (command === undefined || command === "--help" || command === "-h") {
+  console.log(USAGE);
+  process.exit(0);
+}
+if (command !== "tests" && command !== "blast") fail(`blastline: unknown command "${command}"\n\n${USAGE}`);
+
+function opt(name: string): string | undefined {
+  const i = argv.indexOf(`--${name}`);
+  return i === -1 ? undefined : argv[i + 1];
+}
+function optAll(name: string): string[] {
+  const out: string[] = [];
+  argv.forEach((a, i) => {
+    if (a === `--${name}` && argv[i + 1] !== undefined) out.push(argv[i + 1] as string);
+  });
+  return out;
+}
+
+const repo = resolve(opt("repo") ?? process.cwd());
+const range = argv.slice(1).find((a) => a.includes("..") && !a.startsWith("--"));
+const diffFile = opt("diff-file");
+if (!range && !diffFile) fail("blastline: provide <base>..<head> or --diff-file\n\n" + USAGE);
+
+const git = (...args: string[]): string =>
+  execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+
+const diffText = diffFile ? readFileSync(diffFile, "utf8") : git("diff", "--unified=0", range as string);
+
+const graphPath = opt("graph") ?? resolve(repo, "cgraph-out/graph.json");
+let graph;
+try {
+  graph = loadGraph(graphPath);
+} catch (e) {
+  const detail = `cannot load graph at ${graphPath}: ${(e as Error).message}`;
+  if (opt("json") !== undefined || argv.includes("--json")) {
+    console.log(JSON.stringify({ kind: "all", reasons: [{ kind: "graph-unavailable", detail }] }));
+  } else {
+    console.log("ALL");
+    console.error(`fail-open: graph-unavailable — ${detail}`);
+  }
+  process.exit(0);
+}
+const baseGraphPath = opt("base-graph");
+const baseGraph = baseGraphPath ? loadGraph(baseGraphPath) : undefined;
+
+const ignoreRegexes = optAll("ignore").map((p) => new RegExp(p));
+const maxFilesRaw = opt("max-files");
+
+let headCommitMs: number | undefined;
+if (!diffFile && range) {
+  const head = range.split("..").pop() as string;
+  headCommitMs = Number(git("log", "-1", "--format=%ct", head).trim()) * 1000;
+}
+
+const selection = select(diffText, {
+  graph,
+  ...(baseGraph !== undefined && { baseGraph }),
+  ...(ignoreRegexes.length > 0 && { ignore: (p: string) => ignoreRegexes.some((r) => r.test(p)) }),
+  ...(maxFilesRaw !== undefined && { maxFiles: Number(maxFilesRaw) }),
+  ...(fileMtimeMs(graphPath) !== undefined && { graphMtimeMs: fileMtimeMs(graphPath) as number }),
+  ...(headCommitMs !== undefined && { headCommitMs }),
+});
+
+if (argv.includes("--json")) {
+  console.log(JSON.stringify(selection, null, 2));
+  process.exit(0);
+}
+if (selection.kind === "all") {
+  console.log("ALL");
+  for (const r of selection.reasons) console.error(`fail-open: ${JSON.stringify(r)}`);
+  process.exit(0);
+}
+const lines = command === "tests" ? selection.tests : selection.blast;
+for (const line of lines) console.log(line);
