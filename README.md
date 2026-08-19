@@ -1,59 +1,171 @@
-# blastline
+<div align="center">
 
-Graph-backed test impact and blast radius for CI and PRs, built on [CGraph](https://github.com/taylor009/CGraph).
+<img src="assets/hero.svg" alt="blastline — graph-backed test impact and blast radius" width="100%">
 
-**Status: pre-release; CLI, GitHub Action, and MCP server all work.** The selection pipeline (diff → graph nodes → transitive dependents → impacted tests, with fail-open rules) is implemented, unit-tested, and [benchmarked on historical commits](openspec/changes/bootstrap-blastline/bench-results.md) — see [the proposal](openspec/changes/bootstrap-blastline/proposal.md) for design. Remaining before launch: CGraph daemon freshness pinning (content-root proofs) and the fixes for CGraph issues [#39](https://github.com/taylor009/CGraph/issues/39)/[#40](https://github.com/taylor009/CGraph/issues/40).
+[![License: MIT](https://img.shields.io/badge/License-MIT-f5a651?style=flat-square)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white)](tsconfig.json)
+[![CI](https://img.shields.io/github/actions/workflow/status/Nxtsoft/blastline/ci.yml?style=flat-square&label=CI)](https://github.com/Nxtsoft/blastline/actions)
+[![MCP](https://img.shields.io/badge/MCP-2024--11--05-59d499?style=flat-square)](https://modelcontextprotocol.io)
+[![Built on CGraph](https://img.shields.io/badge/built%20on-CGraph-6ea8fe?style=flat-square)](https://github.com/taylor009/CGraph)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-f5c451?style=flat-square)](#contributing)
 
-```sh
-# graph the repo once (CGraph), then select tests for a diff
-cgraph --root ./src --out cgraph-out
-blastline tests main..HEAD | xargs vitest run
-blastline blast main..HEAD          # transitive dependents with file:line
+*Diff in · impacted tests and blast radius out · deterministic, fail-open, served by a [CGraph](https://github.com/taylor009/CGraph) code graph.*
+
+</div>
+
+## Contents
+
+[Why blastline?](#why-blastline) ·
+[How selection works](#how-selection-works) ·
+[Benchmarks](#benchmarks) ·
+[Quick start](#quick-start) ·
+[GitHub Action](#github-action) ·
+[Use with coding agents](#use-with-coding-agents) ·
+[CLI reference](#cli-reference) ·
+[Status & roadmap](#status--roadmap) ·
+[Contributing](#contributing) ·
+[License](#license)
+
+## Why blastline?
+
+Deciding which tests a diff needs means knowing what the change *reaches* — and that answer lives in the relationships between files, not in the diff. Every existing test-impact tool is locked to one build system (Bazel, Nx), one language via coverage instrumentation (pytest-testmon), or a closed SaaS. blastline computes it from a deterministic code graph instead, so it works on any repo CGraph can extract.
+
+| | |
+| --- | --- |
+| 🎯 **Impacted tests, not guesses** | Changed lines map to graph symbols; a transitive-dependents walk finds every test that reaches them. `blastline tests main..HEAD \| xargs vitest run` runs exactly those. |
+| 💥 **Blast radius on every PR** | The GitHub Action comments each PR with the change's transitive dependents, with `file:line` — the reviewer sees what the diff touches before reading it. |
+| 🛡️ **Safe superset, fail-open** | The contract is "run *at least* these," never "safe to skip." Unmapped files, a stale graph, an under-extracted graph, or an oversized diff all fail open to a full run, with machine-readable reasons. |
+| ⚡ **Deterministic & instant** | Selection is pure graph traversal: same repo state + same diff → byte-identical output, in under a millisecond on a built graph. No ML ranking, no coverage run. |
+| 🤖 **Built for coding agents** | `blastline mcp` serves `blastline_tests` / `blastline_blast` over MCP, so an agent checks what its edit reaches *before* opening the PR. |
+
+> **The pitch in one line:** test-impact analysis is a graph-reachability problem — blastline is the reachability query, packaged as a CLI, a PR comment, and an MCP tool, with fail-open honesty when the graph can't vouch for a diff.
+
+## How selection works
+
+```
+git diff --unified=0 base..head
+   → changed line ranges                (src/diff.ts)
+   → innermost graph node per line      (src/mapping.ts — whole-file adds seed every symbol)
+   → transitive dependents walk         (src/impact.ts — CALLS, imports, re_exports, contains, inherits)
+   → intersect with test files          (src/detect.ts — *.test.* / *.spec.* / __tests__)
+   → subset + blast radius, or ALL with reasons
 ```
 
-Selection prints `ALL` (with machine-readable reasons on stderr) whenever the graph can't vouch for the diff — unmapped files, a graph older than the head commit, or an oversized diff. `--ignore <regex>` declares paths irrelevant (docs, content) so they don't force full runs; `--json` gives structured output.
+Fail-open triggers, each a typed reason in the output:
 
-## What it does
+| Reason | Fires when |
+| --- | --- |
+| `unmapped-file` | a changed file has no graph node (configs, lockfiles, assets) — declare irrelevant paths with `--ignore` |
+| `stale-graph` | `graph.json` is older than the head commit |
+| `sparse-graph` | the graph averages under 3 edges per file — an under-extracted graph produces subsets that look smart and are blind, so blastline refuses |
+| `diff-too-large` | the diff touches more files than `--max-files` (default 200) |
+| `graph-unavailable` | no readable `graph.json` |
 
-One pipeline — `git diff base..head` → changed graph nodes → transitive dependents via CGraph's `impact` query → intersect with the test-node set — behind three surfaces:
+Pure deletions map against a `--base-graph` when supplied, and degrade to the file node (a superset-safe approximation) when not.
 
-- **CLI**: `blastline tests base..head` (impacted test list for any runner), `blastline blast base..head` (dependents with file:line)
-- **GitHub Action**: a PR comment showing real downstream dependents and impacted tests
-- **MCP server**: `blastline_tests` / `blastline_blast` so coding agents can pre-flight their own edits
+## Benchmarks
 
-Selection is a **safe superset** ("run at least these"), deterministic, and fails open to a full run — with a printed reason — whenever the graph can't vouch for the diff (config/lockfile changes, unresolved imports, a stale graph). Every CI selection pins CGraph's content-root freshness proof, so it carries evidence of exactly which source tree it was computed from.
+Replayed the last 20 first-parent commits of two repos, scoring every selection against the tests each commit's author co-changed ([methodology and full tables](openspec/changes/bootstrap-blastline/bench-results.md)):
 
-## v1 scope
+| | production Next.js app | es-toolkit (1,508 files) |
+| --- | --- | --- |
+| subset rate | 19/20 | 18/20 |
+| co-changed tests selected | 21/22¹ | **41/41** |
+| mean selection | 25.7% of suite | 4.7% of ~670 tests |
+| deterministic (double-run) | yes | yes |
 
-TypeScript repos, Vitest/Jest, GitHub Actions. Python and Go follow — CGraph already extracts them; only test detectors and runner adapters are new.
+¹ The one "miss" is a false positive of the co-change proxy itself — the author added new tests for unchanged code.
 
-## Use from a coding agent (MCP)
+The benchmark also caught CGraph silently deleting 650 of es-toolkit's 1,508 files from the graph ([CGraph #39](https://github.com/taylor009/CGraph/issues/39)/[#40](https://github.com/taylor009/CGraph/issues/40), fixed in [#42](https://github.com/taylor009/CGraph/pull/42)) — before the fix, blastline's sparse-graph guard correctly refused to produce subsets there. That loop is the design working: guard until the graph is trustworthy, select once it is.
 
-`blastline mcp` serves two stdio MCP tools — `blastline_tests` and `blastline_blast` — so an
-agent can check what its edit reaches *before* opening a PR. Register it (Claude Code
-`.mcp.json` shown; any MCP client works):
+## Quick start
+
+Prerequisites: Node 20+ (or [Bun](https://bun.sh)), a [CGraph](https://github.com/taylor009/CGraph) binary on PATH, and a git repo.
+
+```sh
+git clone https://github.com/Nxtsoft/blastline && cd blastline
+bun install && bun run build
+
+cgraph --root /path/to/repo/src --out /path/to/repo/cgraph-out   # build the graph once
+node dist/cli.js tests main..HEAD --repo /path/to/repo | xargs vitest run
+node dist/cli.js blast main..HEAD --repo /path/to/repo           # dependents with file:line
+```
+
+An npm package (`npm install -g blastline`) is the immediate next step; the CLI, Action, and MCP server all run from this repo today.
+
+## GitHub Action
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- uses: Nxtsoft/blastline@main
+  id: blastline
+  with:
+    github-token: ${{ github.token }}   # posts/updates the PR comment
+    ignore: |
+      \.md$
+      ^docs/
+```
+
+Outputs: `kind` (`subset` or `all`) and `tests` (newline-separated files), so a downstream job can run only the selected tests. The comment shows the impacted tests and a collapsible blast radius; on fail-open it says "run the full suite" and why. Supply `graph-path` from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
+
+## Use with coding agents
+
+`blastline mcp` speaks MCP over stdio: newline-delimited JSON-RPC 2.0 implementing `initialize`, `tools/list`, and `tools/call` (protocol `2024-11-05`) — the same surface CGraph's own MCP server speaks.
 
 ```json
 {
   "mcpServers": {
-    "blastline": { "command": "blastline", "args": ["mcp"] }
+    "blastline": { "command": "node", "args": ["/path/to/blastline/dist/cli.js", "mcp"] }
   }
 }
 ```
 
-The agent workflow: keep a CGraph graph warm for the repo (`cgraph --root ./src --out cgraph-out`,
-or the CGraph daemon's persisted export), then before finalizing an edit call
-`blastline_blast` with `repo` + `range` (or the pending `diff` text) to see every transitive
-dependent with file:line, and `blastline_tests` to get the exact test files to run. A
-`kind: "all"` answer means the graph can't vouch for the diff — run the full suite; the
-`reasons` say why. Both tools accept `graph_path`, `ignore` regexes, and `min_density`.
+| Tool | What it answers |
+| --- | --- |
+| `blastline_tests` | "Which test files does this diff reach?" — the set to run before claiming done |
+| `blastline_blast` | "What does this change touch, transitively?" — with `file:line`, before the edit is final |
 
-## Development
+Both take `repo` plus a `range` or raw `diff` text, with `graph_path`, `ignore`, and `min_density` passthroughs. A `kind: "all"` answer means run the full suite; the `reasons` say why — fail-open selections are returned as data, never as protocol errors, so an agent always gets an actionable answer.
+
+## CLI reference
+
+<details>
+<summary><strong>⌨️ commands and options</strong></summary>
 
 ```sh
-bun install
-bun run build
-bun run test
+blastline tests <base>..<head> [options]     # impacted test files (list or --json)
+blastline blast <base>..<head> [options]     # transitive dependents with file:line
+blastline comment <base>..<head> [options]   # the PR-comment markdown
+blastline mcp                                # MCP server over stdio
 ```
 
-MIT.
+| Option | Meaning |
+| --- | --- |
+| `--repo <path>` | repository to diff (default: cwd) |
+| `--graph <path>` | CGraph `graph.json` for head (default: `<repo>/cgraph-out/graph.json`) |
+| `--base-graph <path>` | `graph.json` for base — improves pure-deletion mapping |
+| `--diff-file <path>` | read a unified-0 diff from a file instead of running git |
+| `--ignore <regex>` | repo-relative paths declared irrelevant (repeatable) |
+| `--max-files <n>` | fail open above this many changed files (default 200) |
+| `--min-density <n>` | fail open below this edges-per-file floor (default 3) |
+| `--json` | structured output |
+
+`tests`/`blast` print one item per line (empty = clean subset with nothing impacted); on fail-open they print `ALL` to stdout and one JSON reason per line to stderr, exit code 0 — consumers branch on the output, not the exit code.
+
+</details>
+
+## Status & roadmap
+
+v0.1 scope, stated plainly: **TypeScript** repos, **Vitest/Jest** detection, **GitHub Actions**. The pipeline is unit-tested (43 tests) and replay-benchmarked; the Action and MCP server are exercised end-to-end in CI.
+
+Next, in order: the npm package · Python and Go (CGraph already extracts both — only test detectors and runner adapters are new) · CGraph daemon freshness pinning, so CI selections carry a content-root proof of the exact source tree they were computed from (the mtime staleness guard stands in until then) · cross-repo selection over [CGraph seam graphs](https://github.com/taylor009/CGraph).
+
+## Contributing
+
+Issues and PRs welcome. The spec-driven history lives in [`openspec/`](openspec/changes/bootstrap-blastline/) — proposal, spike findings, and benchmark results — and is the fastest way to understand why the tool is shaped the way it is. `bun run build && bun run test` is the gate.
+
+## License
+
+[MIT](LICENSE).

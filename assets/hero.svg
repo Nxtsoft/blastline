@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-label="blastline — graph-backed test impact and blast radius">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b0e14"/><stop offset="1" stop-color="#0e1424"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffd28e"/><stop offset="1" stop-color="#f5a651"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.4" r="0.6">
+      <stop offset="0" stop-color="#f5a651" stop-opacity="0.16"/><stop offset="1" stop-color="#f5a651" stop-opacity="0"/>
+    </radialGradient>
+    <style>
+      .w{font-family:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace}
+      .s{font-family:-apple-system,'Segoe UI',Inter,Roboto,sans-serif}
+    </style>
+  </defs>
+  <rect width="1200" height="360" rx="20" fill="url(#bg)"/>
+  <rect width="1200" height="360" rx="20" fill="url(#glow)"/>
+  <rect x="1" y="1" width="1198" height="358" rx="19" fill="none" stroke="#243049"/>
+
+  <!-- blast-radius motif (right): one changed node radiating to dependents; tests light up -->
+  <g stroke="#2c3a58" stroke-width="1.6" opacity="0.9">
+    <line x1="960" y1="180" x2="870" y2="100"/><line x1="960" y1="180" x2="1070" y2="110"/>
+    <line x1="960" y1="180" x2="850" y2="230"/><line x1="960" y1="180" x2="1090" y2="240"/>
+    <line x1="870" y1="100" x2="800" y2="60"/><line x1="1070" y1="110" x2="1130" y2="60"/>
+    <line x1="850" y1="230" x2="790" y2="295"/><line x1="1090" y1="240" x2="1140" y2="300"/>
+  </g>
+  <g stroke="#f5a651" stroke-width="1.8" opacity="0.85">
+    <line x1="960" y1="180" x2="870" y2="100"/><line x1="960" y1="180" x2="850" y2="230"/>
+    <line x1="850" y1="230" x2="790" y2="295"/>
+  </g>
+  <circle cx="960" cy="180" r="34" fill="none" stroke="#f5a651" stroke-opacity="0.35"/>
+  <circle cx="960" cy="180" r="58" fill="none" stroke="#f5a651" stroke-opacity="0.18"/>
+  <g>
+    <circle cx="960" cy="180" r="15" fill="#f5a651"/>
+    <circle cx="870" cy="100" r="10" fill="#6ea8fe"/><circle cx="1070" cy="110" r="9" fill="#6ea8fe"/>
+    <circle cx="850" cy="230" r="10" fill="#6ea8fe"/><circle cx="1090" cy="240" r="8" fill="#6ea8fe"/>
+    <circle cx="800" cy="60" r="8" fill="#2c3a58"/><circle cx="1130" cy="60" r="8" fill="#2c3a58"/>
+    <circle cx="790" cy="295" r="11" fill="#59d499"/><circle cx="1140" cy="300" r="8" fill="#2c3a58"/>
+  </g>
+  <text x="790" y="330" class="w" font-size="12" fill="#59d499" text-anchor="middle">test</text>
+  <text x="960" y="148" class="w" font-size="12" fill="#f5a651" text-anchor="middle">changed</text>
+
+  <!-- wordmark (left) -->
+  <text x="80" y="150" class="w" font-size="72" font-weight="700" fill="url(#ink)">blastline</text>
+  <text x="82" y="200" class="s" font-size="25" fill="#e6ecf5">The tests a diff actually reaches, from the code graph.</text>
+  <text x="82" y="236" class="s" font-size="17" fill="#8a93a6">Built on CGraph · deterministic · fail-open · CLI + GitHub Action + MCP</text>
+
+  <!-- chips -->
+  <g class="w" font-size="13">
+    <rect x="82" y="270" width="150" height="30" rx="15" fill="#111624" stroke="#243049"/><text x="157" y="290" text-anchor="middle" fill="#f5c451">safe superset</text>
+    <rect x="244" y="270" width="170" height="30" rx="15" fill="#111624" stroke="#243049"/><text x="329" y="290" text-anchor="middle" fill="#8ec5ff">&lt;1ms selection</text>
+    <rect x="426" y="270" width="216" height="30" rx="15" fill="#111624" stroke="#243049"/><text x="534" y="290" text-anchor="middle" fill="#59d499">80-commit benchmark</text>
+  </g>
+</svg>
