@@ -7,10 +7,10 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white)](tsconfig.json)
 [![CI](https://img.shields.io/github/actions/workflow/status/Nxtsoft/blastline/ci.yml?style=flat-square&label=CI)](https://github.com/Nxtsoft/blastline/actions)
 [![MCP](https://img.shields.io/badge/MCP-2024--11--05-59d499?style=flat-square)](https://modelcontextprotocol.io)
-[![Built on CGraph](https://img.shields.io/badge/built%20on-CGraph-6ea8fe?style=flat-square)](https://github.com/taylor009/CGraph)
+[![Built on CGraph](https://img.shields.io/badge/built%20on-CGraph-6ea8fe?style=flat-square)](https://github.com/Nxtsoft/CGraph)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-f5c451?style=flat-square)](#contributing)
 
-*Diff in · impacted tests and blast radius out · deterministic, fail-open, served by a [CGraph](https://github.com/taylor009/CGraph) code graph.*
+*Diff in · impacted tests and blast radius out · deterministic, fail-open, served by a [CGraph](https://github.com/Nxtsoft/CGraph) code graph.*
 
 </div>
 
@@ -57,7 +57,7 @@ Fail-open triggers, each a typed reason in the output:
 | Reason | Fires when |
 | --- | --- |
 | `unmapped-file` | a changed file has no graph node (configs, lockfiles, assets) — declare irrelevant paths with `--ignore` |
-| `stale-graph` | `graph.json` is older than the head commit |
+| `stale-graph` | the graph fails a content-root pin (`--expect-root`, or `--daemon-verify` against the live CGraph daemon), or `graph.json` is older than the head commit |
 | `sparse-graph` | the graph averages under 3 edges per file — an under-extracted graph produces subsets that look smart and are blind, so blastline refuses |
 | `disconnected-tests` | tests can forward-reach under 25% of the code's symbols — the graph passed the density floor but is blind for selection (how broken Go/Python extraction presents) |
 | `diff-too-large` | the diff touches more files than `--max-files` (default 200) |
@@ -78,11 +78,11 @@ Replayed the last 20 first-parent commits of two repos, scoring every selection 
 
 ¹ The one "miss" is a false positive of the co-change proxy itself — the author added new tests for unchanged code.
 
-The benchmark also caught CGraph silently deleting 650 of es-toolkit's 1,508 files from the graph ([CGraph #39](https://github.com/taylor009/CGraph/issues/39)/[#40](https://github.com/taylor009/CGraph/issues/40), fixed in [#42](https://github.com/taylor009/CGraph/pull/42)) — before the fix, blastline's sparse-graph guard correctly refused to produce subsets there. That loop is the design working: guard until the graph is trustworthy, select once it is.
+The benchmark also caught CGraph silently deleting 650 of es-toolkit's 1,508 files from the graph ([CGraph #39](https://github.com/Nxtsoft/CGraph/issues/39)/[#40](https://github.com/Nxtsoft/CGraph/issues/40), fixed in [#42](https://github.com/Nxtsoft/CGraph/pull/42)) — before the fix, blastline's sparse-graph guard correctly refused to produce subsets there. That loop is the design working: guard until the graph is trustworthy, select once it is.
 
 ## Quick start
 
-Prerequisites: Node 20+, a [CGraph](https://github.com/taylor009/CGraph) binary on PATH, and a git repo.
+Prerequisites: Node 20+, a [CGraph](https://github.com/Nxtsoft/CGraph) binary on PATH, and a git repo.
 
 ```sh
 npm install -g blastline        # or zero-install: npx blastline ...
@@ -169,7 +169,7 @@ blastline tests main..HEAD | xargs pytest                                      #
 blastline tests main..HEAD | xargs -n1 dirname | sort -u | xargs go test       # Go (tests run per package)
 ```
 
-Next, in order: CGraph daemon freshness pinning, so CI selections carry a content-root proof of the exact source tree they were computed from (the mtime staleness guard stands in until then) · cross-repo selection over [CGraph seam graphs](https://github.com/taylor009/CGraph).
+Freshness pinning shipped in 0.3.0: CGraph one-shot builds embed a sha256-merkle-v1 content root, every subset carries it as provenance (CLI JSON, MCP payloads, and the PR-comment footer), `--expect-root` pins a selection to an exact tree, and `--daemon-verify` pins against the live CGraph daemon's root — verified end-to-end against a running graphd (match → subset; edited tree → fail-open naming both roots). Next: cross-repo selection over [CGraph seam graphs](https://github.com/Nxtsoft/CGraph).
 
 ## Contributing
 

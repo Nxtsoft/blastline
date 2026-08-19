@@ -36,5 +36,9 @@ export function renderComment(selection: Selection, range: string): string {
           .map((b) => `- ${b}`)
           .join("\n")}\n\n</details>`
       : "_no downstream dependents_";
-  return `${header}\n\n**Impacted tests (run at least these):**\n\n${tests}\n\n${blast}\n`;
+  const provenance =
+    selection.contentRoot !== undefined
+      ? `\n<sub>computed from source tree \`sha256-merkle-v1:${selection.contentRoot}\`</sub>\n`
+      : "";
+  return `${header}\n\n**Impacted tests (run at least these):**\n\n${tests}\n\n${blast}\n${provenance}`;
 }

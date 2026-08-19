@@ -78,6 +78,31 @@ describe("select", () => {
     expect(sel.reasons[0]).toEqual({ kind: "disconnected-tests", coverage: 0, threshold: 0.25 });
   });
 
+
+  it("carries the graph's content root as provenance on subsets", () => {
+    const sel = select(DIFF_IN_PARSE, { graph: g, minDensity: 0 });
+    expect(sel.kind).toBe("subset");
+    if (sel.kind !== "subset") return;
+    expect(sel.contentRoot).toBe("a".repeat(64));
+  });
+
+  it("pins to an expected content root: match passes, mismatch fails open", () => {
+    const ok = select(DIFF_IN_PARSE, { graph: g, minDensity: 0, expectedContentRoot: "a".repeat(64) });
+    expect(ok.kind).toBe("subset");
+    const bad = select(DIFF_IN_PARSE, { graph: g, minDensity: 0, expectedContentRoot: "b".repeat(64) });
+    expect(bad.kind).toBe("all");
+    if (bad.kind !== "all") return;
+    expect(bad.reasons[0]?.kind).toBe("stale-graph");
+  });
+
+  it("fails open when a pin is requested but the graph carries no root", () => {
+    const bare = indexGraph(g.nodes, g.links); // indexGraph never sets contentRoot
+    const sel = select(DIFF_IN_PARSE, { graph: bare, minDensity: 0, expectedContentRoot: "a".repeat(64) });
+    expect(sel.kind).toBe("all");
+    if (sel.kind !== "all") return;
+    expect(JSON.stringify(sel.reasons[0])).toContain("no content root");
+  });
+
   it("is deterministic: identical inputs produce identical output", () => {
     const a = JSON.stringify(select(DIFF_IN_PARSE, { graph: g, minDensity: 0 }));
     const b = JSON.stringify(select(DIFF_IN_PARSE, { graph: g, minDensity: 0 }));

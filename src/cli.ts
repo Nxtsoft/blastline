@@ -20,12 +20,14 @@ options:
   --max-files <n>      fail open when the diff touches more files (default 200)
   --min-density <n>    fail open below this edges-per-file floor (default 3)
   --min-test-reachability <f>  fail open when tests reach under this fraction of code (default 0.25)
+  --expect-root <sha256>  pin the selection to this content root (fail open on mismatch)
+  --daemon-verify      pin against the live CGraph daemon's content root (cgraph-client status)
   --json               structured output
 
 Selection is a safe superset: "run at least these." Any file the graph cannot
-vouch for fails open to ALL, with the reason printed. One-shot graphs cannot be
-freshness-pinned (daemon pinning is planned); a graph older than the head
-commit fails open as stale.`;
+vouch for fails open to ALL, with the reason printed. Subsets carry the graph's
+sha256-merkle-v1 content root as provenance; pin with --expect-root or
+--daemon-verify (a graph older than the head commit also fails open as stale).`;
 
 function fail(message: string): never {
   console.error(message);
@@ -63,6 +65,7 @@ if (command === "mcp") {
   const maxFilesRaw = opt("max-files");
   const minDensityRaw = opt("min-density");
   const minReachRaw = opt("min-test-reachability");
+  const expectRoot = opt("expect-root");
   const selection = runSelection({
     repo: opt("repo") ?? process.cwd(),
     ...(range !== undefined && { range }),
@@ -73,6 +76,8 @@ if (command === "mcp") {
     ...(maxFilesRaw !== undefined && { maxFiles: Number(maxFilesRaw) }),
     ...(minDensityRaw !== undefined && { minDensity: Number(minDensityRaw) }),
     ...(minReachRaw !== undefined && { minTestReachability: Number(minReachRaw) }),
+    ...(expectRoot !== undefined && { expectedContentRoot: expectRoot }),
+    ...(argv.includes("--daemon-verify") && { daemonVerify: true }),
   });
 
   if (command === "comment") {

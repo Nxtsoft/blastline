@@ -18,6 +18,8 @@ const TOOL_INPUT_SCHEMA = {
     ignore: { type: "array", items: { type: "string" }, description: "regexes for paths declared irrelevant" },
     min_density: { type: "number", description: "edges-per-file floor (default 3)" },
     min_test_reachability: { type: "number", description: "test-reachability floor, 0-1 (default 0.25)" },
+    expected_content_root: { type: "string", description: "pin to this sha256-merkle-v1 content root; mismatch fails open" },
+    daemon_verify: { type: "boolean", description: "pin against the live CGraph daemon's content root" },
     max_files: { type: "number", description: "fail open above this many changed files (default 200)" },
   },
   required: ["repo"],
@@ -71,14 +73,16 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
     ...(Array.isArray(args["ignore"]) && { ignore: args["ignore"] as string[] }),
     ...(typeof args["min_density"] === "number" && { minDensity: args["min_density"] }),
     ...(typeof args["min_test_reachability"] === "number" && { minTestReachability: args["min_test_reachability"] }),
+    ...(typeof args["expected_content_root"] === "string" && { expectedContentRoot: args["expected_content_root"] }),
+    ...(args["daemon_verify"] === true && { daemonVerify: true }),
     ...(typeof args["max_files"] === "number" && { maxFiles: args["max_files"] }),
   });
   const payload =
     selection.kind === "all"
       ? { kind: "all", reasons: selection.reasons }
       : name === "blastline_tests"
-        ? { kind: "subset", tests: selection.tests }
-        : { kind: "subset", blast: selection.blast };
+        ? { kind: "subset", tests: selection.tests, ...(selection.contentRoot !== undefined && { content_root: selection.contentRoot }) }
+        : { kind: "subset", blast: selection.blast, ...(selection.contentRoot !== undefined && { content_root: selection.contentRoot }) };
   return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
 }
 
@@ -90,7 +94,7 @@ export function handleRequest(req: JsonRpcRequest): JsonRpcResponse | null {
       return ok(id, {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "blastline", version: "0.2.1" },
+        serverInfo: { name: "blastline", version: "0.3.0" },
       });
     case "notifications/initialized":
       return null;

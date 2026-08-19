@@ -19,6 +19,34 @@ export interface RunOptions {
   maxFiles?: number;
   minDensity?: number;
   minTestReachability?: number;
+  /** pin the selection to this sha256-merkle-v1 content root */
+  expectedContentRoot?: string;
+  /**
+   * Ask the repo's CGraph daemon (via cgraph-client status) for its live
+   * content root and pin against it — the daemon watches the tree, so a match
+   * proves the loaded graph corresponds to the working tree right now.
+   */
+  daemonVerify?: boolean;
+}
+
+/** The daemon's live content root, or an explanation of why it can't vouch. */
+function daemonContentRoot(repo: string): { root?: string; error?: string } {
+  try {
+    const out = execFileSync("cgraph-client", ["--root", repo, "status"], {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    const status = JSON.parse(out) as {
+      result?: { freshness?: { verified?: boolean; content_root?: string } };
+    };
+    const freshness = status.result?.freshness;
+    if (freshness?.verified && typeof freshness.content_root === "string") {
+      return { root: freshness.content_root };
+    }
+    return { error: "daemon status carries no verified content root" };
+  } catch (e) {
+    return { error: `cgraph-client status failed: ${(e as Error).message}` };
+  }
 }
 
 /**
@@ -48,6 +76,23 @@ export function runSelection(o: RunOptions): Selection {
       headCommitMs = Number(git("log", "-1", "--format=%ct", head).trim()) * 1000;
     }
 
+    let expectedContentRoot = o.expectedContentRoot;
+    if (o.daemonVerify) {
+      const daemon = daemonContentRoot(repo);
+      if (daemon.root === undefined) {
+        return {
+          kind: "all",
+          reasons: [
+            {
+              kind: "graph-unavailable",
+              detail: `daemon verification requested but ${daemon.error ?? "no root returned"}`,
+            },
+          ],
+        };
+      }
+      expectedContentRoot = daemon.root;
+    }
+
     const regexes = (o.ignore ?? []).map((p) => new RegExp(p));
     return select(diffText, {
       graph,
@@ -56,6 +101,7 @@ export function runSelection(o: RunOptions): Selection {
       ...(o.maxFiles !== undefined && { maxFiles: o.maxFiles }),
       ...(o.minDensity !== undefined && { minDensity: o.minDensity }),
       ...(o.minTestReachability !== undefined && { minTestReachability: o.minTestReachability }),
+      ...(expectedContentRoot !== undefined && { expectedContentRoot }),
       ...(fileMtimeMs(graphPath) !== undefined && { graphMtimeMs: fileMtimeMs(graphPath) as number }),
       ...(headCommitMs !== undefined && { headCommitMs }),
     });

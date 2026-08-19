@@ -18,6 +18,10 @@ describe("loadGraph / nodesForPath", () => {
     expect(nodesForPath(g, "ib.ts")).toEqual([]);
   });
 
+
+  it("parses the content-root metadata when present and well-formed", () => {
+    expect(g.contentRoot).toEqual({ algorithm: "sha256-merkle-v1", sha256: "a".repeat(64), leafCount: 5 });
+  });
   it("returns empty for unknown files", () => {
     expect(nodesForPath(g, "src/nope.ts")).toEqual([]);
   });

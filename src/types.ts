@@ -30,5 +30,11 @@ export type FailOpenReason =
 
 /** The outcome of a selection: either a concrete test set or ALL with reasons. */
 export type Selection =
-  | { kind: "subset"; tests: string[]; blast: string[] }
+  | {
+      kind: "subset";
+      tests: string[];
+      blast: string[];
+      /** sha256-merkle-v1 root of the tree the selection was computed from, when the graph carries one */
+      contentRoot?: string;
+    }
   | { kind: "all"; reasons: FailOpenReason[] };

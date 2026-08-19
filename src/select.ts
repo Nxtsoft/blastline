@@ -28,6 +28,13 @@ export interface SelectOptions {
    * healthy graphs at 0.52-1.00).
    */
   minTestReachability?: number;
+  /**
+   * Pin the selection to this sha256-merkle-v1 content root. The graph must
+   * carry a matching root or the selection fails open as stale — the
+   * cryptographic upgrade over the mtime heuristic. Supplied directly
+   * (--expect-root) or from a live daemon (--daemon-verify).
+   */
+  expectedContentRoot?: string;
   /** graph.json mtime (ms) and head-commit time (ms) for the staleness guard */
   graphMtimeMs?: number;
   headCommitMs?: number;
@@ -51,6 +58,16 @@ export function select(diffText: string, opts: SelectOptions): Selection {
         kind: "sparse-graph",
         edgesPerFile: Math.round(edgesPerFile * 100) / 100,
         threshold: minDensity,
+      });
+    }
+  }
+  if (opts.expectedContentRoot !== undefined) {
+    const actual = opts.graph.contentRoot?.sha256;
+    if (actual !== opts.expectedContentRoot) {
+      reasons.push({
+        kind: "stale-graph",
+        expected: `content root ${opts.expectedContentRoot}`,
+        actual: actual ? `content root ${actual}` : "graph carries no content root",
       });
     }
   }
@@ -100,7 +117,12 @@ export function select(diffText: string, opts: SelectOptions): Selection {
     const node = opts.graph.byId.get(id);
     if (node?.source_file && testSet.has(node.source_file)) tests.add(node.source_file);
   }
-  return { kind: "subset", tests: [...tests].sort(), blast: blast.sort() };
+  return {
+    kind: "subset",
+    tests: [...tests].sort(),
+    blast: blast.sort(),
+    ...(opts.graph.contentRoot !== undefined && { contentRoot: opts.graph.contentRoot.sha256 }),
+  };
 }
 
 export function fileMtimeMs(path: string): number | undefined {

@@ -14,9 +14,17 @@ export interface GraphLink {
   relation: string;
 }
 
+export interface ContentRoot {
+  algorithm: string;
+  sha256: string;
+  leafCount: number;
+}
+
 export interface CodeGraph {
   nodes: GraphNode[];
   links: GraphLink[];
+  /** sha256-merkle-v1 root of the source tree the graph was built from (CGraph ≥ the content-root export) */
+  contentRoot?: ContentRoot;
   byId: Map<string, GraphNode>;
   /** node lists keyed by absolute source_file */
   byFile: Map<string, GraphNode[]>;
@@ -25,8 +33,21 @@ export interface CodeGraph {
 }
 
 export function loadGraph(path: string): CodeGraph {
-  const raw = JSON.parse(readFileSync(path, "utf8")) as { nodes: GraphNode[]; links: GraphLink[] };
-  return indexGraph(raw.nodes, raw.links);
+  const raw = JSON.parse(readFileSync(path, "utf8")) as {
+    nodes: GraphNode[];
+    links: GraphLink[];
+    graph?: { content_root?: { algorithm?: string; sha256?: string; leaf_count?: number } };
+  };
+  const graph = indexGraph(raw.nodes, raw.links);
+  const root = raw.graph?.content_root;
+  if (root && typeof root.sha256 === "string" && /^[0-9a-f]{64}$/.test(root.sha256)) {
+    graph.contentRoot = {
+      algorithm: root.algorithm ?? "",
+      sha256: root.sha256,
+      leafCount: root.leaf_count ?? 0,
+    };
+  }
+  return graph;
 }
 
 export function indexGraph(nodes: GraphNode[], links: GraphLink[]): CodeGraph {

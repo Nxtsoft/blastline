@@ -32,6 +32,14 @@ describe("renderComment", () => {
     expect(md).toContain("`x.json`");
   });
 
+
+  it("appends the content-root provenance footer when present", () => {
+    const md = renderComment(
+      { kind: "subset", tests: ["/r/a.test.ts"], blast: [], contentRoot: "c".repeat(64) },
+      "a..b",
+    );
+    expect(md).toContain("sha256-merkle-v1:" + "c".repeat(64));
+  });
   it("states plainly when a clean subset selects zero tests", () => {
     const md = renderComment({ kind: "subset", tests: [], blast: [] }, "a..b");
     expect(md).toContain("none — no test file depends");

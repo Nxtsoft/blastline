@@ -48,7 +48,11 @@ describe("MCP handleRequest", () => {
       min_density: 0,
     });
     const text = (resp as { result: { content: { text: string }[] } }).result.content[0]!.text;
-    expect(JSON.parse(text)).toEqual({ kind: "subset", tests: ["/repo/src/lib.test.ts"] });
+    expect(JSON.parse(text)).toEqual({
+      kind: "subset",
+      tests: ["/repo/src/lib.test.ts"],
+      content_root: "a".repeat(64),
+    });
   });
 
   it("blastline_blast returns dependents, not tests", () => {
