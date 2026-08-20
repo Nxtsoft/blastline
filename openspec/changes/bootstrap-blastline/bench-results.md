@@ -361,3 +361,37 @@ how the suppressed selection gets scored instead of guessed.
   `cargo test --manifest-path …/Cargo.toml --test tests` and ran **108 tests, 0 failed**; the
   clap workspace form ran the `builder` target, **912 tests, 0 failed**, and
   `clap_complete`'s `examples` target, 1 test.
+
+## Addendum 7 (2026-08-20): dependency-filtered replay — the co-changed proxy is noisy
+
+The co-changed-test proxy (Addendum 6, and every replay above) counts a "miss" whenever
+the author co-changed a test that selection did not pick. But *co-changed* is not
+*depends-on*: a repo-wide cleanup sweep co-changes tests that depend on nothing, and
+excluding them is correct, not a miss. `scripts/bench-deps.ts` replaces the proxy with a
+behavioral oracle that is **independent of the graph**: check out the commit, revert its
+**code** hunks while keeping the tests, rebuild, and re-run each missed test. A test that
+flips pass → fail depended on the change (a real miss); one that still passes was noise.
+
+Run against tokio's 20-commit replay (engine at CGraph#62, blastline 0.9.0), on the exact
+tests the proxy flagged as missed:
+
+| commit | proxy | oracle | verdict |
+| --- | --- | --- | --- |
+| `dd344a55` | 0/1 | `zero_length_operations` pass → **fail** when `mem.rs` reverted | 1 real dependent, missed |
+| `ac6869a4` | 1/6 | all 6 co-changed tests still **pass** when the code is reverted | 0 real dependents |
+
+Every other tokio commit was `proxy=X/X`, so these two hold the entire gap. Result:
+
+- Proxy recall: **6/12 = 50 %**.
+- Of the six "missed" tests, **exactly one is a genuine dependency** (`dd344a55`); the other
+  five (all of `ac6869a4`, a `#[cfg(tokio_unstable)]` cleanup) depend on nothing.
+- Dependency-adjusted recall (noise misses dropped from the denominator): **6/7 ≈ 86 %**.
+
+blastline's real tokio miss is a single test, and it is the async ext-trait/future-poll
+class (`.read().await` → the `Read` future's `poll`), not a broad recall hole. This is the
+mutation-style ground truth flagged as the stronger follow-up earlier in this document,
+cashed in; it is what the Rust advisory→gated decision should be measured against.
+
+Reproduce: `bun scripts/bench.ts … > results.json` (records per-commit `missed`), then
+`bun scripts/bench-deps.ts --results results.json --repo <clone>` — Cargo integration-test
+convention by default, `--test-cmd`/`--rustflags`/`--cargo-features` to retarget.
