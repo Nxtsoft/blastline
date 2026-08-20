@@ -7,9 +7,12 @@ const FIXTURE = fileURLToPath(new URL("./testdata/mini-graph.json", import.meta.
 describe("loadGraph / nodesForPath", () => {
   const g = loadGraph(FIXTURE);
 
-  it("indexes incoming edges by target", () => {
+  it("indexes incoming edges by target, with the relation", () => {
     // fn_parse is depended on by its caller, its test, and its containing file.
-    expect(new Set(g.incoming.get("fn_parse"))).toEqual(new Set(["fn_use", "f_test", "f_lib"]));
+    expect(new Set(g.incoming.get("fn_parse")?.map((e) => e.from))).toEqual(
+      new Set(["fn_use", "f_test", "f_lib"]),
+    );
+    expect(g.incoming.get("fn_parse")?.find((e) => e.from === "fn_use")?.relation).toBe("CALLS");
   });
 
   it("resolves repo-relative paths only at path boundaries", () => {

@@ -28,8 +28,8 @@ export interface CodeGraph {
   byId: Map<string, GraphNode>;
   /** node lists keyed by absolute source_file */
   byFile: Map<string, GraphNode[]>;
-  /** incoming edges: target id -> sources that depend on it */
-  incoming: Map<string, string[]>;
+  /** incoming edges: target id -> sources that depend on it, with the relation */
+  incoming: Map<string, { from: string; relation: string }[]>;
 }
 
 export function loadGraph(path: string): CodeGraph {
@@ -61,11 +61,11 @@ export function indexGraph(nodes: GraphNode[], links: GraphLink[]): CodeGraph {
       byFile.set(n.source_file, list);
     }
   }
-  const incoming = new Map<string, string[]>();
+  const incoming = new Map<string, { from: string; relation: string }[]>();
   for (const l of links) {
     const [from, to] = dependencyDirection(l);
     const list = incoming.get(to) ?? [];
-    list.push(from);
+    list.push({ from, relation: l.relation });
     incoming.set(to, list);
   }
   return { nodes, links, byId, byFile, incoming };

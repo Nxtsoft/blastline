@@ -48,7 +48,8 @@ Deciding which tests a diff needs means knowing what the change *reaches* — an
 git diff --unified=0 base..head
    → changed line ranges                (src/diff.ts)
    → innermost graph node per line      (src/mapping.ts — whole-file adds seed every symbol)
-   → transitive dependents walk         (src/impact.ts — CALLS, imports, re_exports, contains, inherits)
+   → transitive dependents walk         (src/impact.ts — CALLS, imports, re_exports, contains, inherits;
+                                          dispatch barrier: interface contracts propagate to callers only)
    → intersect with test files          (src/detect.ts — JS/TS, pytest, Go, C/C++ conventions)
    → subset + blast radius, or ALL with reasons
 ```
@@ -188,7 +189,7 @@ blastline mcp                                # MCP server over stdio
 
 ## Status & roadmap
 
-Scope, stated plainly: all four v1 language families are **replay-verified** — on their benchmarks every semantically selectable author-co-changed test was selected. TypeScript (Vitest/Jest): 41/41 on es-toolkit. Python (pytest conventions): 3/3 on itsdangerous, after CGraph#46 rebuilt Python import resolution. Go (`*_test.go`): 10/10 on gorilla/mux, after CGraph#47 added interface-dispatch edges (`implements`/`dispatches_to` plus the member-call rescue for names like mux's eight `Match`es that satisfy one interface); Go's dispatch fan-out makes its subsets larger (mean 37.7% of suite — a 2.7× reduction) — safety was chosen over selectivity. C/C++ (`*_test.{c,cc,cpp,cxx}` / `test_*`, the googletest/ctest convention): 62/62 on CGraph itself, after CGraph#52 made calls to overloaded functions edge to every member of the overload set; mean subset 22.4% of the suite, with every fail-open an honest build-system change (CMakeLists, submodule pointers). The pipeline is unit-tested (57 tests) and replay-benchmarked on six repos; the Action and MCP server are exercised end-to-end in CI.
+Scope, stated plainly: all four v1 language families are **replay-verified** — on their benchmarks every semantically selectable author-co-changed test was selected. TypeScript (Vitest/Jest): 43/43 on es-toolkit. Python (pytest conventions): 4/4 on itsdangerous, after CGraph#46 rebuilt Python import resolution. Go (`*_test.go`): 10/10 selectable on gorilla/mux, after CGraph#47 added interface-dispatch edges (`implements`/`dispatches_to` plus the member-call rescue for names like mux's eight `Match`es that satisfy one interface); the **dispatch barrier** (0.8.0) then cut Go's mean subset from 45.9% to 30.3% by stopping one implementation's change from cascading through the interface's structural neighborhood — the contract's *callers* stay selected, its sibling implementers don't. C/C++ (`*_test.{c,cc,cpp,cxx}` / `test_*`, the googletest/ctest convention): 62/62 on CGraph itself, after CGraph#52 made calls to overloaded functions edge to every member of the overload set; mean subset 22.4% of the suite, with every fail-open an honest build-system change (CMakeLists, submodule pointers). The pipeline is unit-tested (67 tests) and replay-benchmarked on six repos; the Action and MCP server are exercised end-to-end in CI.
 
 Runner recipes per ecosystem:
 
