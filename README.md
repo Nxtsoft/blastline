@@ -6,6 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-f5a651?style=flat-square)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white)](tsconfig.json)
 [![CI](https://img.shields.io/github/actions/workflow/status/Nxtsoft/blastline/ci.yml?style=flat-square&label=CI)](https://github.com/Nxtsoft/blastline/actions)
+[![selection escapes](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNxtsoft%2Fblastline%2Fsafety-ledger%2Fbadge.json&style=flat-square)](https://github.com/Nxtsoft/blastline/actions/workflows/safety-audit.yml)
 [![MCP](https://img.shields.io/badge/MCP-2024--11--05-59d499?style=flat-square)](https://modelcontextprotocol.io)
 [![Built on CGraph](https://img.shields.io/badge/built%20on-CGraph-6ea8fe?style=flat-square)](https://github.com/Nxtsoft/CGraph)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-f5c451?style=flat-square)](#contributing)
@@ -79,6 +80,10 @@ Replayed the last 20 first-parent commits of two repos, scoring every selection 
 ¹ The one "miss" is a false positive of the co-change proxy itself — the author added new tests for unchanged code.
 
 The benchmark also caught CGraph silently deleting 650 of es-toolkit's 1,508 files from the graph ([CGraph #39](https://github.com/Nxtsoft/CGraph/issues/39)/[#40](https://github.com/Nxtsoft/CGraph/issues/40), fixed in [#42](https://github.com/Nxtsoft/CGraph/pull/42)) — before the fix, blastline's sparse-graph guard correctly refused to produce subsets there. That loop is the design working: guard until the graph is trustworthy, select once it is.
+
+### The safety audit
+
+Replay benchmarks are a snapshot; the **safety audit** is the standing check. On every push to this repo's `main`, [safety-audit.yml](.github/workflows/safety-audit.yml) replays blastline's selection for the pushed range, runs the **full** suite, and records whether any failing test file fell *outside* the selection — an **escape**, the one outcome "safe superset" forbids. Each run appends a JSONL record to the [`safety-ledger`](https://github.com/Nxtsoft/blastline/tree/safety-ledger) branch and rolls the ledger into the badge above; a recorded escape turns it red and fails the run loudly. The evidence accumulates with every merge instead of resting on a one-time benchmark.
 
 ## Quick start
 

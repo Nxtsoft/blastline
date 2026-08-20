@@ -1,0 +1,121 @@
+name: safety-audit
+
+# The safety-audit loop: every push to main replays blastline's own selection
+# for the pushed range, runs the FULL suite, and records whether any failing
+# test file fell OUTSIDE the selection — an escape, the one outcome the "safe
+# superset" contract forbids. Records accumulate as JSONL on the safety-ledger
+# branch; the README badge reads badge.json from that branch. The job fails
+# loudly on an escape (after recording it), never on ordinary test failures.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: safety-ledger
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+
+      - name: Install cgraph (prebuilt release binaries)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download bin-v0.1.0 --repo Nxtsoft/CGraph \
+            --pattern cgraph-linux-x64.tar.gz --output cgraph-bin.tar.gz
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf cgraph-bin.tar.gz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build head and base graphs
+        id: graphs
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          cgraph --root . --out "$RUNNER_TEMP/head-graph"
+          # A branch-creation push has an all-zero before-sha; audit head-only.
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            git worktree add --detach "$RUNNER_TEMP/base-src" "$BEFORE"
+            cgraph --root "$RUNNER_TEMP/base-src" --out "$RUNNER_TEMP/base-graph"
+            echo "range=$BEFORE..${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            echo "base=$RUNNER_TEMP/base-graph/graph.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "range=HEAD~1..HEAD" >> "$GITHUB_OUTPUT"
+            echo "base=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run the audit
+        id: audit
+        env:
+          RANGE: ${{ steps.graphs.outputs.range }}
+          BASE: ${{ steps.graphs.outputs.base }}
+        run: |
+          set -euo pipefail
+          args=(--range "$RANGE" --graph "$RUNNER_TEMP/head-graph/graph.json"
+                --out "$RUNNER_TEMP/audit")
+          [ -n "$BASE" ] && args+=(--base-graph "$BASE")
+          rc=0
+          bun scripts/audit.ts "${args[@]}" || rc=$?
+          # rc=1 is an ESCAPE: publish the record first, alarm afterwards.
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          test "$rc" != 2
+
+      - name: Publish to the safety-ledger branch
+        env:
+          AUDIT_SHA: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pub="$RUNNER_TEMP/ledger-pub"
+          mkdir -p "$pub"
+          cd "$pub"
+          git init -q
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git config user.name "safety-audit"
+          git config user.email "safety-audit@blastline.invalid"
+          for attempt in 1 2 3; do
+            fresh="$RUNNER_TEMP/fresh-ledger.jsonl"
+            if git fetch -q origin safety-ledger 2>/dev/null; then
+              git reset -q --hard FETCH_HEAD
+              git show FETCH_HEAD:ledger.jsonl > "$fresh" 2>/dev/null || : > "$fresh"
+            else
+              : > "$fresh"
+            fi
+            # Rebuild ledger + badge on the freshest branch state (race-safe,
+            # idempotent by head sha).
+            (cd "$GITHUB_WORKSPACE" && bun scripts/ledger-merge.ts \
+              --record "$RUNNER_TEMP/audit/record.json" \
+              --ledger "$fresh" --out "$RUNNER_TEMP/merged")
+            cp "$RUNNER_TEMP/merged/ledger.jsonl" ledger.jsonl
+            cp "$RUNNER_TEMP/merged/badge.json" badge.json
+            git add ledger.jsonl badge.json
+            git commit -qm "audit: ${AUDIT_SHA}" || true
+            if git push -q origin HEAD:safety-ledger 2>/dev/null; then
+              echo "ledger published"
+              exit 0
+            fi
+            echo "push race, retrying ($attempt)"
+            sleep 2
+          done
+          echo "failed to publish ledger after 3 attempts" >&2
+          exit 1
+
+      - name: Alarm on escape
+        if: ${{ steps.audit.outputs.rc == '1' }}
+        run: |
+          echo "::error::selection ESCAPE recorded — a failing test was outside the subset (see the ledger)"
+          exit 1
