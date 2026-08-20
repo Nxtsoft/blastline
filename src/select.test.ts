@@ -108,4 +108,61 @@ describe("select", () => {
     const b = JSON.stringify(select(DIFF_IN_PARSE, { graph: g, minDensity: 0 }));
     expect(a).toBe(b);
   });
+
+  it("walks deletion seeds in the BASE graph and translates dependents across trees", () => {
+    // The base graph is built from a merge-base worktree, so it lives under a
+    // DIFFERENT absolute root than the head graph and its node ids never
+    // resolve at head. A pure file deletion must still select the surviving
+    // tests that depended on the deleted symbols — via a base-graph walk, not
+    // a head lookup of foreign ids.
+    const baseGraph = indexGraph(
+      [
+        { id: "b_lib", label: "lib.ts", type: "file", source_file: "/base/src/lib.ts" },
+        {
+          id: "b_parse",
+          label: "parse",
+          type: "function",
+          source_file: "/base/src/lib.ts",
+          source_location: { start_line: 1, end_line: 20 },
+        },
+        { id: "b_test", label: "lib.test.ts", type: "file", source_file: "/base/src/lib.test.ts" },
+        { id: "b_gone_test", label: "gone.test.ts", type: "file", source_file: "/base/src/gone.test.ts" },
+        { id: "b_other", label: "other.ts", type: "file", source_file: "/base/src/other.ts" },
+      ],
+      [
+        { source: "b_lib", target: "b_parse", relation: "contains" },
+        { source: "b_test", target: "b_parse", relation: "imports" },
+        { source: "b_gone_test", target: "b_parse", relation: "imports" }, // deleted at head too
+      ],
+    );
+    const headGraph = indexGraph(
+      [
+        { id: "h_test", label: "lib.test.ts", type: "file", source_file: "/head/src/lib.test.ts" },
+        { id: "h_other", label: "other.ts", type: "file", source_file: "/head/src/other.ts" },
+        { id: "h_other_test", label: "other.test.ts", type: "file", source_file: "/head/src/other.test.ts" },
+      ],
+      [{ source: "h_other_test", target: "h_other", relation: "imports" }],
+    );
+    const deletionDiff = `diff --git a/src/lib.ts b/src/lib.ts
+deleted file mode 100644
+index 1..0
+--- a/src/lib.ts
++++ /dev/null
+@@ -1,20 +0,0 @@
+-export function parse() {}
+`;
+    const sel = select(deletionDiff, {
+      graph: headGraph,
+      baseGraph,
+      minDensity: 0,
+      minTestReachability: 0,
+    });
+    expect(sel.kind).toBe("subset");
+    if (sel.kind !== "subset") return;
+    // The surviving dependent test is selected under its HEAD path; the test
+    // that was itself deleted (nothing to run) is not.
+    expect(sel.tests).toEqual(["/head/src/lib.test.ts"]);
+    // The unrelated test is not dragged in.
+    expect(sel.tests).not.toContain("/head/src/other.test.ts");
+  });
 });

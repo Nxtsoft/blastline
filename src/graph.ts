@@ -101,3 +101,23 @@ export function nodesForPath(graph: CodeGraph, relPath: string): GraphNode[] {
   }
   return matches;
 }
+
+/**
+ * Translate a file path from one graph's tree to another's — a base graph is
+ * built from a different checkout (a worktree of the merge-base), so the same
+ * repo-relative file carries a different absolute prefix in each graph. The
+ * longest path-boundary suffix of `file` that names exactly one candidate
+ * wins; a file with no unique counterpart (e.g. deleted at head) translates to
+ * nothing.
+ */
+export function translatePath(file: string, candidates: Iterable<string>): string | undefined {
+  const all = [...candidates];
+  const segments = file.split("/").filter((s) => s.length > 0);
+  for (let k = segments.length; k >= 1; k--) {
+    const suffix = `/${segments.slice(segments.length - k).join("/")}`;
+    const hits = all.filter((c) => c.endsWith(suffix) || c === suffix.slice(1));
+    if (hits.length === 1) return hits[0];
+    if (hits.length === 0) continue;
+  }
+  return undefined;
+}

@@ -2,6 +2,7 @@ import { statSync } from "node:fs";
 import { testFiles, testReachability } from "./detect.js";
 import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
+import { translatePath } from "./graph.js";
 import { dependents } from "./impact.js";
 import { mapDiffToSeeds } from "./mapping.js";
 import type { FailOpenReason, Selection } from "./types.js";
@@ -101,7 +102,18 @@ export function select(diffText: string, opts: SelectOptions): Selection {
 
   if (reasons.length > 0) return { kind: "all", reasons };
 
-  const blastIds = dependents(opts.graph, mapping.seeds);
+  // Deletion seeds are BASE-graph node ids: the deleted symbols no longer
+  // exist at head, and the base graph is built from a different checkout, so
+  // its ids never resolve in the head graph. Walk each seed in the graph that
+  // owns it, then translate base-side results to head files by path suffix.
+  const headSeeds = new Set<string>();
+  const baseSeeds = new Set<string>();
+  for (const id of mapping.seeds) {
+    if (opts.graph.byId.has(id)) headSeeds.add(id);
+    else baseSeeds.add(id);
+  }
+
+  const blastIds = dependents(opts.graph, headSeeds);
   const testSet = testFiles(opts.graph);
   const blast: string[] = [];
   const tests = new Set<string>();
@@ -113,14 +125,27 @@ export function select(diffText: string, opts: SelectOptions): Selection {
     if (node.source_file && testSet.has(node.source_file)) tests.add(node.source_file);
   }
   // Seeds that are themselves inside test files select those tests too.
-  for (const id of mapping.seeds) {
+  for (const id of headSeeds) {
     const node = opts.graph.byId.get(id);
     if (node?.source_file && testSet.has(node.source_file)) tests.add(node.source_file);
+  }
+
+  if (baseSeeds.size > 0 && opts.baseGraph) {
+    const headFiles = new Set(opts.graph.byFile.keys());
+    for (const id of dependents(opts.baseGraph, baseSeeds)) {
+      const node = opts.baseGraph.byId.get(id);
+      if (!node?.source_file) continue;
+      const headFile = translatePath(node.source_file, headFiles);
+      if (headFile === undefined) continue; // dependent itself gone at head — nothing to run
+      const loc = node.source_location ? `:${node.source_location.start_line}` : "";
+      blast.push(`${node.type} ${node.label} (${headFile}${loc})`);
+      if (testSet.has(headFile)) tests.add(headFile);
+    }
   }
   return {
     kind: "subset",
     tests: [...tests].sort(),
-    blast: blast.sort(),
+    blast: [...new Set(blast)].sort(),
     ...(opts.graph.contentRoot !== undefined && { contentRoot: opts.graph.contentRoot.sha256 }),
   };
 }
