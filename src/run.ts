@@ -30,7 +30,7 @@ export interface RunOptions {
 }
 
 /** The daemon's live content root, or an explanation of why it can't vouch. */
-function daemonContentRoot(repo: string): { root?: string; error?: string } {
+export function daemonContentRoot(repo: string): { root?: string; error?: string } {
   try {
     const out = execFileSync("cgraph-client", ["--root", repo, "status"], {
       encoding: "utf8",

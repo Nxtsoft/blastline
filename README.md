@@ -38,7 +38,7 @@ Deciding which tests a diff needs means knowing what the change *reaches* — an
 | 💥 **Blast radius on every PR** | The GitHub Action comments each PR with the change's transitive dependents, with `file:line` — the reviewer sees what the diff touches before reading it. |
 | 🛡️ **Safe superset, fail-open** | The contract is "run *at least* these," never "safe to skip." Unmapped files, a stale graph, an under-extracted graph, or an oversized diff all fail open to a full run, with machine-readable reasons. |
 | ⚡ **Deterministic & instant** | Selection is pure graph traversal: same repo state + same diff → byte-identical output, in under a millisecond on a built graph. No ML ranking, no coverage run. |
-| 🤖 **Built for coding agents** | `blastline mcp` serves `blastline_tests` / `blastline_blast` over MCP, so an agent checks what its edit reaches *before* opening the PR. |
+| 🤖 **Built for coding agents** | `blastline mcp` serves `blastline_tests` / `blastline_blast` / `blastline_check` over MCP, so an agent sees what its edit reaches — and what still references a symbol it's about to change — *before* opening the PR. |
 
 > **The pitch in one line:** test-impact analysis is a graph-reachability problem — blastline is the reachability query, packaged as a CLI, a PR comment, and an MCP tool, with fail-open honesty when the graph can't vouch for a diff.
 
@@ -99,6 +99,31 @@ blastline blast main..HEAD                    # dependents with file:line
 ```
 
 Working from source (contributors): `git clone https://github.com/Nxtsoft/blastline && cd blastline && bun install && bun run build`, then `node dist/cli.js …`.
+
+## `blastline check` — the pre-edit verifier
+
+Before you refactor, rename, or delete a symbol, ask what still references it:
+
+```sh
+blastline check callers 'src/io/mem.rs:poll_read_internal'
+blastline check callers 'src/io/mem.rs:248' --exclude 'src/io/mem.rs:poll_read'   # "no OTHER callers?"
+blastline check callers parse --transitive --json                                 # full blast radius, JSON
+```
+
+The subject is a `file:line`, a `file:label`, or a bare `label` (ambiguous labels
+are reported, never guessed). `--exclude` drops the callers you are already
+updating, so an empty result means "no *other* references."
+
+**It refutes, it never certifies.** `verdict: refuted` — callers exist beyond your
+exclusion set — is authoritative: those references are real, update them. `verdict:
+no-static-callers` is **not** "safe to delete": dynamic dispatch, reflection, and
+macro-generated calls are invisible to the graph, and every empty result says so.
+The declaring file (a `contains` edge) is structural parentage, not a reference, and
+is excluded from direct callers; `--transitive` gives the full `blast`-radius set.
+Same fail-open honesty and content-root provenance as selection — a stale or
+unreadable graph returns `UNVERIFIED` with a reason, never a false "all clear."
+
+Agents call the same thing over MCP as `blastline_check` (`blastline mcp`).
 
 ## GitHub Action
 

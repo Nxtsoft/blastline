@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runCheck } from "./check.js";
 import { renderComment } from "./comment.js";
 import { serveStdio } from "./mcp.js";
 import { runSelection } from "./run.js";
@@ -9,7 +10,16 @@ usage:
   blastline tests <base>..<head> [options]     list test files impacted by the diff
   blastline blast <base>..<head> [options]     list transitive dependents of the diff
   blastline comment <base>..<head> [options]   render the selection as PR-comment markdown
-  blastline mcp                                serve the MCP tools (blastline_tests, blastline_blast) over stdio
+  blastline check callers <symbol> [options]   list what references a symbol (pre-edit check)
+  blastline mcp                                serve the MCP tools (blastline_tests, blastline_blast, blastline_check) over stdio
+
+check options:
+  <symbol>             file:line | file:label | bare label
+  --exclude <symbol>   a caller you are already updating (repeatable) — asks "no OTHER callers"
+  --transitive         walk transitive dependents, not just direct callers
+  check refutes claims, it never certifies: callers found is authoritative; no
+  callers found is "no-static-callers", NOT "safe to delete" (dynamic dispatch,
+  reflection, and macros are invisible to the graph).
 
 options:
   --repo <path>        repository to diff (default: cwd)
@@ -40,23 +50,61 @@ if (command === undefined || command === "--help" || command === "-h") {
   console.log(USAGE);
   process.exit(0);
 }
+const opt = (name: string): string | undefined => {
+  const i = argv.indexOf(`--${name}`);
+  return i === -1 ? undefined : argv[i + 1];
+};
+const optAll = (name: string): string[] => {
+  const out: string[] = [];
+  argv.forEach((a, i) => {
+    if (a === `--${name}` && argv[i + 1] !== undefined) out.push(argv[i + 1] as string);
+  });
+  return out;
+};
+
 if (command === "mcp") {
   serveStdio();
+} else if (command === "check") {
+  const claim = argv[1];
+  if (claim !== "callers") fail(`blastline: unknown check claim "${claim ?? ""}" (only "callers")\n\n${USAGE}`);
+  // The subject symbol is the first positional after the claim that is not a flag
+  // or a flag value.
+  const flagValues = new Set<string>();
+  argv.forEach((a, i) => {
+    if (a === "--exclude" || a === "--repo" || a === "--graph" || a === "--expect-root") {
+      if (argv[i + 1] !== undefined) flagValues.add(argv[i + 1] as string);
+    }
+  });
+  const symbol = argv.slice(2).find((a) => !a.startsWith("--") && !flagValues.has(a));
+  if (!symbol) fail("blastline: provide a symbol (file:line | file:label | label)\n\n" + USAGE);
+  const result = runCheck({
+    repo: opt("repo") ?? process.cwd(),
+    symbol,
+    exclude: optAll("exclude"),
+    ...(argv.includes("--transitive") && { transitive: true }),
+    ...(opt("graph") !== undefined && { graphPath: opt("graph") as string }),
+    ...(opt("expect-root") !== undefined && { expectedContentRoot: opt("expect-root") as string }),
+    ...(argv.includes("--daemon-verify") && { daemonVerify: true }),
+  });
+  if (argv.includes("--json")) {
+    console.log(JSON.stringify(result, null, 2));
+    process.exit(0);
+  }
+  if (result.kind === "fail-open") {
+    console.log("UNVERIFIED");
+    for (const r of result.reasons) console.error(`fail-open: ${JSON.stringify(r)}`);
+    process.exit(0);
+  }
+  console.log(`verdict: ${result.verdict}`);
+  if (result.verdict === "no-static-callers") console.error(result.caveat);
+  for (const c of result.callers) {
+    const loc = c.file ? ` (${c.file}${c.line ? `:${c.line}` : ""})` : "";
+    console.log(`${c.relation} ${c.kind} ${c.label}${loc}`);
+  }
+  process.exit(0);
 } else {
   if (command !== "tests" && command !== "blast" && command !== "comment")
     fail(`blastline: unknown command "${command}"\n\n${USAGE}`);
-
-  const opt = (name: string): string | undefined => {
-    const i = argv.indexOf(`--${name}`);
-    return i === -1 ? undefined : argv[i + 1];
-  };
-  const optAll = (name: string): string[] => {
-    const out: string[] = [];
-    argv.forEach((a, i) => {
-      if (a === `--${name}` && argv[i + 1] !== undefined) out.push(argv[i + 1] as string);
-    });
-    return out;
-  };
 
   const range = argv.slice(1).find((a) => a.includes("..") && !a.startsWith("--"));
   const diffFile = opt("diff-file");

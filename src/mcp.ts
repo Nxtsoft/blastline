@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { runCheck } from "./check.js";
 import { runSelection } from "./run.js";
 
 /**
@@ -25,6 +26,20 @@ const TOOL_INPUT_SCHEMA = {
   required: ["repo"],
 } as const;
 
+const CHECK_INPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    repo: { type: "string", description: "absolute path to the repository" },
+    symbol: { type: "string", description: "subject symbol: file:line | file:label | bare label" },
+    exclude: { type: "array", items: { type: "string" }, description: "callers you are already updating (asks 'no OTHER callers')" },
+    transitive: { type: "boolean", description: "walk transitive dependents instead of just direct callers" },
+    graph_path: { type: "string", description: "CGraph graph.json for head (default <repo>/cgraph-out/graph.json)" },
+    expected_content_root: { type: "string", description: "pin to this sha256-merkle-v1 content root; mismatch fails open" },
+    daemon_verify: { type: "boolean", description: "pin against the live CGraph daemon's content root" },
+  },
+  required: ["repo", "symbol"],
+} as const;
+
 const TOOLS = [
   {
     name: "blastline_tests",
@@ -39,6 +54,14 @@ const TOOLS = [
       "List the transitive dependents (blast radius) of a diff, with file:line, from the CGraph code graph. " +
       "Use before editing to see what a change reaches.",
     inputSchema: TOOL_INPUT_SCHEMA,
+  },
+  {
+    name: "blastline_check",
+    description:
+      "REFUTES, does not certify. Before you refactor/rename/delete a symbol, list what statically references it. " +
+      "verdict=refuted means callers exist beyond your --exclude set (authoritative — update them). " +
+      "verdict=no-static-callers is NOT 'safe to delete': dynamic dispatch, reflection, and macros are invisible to the graph.",
+    inputSchema: CHECK_INPUT_SCHEMA,
   },
 ];
 
@@ -58,11 +81,26 @@ function ok(id: number | string | null, result: unknown): JsonRpcResponse {
 }
 
 function callTool(name: string, args: Record<string, unknown>): unknown {
-  if (name !== "blastline_tests" && name !== "blastline_blast") {
+  if (name !== "blastline_tests" && name !== "blastline_blast" && name !== "blastline_check") {
     return { content: [{ type: "text", text: `unknown tool: ${name}` }], isError: true };
   }
   if (typeof args["repo"] !== "string") {
     return { content: [{ type: "text", text: "repo (string) is required" }], isError: true };
+  }
+  if (name === "blastline_check") {
+    if (typeof args["symbol"] !== "string") {
+      return { content: [{ type: "text", text: "symbol (string) is required" }], isError: true };
+    }
+    const result = runCheck({
+      repo: args["repo"],
+      symbol: args["symbol"],
+      ...(Array.isArray(args["exclude"]) && { exclude: args["exclude"] as string[] }),
+      ...(args["transitive"] === true && { transitive: true }),
+      ...(typeof args["graph_path"] === "string" && { graphPath: args["graph_path"] }),
+      ...(typeof args["expected_content_root"] === "string" && { expectedContentRoot: args["expected_content_root"] }),
+      ...(args["daemon_verify"] === true && { daemonVerify: true }),
+    });
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
   const selection = runSelection({
     repo: args["repo"],

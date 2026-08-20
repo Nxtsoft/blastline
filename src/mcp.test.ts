@@ -34,10 +34,21 @@ describe("MCP handleRequest", () => {
     expect(handleRequest({ jsonrpc: "2.0", method: "notifications/initialized" })).toBeNull();
   });
 
-  it("lists both tools with schemas", () => {
+  it("lists the tools with schemas", () => {
     const resp = handleRequest({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-    const tools = (resp as { result: { tools: { name: string }[] } }).result.tools;
-    expect(tools.map((t) => t.name)).toEqual(["blastline_tests", "blastline_blast"]);
+    const tools = (resp as { result: { tools: { name: string; description: string }[] } }).result.tools;
+    expect(tools.map((t) => t.name)).toEqual(["blastline_tests", "blastline_blast", "blastline_check"]);
+    const check = tools.find((t) => t.name === "blastline_check");
+    expect(check?.description).toMatch(/REFUTES/); // leads with the refuter-not-certifier contract
+  });
+
+  it("blastline_check dispatches through runCheck and returns a CheckResult", () => {
+    const resp = call("blastline_check", { repo: "/", symbol: "___nonexistent___", graph_path: FIXTURE });
+    const payload = (resp as { result: { content: { text: string }[] } }).result.content[0]?.text ?? "{}";
+    const parsed = JSON.parse(payload) as { kind?: string; reasons?: { kind: string }[] };
+    // symbol does not exist in the fixture graph -> the refuter fails open, never certifies
+    expect(parsed.kind).toBe("fail-open");
+    expect(parsed.reasons?.[0]?.kind).toBe("symbol-not-found");
   });
 
   it("blastline_tests returns the impacted subset for a diff", () => {
