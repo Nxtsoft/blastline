@@ -117,6 +117,12 @@ jobs:
           export const check = util() === 1;
           TS
           git add -A
+          # Fixed past commit dates: the turnkey graph is cached across runs by
+          # graph-root's tree hash, but the freshness guard rejects a graph
+          # built before HEAD. Fresh (now) commit dates make every cached graph
+          # look stale on the next run; a fixed 2020 date keeps any real graph
+          # newer than HEAD, so the cache path stays exercised and honest.
+          GIT_AUTHOR_DATE="2020-01-01T00:00:00Z" GIT_COMMITTER_DATE="2020-01-01T00:00:00Z" \
           git -c user.name=turnkey -c user.email=turnkey@blastline.invalid \
             commit -qm "fixture: base"
           cat >> src/util.ts <<'TS'
@@ -126,6 +132,7 @@ jobs:
           }
           TS
           git add -A
+          GIT_AUTHOR_DATE="2020-01-01T00:00:01Z" GIT_COMMITTER_DATE="2020-01-01T00:00:01Z" \
           git -c user.name=turnkey -c user.email=turnkey@blastline.invalid \
             commit -qm "fixture: touch src/util.ts"
       - id: blastline
