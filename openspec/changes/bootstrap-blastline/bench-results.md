@@ -395,3 +395,49 @@ cashed in; it is what the Rust advisory→gated decision should be measured agai
 Reproduce: `bun scripts/bench.ts … > results.json` (records per-commit `missed`), then
 `bun scripts/bench-deps.ts --results results.json --repo <clone>` — Cargo integration-test
 convention by default, `--test-cmd`/`--rustflags`/`--cargo-features` to retarget.
+
+## Addendum 8 (2026-08-20): Rust promoted to advisory — six-repo sweep at CGraph#62
+
+Re-ran Addendum 6's two measurements — the `disconnected-tests` reachability floor and
+co-changed recall — on the engine at CGraph#62 (`2cd9360`, after #58/#59/#61 and the
+trait-scoped-dispatch + `pub use` re-export fixes in #62). Both pillars of the "ships
+gated" decision inverted.
+
+**Reachability into implementation symbols (floor 0.25):**
+
+| repo | Addendum 6 (pre-#58) | at #62 | clears floor |
+| --- | --- | --- | --- |
+| sharkdp/fd | 0.011 | 0.119 | no (1 test file) |
+| clap-rs/clap | 0.025 | **0.859** | yes |
+| rust-lang/regex | 0.037 | **0.936** | yes |
+| BurntSushi/ripgrep | 0.000 | 0.250 | at floor |
+| serde-rs/serde | 0.002 | **0.554** | yes |
+| tokio-rs/tokio | 0.142 | **0.591** | yes |
+
+The guard is language-agnostic (`select.ts`: `coverage < minTestReachability` for any
+graph); Rust "ships gated" was never a code branch, only the consequence of sub-floor
+reachability. At #62 four of six clear the floor, so those repos return real subsets with no
+guard change — the CGraph fixes flipped it.
+
+**Recall — proxy (co-changed, guard off) refined by the dependency-filtered oracle
+(Addendum 7 method):**
+
+| repo | proxy | oracle on the misses | true recall |
+| --- | --- | --- | --- |
+| fd | 7/7 | (no misses) | 100% |
+| clap | 22/29 | not run | ≥ 76% |
+| regex | 4/9 | all 5 misses **noise** (behavioral) | 4/4 |
+| ripgrep | 2/4 | inconclusive (rustc 1.95 MSRV); diff shows 1 likely-real | ≥ 50% |
+| serde | 0/2 | both misses **noise** — `clippy::empty_enum`→`empty_enums` rename | 0 real dependents |
+| tokio | 6/12 | 5 noise, **1 real** (async ext-trait/future-poll, CGraph#60) | 6/7 |
+
+clap's co-changed recall went 0/29 → 22/29. Every proxy "miss" checkable behaviorally
+(tokio, serde, regex) was a cross-cutting cosmetic sweep — a lint rename, format-string
+style, or `cfg` cleanup — that co-changed test files with no dependency on the code change.
+The proxy's serde 0/2 and regex 4/9 are noise, not recall failures.
+
+**Decision:** Go shipped advisory at 7/11; Rust at 22/29 (clap) with ~100% real-dependent
+recall where measured clears that bar. Rust ships **advisory** at #62 — `blastline tests`
+returns subsets on repos above the floor, fails open honestly below it (fd, ripgrep). The
+0.25 floor stays as the per-repo safety net. Known remaining gaps: tokio's async-dispatch
+class (CGraph#60) and ripgrep's one unverified likely-real miss.
