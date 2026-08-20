@@ -6,3 +6,4 @@
 {"range":"48256ca1f1d0dd377ece11f69f962c3ce5644553..4464cde3770cb1fd6015a6a2a466d32b25668c47","headSha":"4464cde3770cb1fd6015a6a2a466d32b25668c47","kind":"all","verdict":"full-run","totalTests":11,"failed":[],"escapes":[]}
 {"range":"4464cde3770cb1fd6015a6a2a466d32b25668c47..b61dc1a23278fc8309948eb8e083ea120bd0acf0","headSha":"b61dc1a23278fc8309948eb8e083ea120bd0acf0","kind":"all","verdict":"full-run","totalTests":11,"failed":[],"escapes":[]}
 {"range":"b61dc1a23278fc8309948eb8e083ea120bd0acf0..af49e6cb1840bc299d87f245998264b94b99a7ae","headSha":"af49e6cb1840bc299d87f245998264b94b99a7ae","kind":"all","verdict":"full-run","totalTests":12,"failed":[],"escapes":[]}
+{"range":"af49e6cb1840bc299d87f245998264b94b99a7ae..27d022b6ce39c49fcd10fb41fd1cbcaedac4df8d","headSha":"27d022b6ce39c49fcd10fb41fd1cbcaedac4df8d","kind":"all","verdict":"full-run","totalTests":12,"failed":[],"escapes":[]}
