@@ -9,6 +9,10 @@ inputs:
     description: "git range <base>..<head>; defaults to the PR's base..head"
     required: false
     default: ""
+  repo-path:
+    description: path to the git repo under analysis (default $GITHUB_WORKSPACE)
+    required: false
+    default: ""
   src-root:
     description: repo-relative source root CGraph extracted (informational; graph-path decides)
     required: false
@@ -87,13 +91,15 @@ runs:
       env:
         RANGE: ${{ steps.range.outputs.range }}
         BASE_CMD: ${{ inputs.base-graph-command }}
+        INPUT_REPO: ${{ inputs.repo-path }}
       run: |
         set -euo pipefail
+        repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
         # The command runs against the exact commit the diff is taken from, so
         # deletion line numbers in the diff match the base graph's spans.
-        base_sha=$(git -C "$GITHUB_WORKSPACE" rev-parse "${RANGE%%..*}^{commit}")
+        base_sha=$(git -C "$repo" rev-parse "${RANGE%%..*}^{commit}")
         base_src="$RUNNER_TEMP/blastline-base-src"
-        git -C "$GITHUB_WORKSPACE" worktree add --detach "$base_src" "$base_sha"
+        git -C "$repo" worktree add --detach "$base_src" "$base_sha"
         export BLASTLINE_BASE_OUT="$RUNNER_TEMP/blastline-base-graph"
         mkdir -p "$BLASTLINE_BASE_OUT"
         (cd "$base_src" && eval "$BASE_CMD")
@@ -108,6 +114,7 @@ runs:
       shell: bash
       env:
         RANGE: ${{ steps.range.outputs.range }}
+        INPUT_REPO: ${{ inputs.repo-path }}
         INPUT_GRAPH: ${{ inputs.graph-path }}
         INPUT_BASE_GRAPH: ${{ inputs.base-graph-path }}
         AUTO_BASE_GRAPH: ${{ steps.basegraph.outputs.path }}
@@ -116,9 +123,10 @@ runs:
       run: |
         set -euo pipefail
         range="$RANGE"
+        repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
         base_graph="$INPUT_BASE_GRAPH"
         [ -z "$base_graph" ] && base_graph="${AUTO_BASE_GRAPH:-}"
-        args=(tests "$range" --repo "$GITHUB_WORKSPACE" --json)
+        args=(tests "$range" --repo "$repo" --json)
         [ -n "$INPUT_GRAPH" ] && args+=(--graph "$INPUT_GRAPH")
         [ -n "$base_graph" ] && args+=(--base-graph "$base_graph")
         [ -n "$INPUT_MIN_DENSITY" ] && args+=(--min-density "$INPUT_MIN_DENSITY")
@@ -135,7 +143,7 @@ runs:
           echo "BLASTLINE_EOF"
         } >> "$GITHUB_OUTPUT"
         # render the comment body from the same selection
-        cmdargs=(comment "$range" --repo "$GITHUB_WORKSPACE")
+        cmdargs=(comment "$range" --repo "$repo")
         [ -n "$INPUT_GRAPH" ] && cmdargs+=(--graph "$INPUT_GRAPH")
         [ -n "$base_graph" ] && cmdargs+=(--base-graph "$base_graph")
         [ -n "$INPUT_MIN_DENSITY" ] && cmdargs+=(--min-density "$INPUT_MIN_DENSITY")
