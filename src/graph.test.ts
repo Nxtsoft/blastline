@@ -1,10 +1,10 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { loadGraph, nodesForPath } from "./graph.js";
+import { loadGraph, nodesInFile } from "./graph.js";
 
 const FIXTURE = fileURLToPath(new URL("./testdata/mini-graph.json", import.meta.url));
 
-describe("loadGraph / nodesForPath", () => {
+describe("loadGraph / nodesInFile", () => {
   const g = loadGraph(FIXTURE);
 
   it("indexes incoming edges by target, with the relation", () => {
@@ -16,9 +16,9 @@ describe("loadGraph / nodesForPath", () => {
   });
 
   it("resolves repo-relative paths only at path boundaries", () => {
-    expect(nodesForPath(g, "src/lib.ts").map((n) => n.id)).toContain("fn_parse");
+    expect(nodesInFile(g, "src/lib.ts").map((n) => n.id)).toContain("fn_parse");
     // "ib.ts" is a suffix of the string but not a path component — must not match.
-    expect(nodesForPath(g, "ib.ts")).toEqual([]);
+    expect(nodesInFile(g, "ib.ts")).toEqual([]);
   });
 
 
@@ -26,6 +26,6 @@ describe("loadGraph / nodesForPath", () => {
     expect(g.contentRoot).toEqual({ algorithm: "sha256-merkle-v1", sha256: "a".repeat(64), leafCount: 5 });
   });
   it("returns empty for unknown files", () => {
-    expect(nodesForPath(g, "src/nope.ts")).toEqual([]);
+    expect(nodesInFile(g, "src/nope.ts")).toEqual([]);
   });
 });

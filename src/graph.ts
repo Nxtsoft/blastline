@@ -93,7 +93,7 @@ export function dependencyDirection(link: GraphLink): [from: string, to: string]
  * repo-relative string), and extra seeds only ever widen the superset — the
  * safe direction.
  */
-export function nodesForPath(graph: CodeGraph, relPath: string): GraphNode[] {
+export function nodesInFile(graph: CodeGraph, relPath: string): GraphNode[] {
   const suffix = `/${relPath}`;
   const matches: GraphNode[] = [];
   for (const [abs, nodes] of graph.byFile) {
@@ -110,7 +110,7 @@ export function nodesForPath(graph: CodeGraph, relPath: string): GraphNode[] {
  *   - bare `label` — every non-file node with that label across the graph
  * A bare label (or a `file:label` form) that matches more than one node is
  * reported as ambiguous rather than guessed; nothing matching is not-found. The
- * file part matches on the same path-boundary suffix rule as `nodesForPath`, so
+ * file part matches on the same path-boundary suffix rule as `nodesInFile`, so
  * a repo-relative reference resolves against the graph's absolute paths.
  */
 export type SymbolResolution =
@@ -123,7 +123,7 @@ export function resolveSymbol(graph: CodeGraph, ref: string): SymbolResolution {
   if (colon > 0) {
     const path = ref.slice(0, colon);
     const selector = ref.slice(colon + 1);
-    const fileNodes = nodesForPath(graph, path).filter((n) => n.type !== "file");
+    const fileNodes = nodesInFile(graph, path).filter((n) => n.type !== "file");
     if (fileNodes.length > 0) {
       if (/^\d+$/.test(selector)) {
         const line = Number(selector);

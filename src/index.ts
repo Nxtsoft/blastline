@@ -1,7 +1,7 @@
 export { renderComment } from "./comment.js";
 export { isTestPath, testFiles } from "./detect.js";
 export { parseUnifiedDiff } from "./diff.js";
-export { indexGraph, loadGraph, nodesForPath } from "./graph.js";
+export { indexGraph, loadGraph, nodesInFile } from "./graph.js";
 export type { CodeGraph, GraphLink, GraphNode } from "./graph.js";
 export { dependents } from "./impact.js";
 export { mapDiffToSeeds } from "./mapping.js";
