@@ -1,1 +1,2 @@
 {"range":"45ebe02c2fe536c8cd05d9340cc7a30831c05ec9..2b6e1af3a1650a8a806d07f7f8429ef906efe101","headSha":"2b6e1af3a1650a8a806d07f7f8429ef906efe101","kind":"all","verdict":"full-run","totalTests":11,"failed":[],"escapes":[]}
+{"range":"2b6e1af3a1650a8a806d07f7f8429ef906efe101..a007ad7ec766c7025849b587c255a084670bdf71","headSha":"a007ad7ec766c7025849b587c255a084670bdf71","kind":"all","verdict":"full-run","totalTests":11,"failed":[],"escapes":[]}
