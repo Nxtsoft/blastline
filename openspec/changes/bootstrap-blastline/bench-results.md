@@ -206,3 +206,158 @@ the same test WITHOUT flowing backwards into the provider. Known scope limit, st
 seam anchors consumer call sites and mirrors, not provider handler functions — a provider
 change reaches consumers via its schema/endpoint files, which is what the seam spec encodes
 today.
+
+## Addendum 6 (2026-08-20): Rust — detector-complete, graph blind (0.9.0)
+
+Rust is the fifth language family and the first to ship with selection **gated** rather than
+verified or advisory — its replay produces no usable subset at all. Detection follows
+Cargo's integration-test convention (`.rs` under a package-root `tests/`, excluding `mod.rs`
+shared helpers, `src/tests/` in-crate modules, and the `benches/`/`examples/` target kinds);
+the runner recipe is verified against real `cargo`; the graph cannot see the tests.
+
+CGraph binary: the `bin-v0.1.0` macos-arm64 release build, `cgraph-native 0.1.0 (1408c8f)` —
+engine HEAD, i.e. after #46 (method member calls, Python imports), #47 (interface dispatch)
+and #52 (overload sets). Passed to the harness as `CGRAPH_BIN`.
+
+### Reachability across six public Rust repos
+
+Test-file forward reachability into non-test symbols — the `disconnected-tests` guard's
+metric, floor 0.25 — measured on whole-repo graphs, all with the same binary:
+
+| repo | file nodes | edges/file | test files | reachability | test symbols with ≥1 edge into impl |
+|---|---|---|---|---|---|
+| sharkdp/fd | 24 | 30.6 | 1 | 0.011 | 1/110 (0.9%) |
+| clap-rs/clap | 331 | 27.4 | 135 | 0.025 | 64/2036 (3.1%) |
+| rust-lang/regex | 230 | 65.6 | 29 | 0.037 | 29/154 (18.8%) |
+| BurntSushi/ripgrep | 111 | 99.5 | 17 | 0.000 | 1/101 (1.0%) |
+| serde-rs/serde | 208 | 39.8 | 147 | 0.002 | 3/1160 (0.3%) |
+| tokio-rs/tokio | 793 | 21.2 | 284 | 0.142 | 252/2780 (9.1%) |
+| *reference:* blastline (TS) | 24 | 8.6 | 11 | **0.956** | — |
+
+Every Rust graph clears the edge-density floor by 7-33× while being blind for selection:
+density is high because `contains` and intra-file `CALLS` extract fine. This is the same
+guard blind spot Go and Python presented in Addendum 2, one order of magnitude worse.
+
+### 20-commit replay: clap (primary)
+
+`--repo clap --src-root clap_builder/src --graph-root . --n 20`, ignore set
+`\.toml$ \.yml$ \.roff$ \.stderr$ \.md$ \.lock$ ^Makefile$`.
+
+| clap (20 first-parent commits touching `clap_builder/src`) | guard at default 0.25 | guard lowered to 0 |
+|---|---|---|
+| subset rate | **0/20** | 20/20 |
+| fail-open reason | `disconnected-tests`, coverage 0.02-0.03, on all 20 | none |
+| mean selection | — | **1.1%** of the 134-135 file suite |
+| co-changed tests selected | 29/29 (trivially — an ALL cannot miss) | **0/29** |
+| deterministic (double-run) | yes | yes |
+| mean graph build / selection | 5.7s / 13ms | 4.3s / 14ms |
+
+The lowered-guard column is the number that matters: of 29 test files clap's own authors
+changed in the same commit as the code, selection found **zero**. Not a tuning problem — the
+subsets it does emit (0-10 files of 135) are drawn from the wrong neighborhood entirely.
+
+### 20-commit replay: tokio (cross-check)
+
+`--src-root tokio/src --graph-root . --n 20`. tokio has the healthiest Rust reachability
+measured (0.142) and per-file test targets in `tokio/tests/*.rs`.
+
+| tokio | guard at default 0.25 | guard lowered to 0 |
+|---|---|---|
+| subset rate | **0/20** | 19/20 |
+| fail-open reason | `disconnected-tests`, coverage 0.14, on all 20 (one row also carries an honest `unmapped-file`, `spellcheck.dic`) | that same `unmapped-file` row, and nothing else |
+| mean selection | — | **0.7%** of the 282-284 file suite |
+| co-changed tests selected | 12/12 (trivially) | **1/12** |
+| deterministic | yes | yes |
+| mean graph build / selection | 8.6s / 20ms | 8.6s / 27ms |
+
+tokio's 1/12 on the healthiest Rust reachability measured is the ceiling of what today's
+extraction supports, and it is below Go's pre-#47 7/11.
+
+### Worked example
+
+clap `d0a3980f` — "fix(help): Render partially-optional values with `[]`" — changed
+`clap_builder/src/builder/arg.rs` (+59) and co-changed `tests/builder/help.rs` (+20).
+Selecting on the code half of that diff alone, with the guard opted out:
+
+```
+$ blastline tests --diff-file code.diff --min-test-reachability 0
+(no output — a subset of zero tests, out of 135)
+
+$ blastline blast --diff-file code.diff --min-test-reachability 0
+file benches/simple.rs (…/clap_bench/benches/simple.rs:1)
+file builder/app_settings.rs (…/clap_builder/src/builder/app_settings.rs:1)
+file builder/arg_settings.rs (…/clap_builder/src/builder/arg_settings.rs:1)
+file builder/debug_asserts.rs (…/clap_builder/src/builder/debug_asserts.rs:1)
+file builder/tests.rs (…/clap_builder/src/builder/tests.rs:1)
+file src/mkeymap.rs (…/clap_builder/src/mkeymap.rs:1)
+function fmt (…/clap_builder/src/builder/arg.rs:4791)
+function stylize_arg_suffix (…/clap_builder/src/builder/arg.rs:4668)
+function stylized (…/clap_builder/src/builder/arg.rs:4653)
+```
+
+Nine nodes, none of them in `tests/`. The blast radius stops at the crate boundary.
+
+### Root cause: three CGraph defects, one four-file reproduction
+
+Filed as [CGraph#58](https://github.com/Nxtsoft/CGraph/issues/58). A crate with
+`src/lib.rs` (a free function `add`, a struct `Counter` with `new`/`bump`) and three
+single-call test files produces `4 files, 11 nodes, 9 edges`, and exactly two non-`contains`
+edges:
+
+```
+CALLS: only_method.rs:only_call_is_a_method -> lib.rs:new
+CALLS: only_plain.rs:only_call_is_plain     -> lib.rs:add
+```
+
+with `call_resolution: {total: 3, resolved_project_unique: 2, resolved_member_method: 0,
+dropped_unknown: 1}`.
+
+1. **Calls inside a macro invocation are never extracted as call sites.**
+   `only_call_is_macro_wrapped`, whose whole body is `assert_eq!(add(1, 2), 3);`, produces
+   zero edges — and is not among the 3 counted calls, so it was never seen, not dropped.
+   Rust assertions *are* macros, which is why this dominates: clap's `tests/` holds 2,516
+   `assert*!(` sites across 1,246 `#[test]` functions.
+2. **`receiver.method()` does not resolve** (`resolved_member_method: 0`; `c.bump()` is the
+   one `dropped_unknown`). The Rust extractor emits `Counter`, `new` and `bump` as siblings
+   `contains`-ed by the file, with no membership edge from the `impl` type to its methods, so
+   a receiver's type cannot be walked to its method set. Same class as #44/#46, which fixed
+   Go and Python only.
+3. **`use <crate_name>::…` produces no `imports` edge.** Intra-crate `use crate::math::add`
+   does emit one; only the extern-crate spelling is dropped — and that is the *only* spelling
+   available to a Cargo integration test, since each `tests/*.rs` compiles as its own crate.
+   clap's `tests/` has 287 `use` statements and contributes 0 of the graph's 209 `imports`
+   edges.
+
+### Ship decision
+
+Go shipped as **advisory** in 0.2.0 on 7/11 co-changed tests. Rust is 0/29 on clap and 1/12 on
+tokio, which does not
+clear that bar, so 0.9.0 ships Rust **gated**: detection and the runner recipe are in, and
+`blastline tests` fails open to a full run on every Rust repo measured.
+`--min-test-reachability 0` remains the documented opt-out for anyone who wants the signal
+anyway; these numbers say they should not. When #58 lands the guard stops firing by itself —
+the same loop that closed es-toolkit (#42), Python (#46), Go (#47) and C/C++ (#52).
+
+### Harness change
+
+`scripts/bench.ts` gained a `--min-test-reachability <f>` passthrough. With the guard at its
+default a blind family replays as 20 identical ALLs, which measures nothing; lowering it is
+how the suppressed selection gets scored instead of guessed.
+
+### Scope notes
+
+- The Rust detector deliberately excludes `mod.rs`. `tests/common/mod.rs` is the documented
+  form for a shared helper that must *not* become its own target, so it is the Rust analog of
+  `conftest.py`. A change to one still selects the targets that include it, via the dependents
+  walk — when the graph has those edges, which today it does not.
+- Rust **unit** tests live inside the file they cover as `#[cfg(test)] mod tests` and have no
+  path signature; detection does not pretend to find them. The file that declares them is the
+  file under test, so a diff touching it trivially contains them. Selection therefore reports
+  integration targets only. clap is a live example of the nuance: its in-crate unit modules
+  sit at `clap_builder/src/builder/tests.rs` — reached in the blast radius above, correctly
+  *not* reported as a runnable test file, and run by `cargo test --lib` rather than by name.
+- Runner recipe verified against real `cargo`, not asserted: a real selection on fd
+  `61c5399` (`src/main.rs` + `tests/tests.rs`) mapped through the README pipeline to
+  `cargo test --manifest-path …/Cargo.toml --test tests` and ran **108 tests, 0 failed**; the
+  clap workspace form ran the `builder` target, **912 tests, 0 failed**, and
+  `clap_complete`'s `examples` target, 1 test.

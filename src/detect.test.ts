@@ -32,6 +32,28 @@ describe("isTestPath", () => {
     expect(isTestPath("tests/test_pipeline.cpp")).toBe(true);
   });
 
+  it("matches Rust's Cargo integration-test convention", () => {
+    expect(isTestPath("tests/tests.rs")).toBe(true); // tests/<name>.rs is its own target
+    expect(isTestPath("tests/builder/flags.rs")).toBe(true); // module of the "builder" target
+    expect(isTestPath("tests/builder/main.rs")).toBe(true); // the target's root file
+    expect(isTestPath("clap_complete/tests/examples.rs")).toBe(true); // workspace member package
+    expect(isTestPath("crates/core/tests/integration.rs")).toBe(true);
+  });
+
+  it("does not match Rust non-test Cargo target kinds", () => {
+    expect(isTestPath("benches/bench.rs")).toBe(false); // cargo bench, not cargo test
+    expect(isTestPath("benches/tests/util.rs")).toBe(false);
+    expect(isTestPath("examples/simple.rs")).toBe(false);
+    expect(isTestPath("examples/tests/demo.rs")).toBe(false);
+    expect(isTestPath("tests/testenv/mod.rs")).toBe(false); // shared-helper convention
+    expect(isTestPath("tests/common/mod.rs")).toBe(false);
+    expect(isTestPath("src/tests/parser.rs")).toBe(false); // in-crate unit module, no target
+    expect(isTestPath("src/walk.rs")).toBe(false); // #[cfg(test)] mod tests has no path signature
+    expect(isTestPath("attests/thing.rs")).toBe(false);
+    expect(isTestPath("tests/fixtures/input.txt")).toBe(false);
+    expect(isTestPath("tests")).toBe(false);
+  });
+
   it("does not match near-misses", () => {
     expect(isTestPath("src/latest.ts")).toBe(false);
     expect(isTestPath("src/contest.spec/readme.ts")).toBe(false);

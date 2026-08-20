@@ -50,7 +50,7 @@ git diff --unified=0 base..head
    → innermost graph node per line      (src/mapping.ts — whole-file adds seed every symbol)
    → transitive dependents walk         (src/impact.ts — CALLS, imports, re_exports, contains, inherits;
                                           dispatch barrier: interface contracts propagate to callers only)
-   → intersect with test files          (src/detect.ts — JS/TS, pytest, Go, C/C++ conventions)
+   → intersect with test files          (src/detect.ts — JS/TS, pytest, Go, C/C++, Cargo conventions)
    → subset + blast radius, or ALL with reasons
 ```
 
@@ -61,7 +61,7 @@ Fail-open triggers, each a typed reason in the output:
 | `unmapped-file` | a changed file has no graph node (configs, lockfiles, assets) — declare irrelevant paths with `--ignore` |
 | `stale-graph` | the graph fails a content-root pin (`--expect-root`, or `--daemon-verify` against the live CGraph daemon), or `graph.json` is older than the head commit |
 | `sparse-graph` | the graph averages under 3 edges per file — an under-extracted graph produces subsets that look smart and are blind, so blastline refuses |
-| `disconnected-tests` | tests can forward-reach under 25% of the code's symbols — the graph passed the density floor but is blind for selection (how broken Go/Python extraction presents) |
+| `disconnected-tests` | tests can forward-reach under 25% of the code's symbols — the graph passed the density floor but is blind for selection (how broken Go/Python extraction presented, and how every Rust graph presents today) |
 | `diff-too-large` | the diff touches more files than `--max-files` (default 200) |
 | `graph-unavailable` | no readable `graph.json` |
 
@@ -189,7 +189,11 @@ blastline mcp                                # MCP server over stdio
 
 ## Status & roadmap
 
-Scope, stated plainly: all four v1 language families are **replay-verified** — on their benchmarks every semantically selectable author-co-changed test was selected. TypeScript (Vitest/Jest): 43/43 on es-toolkit. Python (pytest conventions): 4/4 on itsdangerous, after CGraph#46 rebuilt Python import resolution. Go (`*_test.go`): 10/10 selectable on gorilla/mux, after CGraph#47 added interface-dispatch edges (`implements`/`dispatches_to` plus the member-call rescue for names like mux's eight `Match`es that satisfy one interface); the **dispatch barrier** (0.8.0) then cut Go's mean subset from 45.9% to 30.3% by stopping one implementation's change from cascading through the interface's structural neighborhood — the contract's *callers* stay selected, its sibling implementers don't. C/C++ (`*_test.{c,cc,cpp,cxx}` / `test_*`, the googletest/ctest convention): 62/62 on CGraph itself, after CGraph#52 made calls to overloaded functions edge to every member of the overload set; mean subset 22.4% of the suite, with every fail-open an honest build-system change (CMakeLists, submodule pointers). The pipeline is unit-tested (67 tests) and replay-benchmarked on six repos; the Action and MCP server are exercised end-to-end in CI.
+Scope, stated plainly: four of the five language families are **replay-verified** — on their benchmarks every semantically selectable author-co-changed test was selected. TypeScript (Vitest/Jest): 43/43 on es-toolkit. Python (pytest conventions): 4/4 on itsdangerous, after CGraph#46 rebuilt Python import resolution. Go (`*_test.go`): 10/10 selectable on gorilla/mux, after CGraph#47 added interface-dispatch edges (`implements`/`dispatches_to` plus the member-call rescue for names like mux's eight `Match`es that satisfy one interface); the **dispatch barrier** (0.8.0) then cut Go's mean subset from 45.9% to 30.3% by stopping one implementation's change from cascading through the interface's structural neighborhood — the contract's *callers* stay selected, its sibling implementers don't. C/C++ (`*_test.{c,cc,cpp,cxx}` / `test_*`, the googletest/ctest convention): 62/62 on CGraph itself, after CGraph#52 made calls to overloaded functions edge to every member of the overload set; mean subset 22.4% of the suite, with every fail-open an honest build-system change (CMakeLists, submodule pointers).
+
+**Rust (0.9.0) is the honest exception: detector-complete, recipe-verified, and selection-gated.** Detection follows Cargo's integration-test convention — `.rs` under a package-root `tests/`, excluding `mod.rs` shared helpers, `src/tests/` in-crate modules, and the `benches/`/`examples/` target kinds — and the runner recipe below is verified end-to-end (a real selection on sharkdp/fd `61c5399` folded to `cargo test --manifest-path …/Cargo.toml --test tests` and ran 108 tests, 0 failed; the clap workspace form ran the `builder` target, 912 tests, 0 failed). Selection itself is blind. Test-file reachability into implementation symbols measures **0.000–0.142** across fd, clap, regex, ripgrep, serde and tokio — against the 0.25 `disconnected-tests` floor, and 0.956 on this repo's own TS graph built by the same binary — so the 20-commit clap replay is **20/20 honest ALLs**, and tokio's is too. Lowering the guard to measure what it suppresses: 20/20 subsets, mean **1.1%** of clap's 135-file suite, and **0 of 29** author-co-changed test files selected. Not one — and tokio, the healthiest Rust graph measured, manages 1 of 12. Root-caused to three CGraph defects with a four-file reproduction ([CGraph#58](https://github.com/Nxtsoft/CGraph/issues/58)): calls inside a macro invocation are never extracted as call sites (Rust assertions *are* macros — clap's `tests/` holds 2,516 `assert*!` sites), `receiver.method()` does not resolve because `impl` methods carry no membership edge to their type, and `use <crate_name>::…` — the only import spelling a Cargo integration test can use — produces no import edge. Go shipped *advisory* at 7/11 in 0.2.0; Rust at 0/29 does not clear that bar, so it ships gated: `blastline tests` fails open to a full run on Rust repos, and `--min-test-reachability 0` is the explicit, documented opt-out for anyone who wants the signal anyway. Rust unit tests are a separate matter, not a graph failure: they live inside the file they cover as `#[cfg(test)] mod tests`, so no path rule can name them and blastline does not pretend to — the file that declares them *is* the file under test, so "did my change reach them" is trivially yes whenever that file is in the diff. Selection therefore names integration targets only; pair the recipe with `cargo test --lib` when a library source file changed.
+
+The pipeline is unit-tested (69 tests) and replay-benchmarked on eight repos (clap and tokio added in 0.9.0); the Action and MCP server are exercised end-to-end in CI.
 
 Runner recipes per ecosystem:
 
@@ -199,7 +203,11 @@ blastline tests main..HEAD | xargs pytest                                      #
 blastline tests main..HEAD | xargs -n1 dirname | sort -u | xargs go test       # Go (tests run per package)
 blastline tests main..HEAD | xargs -n1 basename | sed -E 's/\.(c|cc|cpp|cxx)$//' \
   | xargs -I{} ctest --test-dir build -R {}                                    # C/C++ (ctest name match)
+blastline tests main..HEAD | sed -E 's#^(.*)/tests/([^/]+).*#\1 \2#; s#\.rs$##' | sort -u \
+  | while read -r pkg t; do cargo test --manifest-path "$pkg/Cargo.toml" --test "$t"; done   # Rust
 ```
+
+The Rust recipe folds a selected file back to the Cargo target that owns it: `tests/<name>.rs` and every file under `tests/<name>/` belong to target `<name>`, and the directory above `tests/` is the package, so `--manifest-path` keeps workspaces (clap, tokio, ripgrep) pointed at the right member. Selection is finer-grained than Cargo can run — several selected files can collapse to one target — so `sort -u` is load-bearing, not decoration.
 
 Freshness pinning shipped in 0.3.0: CGraph one-shot builds embed a sha256-merkle-v1 content root, every subset carries it as provenance (CLI JSON, MCP payloads, and the PR-comment footer), `--expect-root` pins a selection to an exact tree, and `--daemon-verify` pins against the live CGraph daemon's root — verified end-to-end against a running graphd (match → subset; edited tree → fail-open naming both roots). Cross-repo selection over seam graphs shipped in 0.4.0 (see above) — the proposal roadmap is complete.
 
