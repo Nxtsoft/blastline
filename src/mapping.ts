@@ -1,5 +1,5 @@
 import type { CodeGraph, GraphNode } from "./graph.js";
-import { nodesForPath } from "./graph.js";
+import { nodesInFile } from "./graph.js";
 import type { ChangedFile, FailOpenReason } from "./types.js";
 
 export interface MappingResult {
@@ -36,8 +36,8 @@ export function mapDiffToSeeds(
   for (const file of changed) {
     if (opts.ignore?.(file.path) && opts.ignore?.(file.oldPath)) continue;
 
-    const headNodes = file.status === "deleted" ? [] : nodesForPath(graph, file.path);
-    const baseNodes = opts.baseGraph ? nodesForPath(opts.baseGraph, file.oldPath) : [];
+    const headNodes = file.status === "deleted" ? [] : nodesInFile(graph, file.path);
+    const baseNodes = opts.baseGraph ? nodesInFile(opts.baseGraph, file.oldPath) : [];
 
     if (headNodes.length === 0 && file.status !== "deleted") {
       failOpen.push({ kind: "unmapped-file", path: file.path });

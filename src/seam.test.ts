@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { loadGraph, nodesForPath } from "./graph.js";
+import { loadGraph, nodesInFile } from "./graph.js";
 import { select } from "./select.js";
 
 const FIXTURE = fileURLToPath(new URL("./testdata/seam-graph.json", import.meta.url));
@@ -17,7 +17,7 @@ index 1..2 100644
 
 describe("cross-repo selection over a fused seam graph", () => {
   it("maps one changed provider file to both its code node and the schema contract node", () => {
-    const nodes = nodesForPath(g, "src/schemas/score.ts");
+    const nodes = nodesInFile(g, "src/schemas/score.ts");
     const ids = nodes.map((n) => n.id).sort();
     expect(ids).toContain("p_type");
     expect(ids).toContain("schema:ml-api:v3:ScoreResult");
