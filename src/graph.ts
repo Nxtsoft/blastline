@@ -103,6 +103,61 @@ export function nodesForPath(graph: CodeGraph, relPath: string): GraphNode[] {
 }
 
 /**
+ * Resolve an agent-supplied symbol reference to a single graph node for the
+ * `check` verifier. Accepts, in order of precedence:
+ *   - `file:line`  — the smallest non-file node whose span contains that line
+ *   - `file:label` — the node in that file with a matching label
+ *   - bare `label` — every non-file node with that label across the graph
+ * A bare label (or a `file:label` form) that matches more than one node is
+ * reported as ambiguous rather than guessed; nothing matching is not-found. The
+ * file part matches on the same path-boundary suffix rule as `nodesForPath`, so
+ * a repo-relative reference resolves against the graph's absolute paths.
+ */
+export type SymbolResolution =
+  | { kind: "resolved"; node: GraphNode }
+  | { kind: "ambiguous"; nodes: GraphNode[] }
+  | { kind: "not-found" };
+
+export function resolveSymbol(graph: CodeGraph, ref: string): SymbolResolution {
+  const colon = ref.lastIndexOf(":");
+  if (colon > 0) {
+    const path = ref.slice(0, colon);
+    const selector = ref.slice(colon + 1);
+    const fileNodes = nodesForPath(graph, path).filter((n) => n.type !== "file");
+    if (fileNodes.length > 0) {
+      if (/^\d+$/.test(selector)) {
+        const line = Number(selector);
+        const containing = fileNodes.filter(
+          (n) =>
+            n.source_location !== undefined &&
+            n.source_location.start_line <= line &&
+            n.source_location.end_line >= line,
+        );
+        if (containing.length === 0) return { kind: "not-found" };
+        // Smallest span wins; a file with several finer nodes over one line
+        // resolves to the tightest enclosing symbol.
+        const span = (n: GraphNode) =>
+          (n.source_location as { start_line: number; end_line: number }).end_line -
+          (n.source_location as { start_line: number; end_line: number }).start_line;
+        const smallest = Math.min(...containing.map(span));
+        const tightest = containing.filter((n) => span(n) === smallest);
+        return tightest.length === 1
+          ? { kind: "resolved", node: tightest[0] as GraphNode }
+          : { kind: "ambiguous", nodes: tightest };
+      }
+      const byLabel = fileNodes.filter((n) => n.label === selector);
+      if (byLabel.length === 1) return { kind: "resolved", node: byLabel[0] as GraphNode };
+      if (byLabel.length > 1) return { kind: "ambiguous", nodes: byLabel };
+      return { kind: "not-found" };
+    }
+  }
+  const byLabel = graph.nodes.filter((n) => n.type !== "file" && n.label === ref);
+  if (byLabel.length === 1) return { kind: "resolved", node: byLabel[0] as GraphNode };
+  if (byLabel.length > 1) return { kind: "ambiguous", nodes: byLabel };
+  return { kind: "not-found" };
+}
+
+/**
  * Translate a file path from one graph's tree to another's — a base graph is
  * built from a different checkout (a worktree of the merge-base), so the same
  * repo-relative file carries a different absolute prefix in each graph. The
