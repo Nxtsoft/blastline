@@ -24,6 +24,14 @@ describe("isTestPath", () => {
     expect(isTestPath("core_test.go")).toBe(true);
   });
 
+  it("matches C/C++ googletest/ctest conventions", () => {
+    expect(isTestPath("tests/smoke/cpp_extractor_test.cpp")).toBe(true);
+    expect(isTestPath("src/engine/graph_builder_test.cc")).toBe(true);
+    expect(isTestPath("lib/parse_test.cxx")).toBe(true);
+    expect(isTestPath("core/ring_buffer_test.c")).toBe(true);
+    expect(isTestPath("tests/test_pipeline.cpp")).toBe(true);
+  });
+
   it("does not match near-misses", () => {
     expect(isTestPath("src/latest.ts")).toBe(false);
     expect(isTestPath("src/contest.spec/readme.ts")).toBe(false);
@@ -34,6 +42,10 @@ describe("isTestPath", () => {
     expect(isTestPath("pkg/attest.py")).toBe(false);
     expect(isTestPath("pkg/latest.go")).toBe(false);
     expect(isTestPath("pkg/contest.go")).toBe(false);
+    expect(isTestPath("tests/fuzz/extractor_fuzzer.cpp")).toBe(false); // fuzz harness, not a test
+    expect(isTestPath("src/latest.cpp")).toBe(false);
+    expect(isTestPath("include/graph_test.h")).toBe(false); // headers are shared fixtures
+    expect(isTestPath("src/contest.cc")).toBe(false);
   });
 });
 

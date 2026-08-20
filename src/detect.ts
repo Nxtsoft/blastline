@@ -8,6 +8,9 @@ import { dependencyDirection } from "./graph.js";
  *   directory alone is NOT a signal (helpers and fixtures live there too),
  *   and conftest.py is fixture plumbing, not a test
  * - Go: *_test.go, the compiler-enforced convention
+ * - C/C++ (googletest/ctest convention): *_test.<ext> and test_*.<ext> for
+ *   translation units only (.c/.cc/.cpp/.cxx) — headers are shared fixtures,
+ *   and fuzz harnesses (*_fuzzer.cpp) deliberately do not match
  */
 export function isTestPath(path: string): boolean {
   return (
@@ -15,7 +18,9 @@ export function isTestPath(path: string): boolean {
     /(^|\/)__tests__\//.test(path) ||
     /(^|\/)test_[^/]*\.py$/.test(path) ||
     /_test\.py$/.test(path) ||
-    /_test\.go$/.test(path)
+    /_test\.go$/.test(path) ||
+    /_test\.(c|cc|cpp|cxx)$/.test(path) ||
+    /(^|\/)test_[^/]*\.(c|cc|cpp|cxx)$/.test(path)
   );
 }
 

@@ -48,7 +48,7 @@ git diff --unified=0 base..head
    → changed line ranges                (src/diff.ts)
    → innermost graph node per line      (src/mapping.ts — whole-file adds seed every symbol)
    → transitive dependents walk         (src/impact.ts — CALLS, imports, re_exports, contains, inherits)
-   → intersect with test files          (src/detect.ts — *.test.* / *.spec.* / __tests__)
+   → intersect with test files          (src/detect.ts — JS/TS, pytest, Go, C/C++ conventions)
    → subset + blast radius, or ALL with reasons
 ```
 
@@ -172,7 +172,7 @@ blastline mcp                                # MCP server over stdio
 
 ## Status & roadmap
 
-Scope, stated plainly: all three v1 languages are **replay-verified** — on their benchmarks every semantically selectable author-co-changed test was selected. TypeScript (Vitest/Jest): 41/41 on es-toolkit. Python (pytest conventions): 3/3 on itsdangerous, after CGraph#46 rebuilt Python import resolution. Go (`*_test.go`): 10/10 on gorilla/mux, after CGraph#47 added interface-dispatch edges (`implements`/`dispatches_to` plus the member-call rescue for names like mux's eight `Match`es that satisfy one interface); Go's dispatch fan-out makes its subsets larger (mean 37.7% of suite — a 2.7× reduction) — safety was chosen over selectivity. The pipeline is unit-tested (48 tests) and replay-benchmarked on five repos; the Action and MCP server are exercised end-to-end in CI.
+Scope, stated plainly: all four v1 language families are **replay-verified** — on their benchmarks every semantically selectable author-co-changed test was selected. TypeScript (Vitest/Jest): 41/41 on es-toolkit. Python (pytest conventions): 3/3 on itsdangerous, after CGraph#46 rebuilt Python import resolution. Go (`*_test.go`): 10/10 on gorilla/mux, after CGraph#47 added interface-dispatch edges (`implements`/`dispatches_to` plus the member-call rescue for names like mux's eight `Match`es that satisfy one interface); Go's dispatch fan-out makes its subsets larger (mean 37.7% of suite — a 2.7× reduction) — safety was chosen over selectivity. C/C++ (`*_test.{c,cc,cpp,cxx}` / `test_*`, the googletest/ctest convention): 62/62 on CGraph itself, after CGraph#52 made calls to overloaded functions edge to every member of the overload set; mean subset 22.4% of the suite, with every fail-open an honest build-system change (CMakeLists, submodule pointers). The pipeline is unit-tested (57 tests) and replay-benchmarked on six repos; the Action and MCP server are exercised end-to-end in CI.
 
 Runner recipes per ecosystem:
 
@@ -180,6 +180,8 @@ Runner recipes per ecosystem:
 blastline tests main..HEAD | xargs vitest run                                  # TS/JS
 blastline tests main..HEAD | xargs pytest                                      # Python
 blastline tests main..HEAD | xargs -n1 dirname | sort -u | xargs go test       # Go (tests run per package)
+blastline tests main..HEAD | xargs -n1 basename | sed -E 's/\.(c|cc|cpp|cxx)$//' \
+  | xargs -I{} ctest --test-dir build -R {}                                    # C/C++ (ctest name match)
 ```
 
 Freshness pinning shipped in 0.3.0: CGraph one-shot builds embed a sha256-merkle-v1 content root, every subset carries it as provenance (CLI JSON, MCP payloads, and the PR-comment footer), `--expect-root` pins a selection to an exact tree, and `--daemon-verify` pins against the live CGraph daemon's root — verified end-to-end against a running graphd (match → subset; edited tree → fail-open naming both roots). Cross-repo selection over seam graphs shipped in 0.4.0 (see above) — the proposal roadmap is complete.
