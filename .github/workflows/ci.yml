@@ -14,6 +14,83 @@ jobs:
       - run: bun run build
       - run: bun run test
 
+  deletion-selftest:
+    # End-to-end proof of base-graph automation: in a synthetic fixture repo
+    # (repo-path input), a commit deletes a source file; head+base graphs are
+    # built with the prebuilt CGraph binary (base via base-graph-command in a
+    # merge-base worktree at a DIFFERENT path), and the pure deletion must
+    # select the surviving dependent test — and only it — which is impossible
+    # without the base-graph walk.
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cgraph (prebuilt release binaries)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download bin-v0.1.0 --repo Nxtsoft/CGraph \
+            --pattern cgraph-linux-x64.tar.gz --output cgraph-bin.tar.gz
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf cgraph-bin.tar.gz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build a fixture repo whose second commit is a pure deletion
+        run: |
+          set -euo pipefail
+          repo="$RUNNER_TEMP/fixture"
+          mkdir -p "$repo/src"
+          cd "$repo"
+          git init -q
+          cat > src/util.ts <<'TS'
+          export function util(): number {
+            return 1;
+          }
+          TS
+          cat > src/util.test.ts <<'TS'
+          import { util } from "./util.js";
+          export const check = util() === 1;
+          TS
+          cat > src/other.ts <<'TS'
+          export function other(): number {
+            return 2;
+          }
+          TS
+          cat > src/other.test.ts <<'TS'
+          import { other } from "./other.js";
+          export const check = other() === 2;
+          TS
+          git add -A
+          git -c user.name=selftest -c user.email=selftest@blastline.invalid \
+            commit -qm "fixture: base"
+          git rm -q src/util.ts
+          git -c user.name=selftest -c user.email=selftest@blastline.invalid \
+            commit -qm "fixture: delete src/util.ts"
+      - name: Build the head graph
+        run: cgraph --root "$RUNNER_TEMP/fixture" --out "$RUNNER_TEMP/head-graph"
+      - id: blastline
+        uses: ./
+        with:
+          range: HEAD~1..HEAD
+          repo-path: ${{ runner.temp }}/fixture
+          graph-path: ${{ runner.temp }}/head-graph/graph.json
+          base-graph-command: cgraph --root . --out "$BLASTLINE_BASE_OUT"
+          # The 4-file fixture sits below the sparse-graph floor by design;
+          # what this job pins is the deletion walk, not the guard.
+          min-density: "0"
+          comment: "false"
+      - name: Assert the deletion selected exactly its dependent test
+        env:
+          KIND: ${{ steps.blastline.outputs.kind }}
+          TESTS: ${{ steps.blastline.outputs.tests }}
+        run: |
+          set -euo pipefail
+          echo "kind=$KIND"
+          echo "$TESTS"
+          test "$KIND" = "subset"
+          echo "$TESTS" | grep -q "src/util.test.ts"
+          ! echo "$TESTS" | grep -q "src/other.test.ts"
+
   action-selftest:
     # Exercises the composite action end-to-end. Runners have no CGraph
     # binary and the repo ships no graph.json, so the honest outcome is

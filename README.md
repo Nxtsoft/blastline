@@ -100,9 +100,11 @@ Working from source (contributors): `git clone https://github.com/Nxtsoft/blastl
 - uses: actions/checkout@v4
   with:
     fetch-depth: 0
-- uses: Nxtsoft/blastline@main
+- uses: Nxtsoft/blastline@v0
   id: blastline
   with:
+    graph-path: cgraph-out/graph.json
+    base-graph-command: cgraph --root . --out "$BLASTLINE_BASE_OUT"
     github-token: ${{ github.token }}   # posts/updates the PR comment
     ignore: |
       \.md$
@@ -110,6 +112,15 @@ Working from source (contributors): `git clone https://github.com/Nxtsoft/blastl
 ```
 
 Outputs: `kind` (`subset` or `all`) and `tests` (newline-separated files), so a downstream job can run only the selected tests. The comment shows the impacted tests and a collapsible blast radius; on fail-open it says "run the full suite" and why. Supply `graph-path` from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
+
+`base-graph-command` automates deletion mapping: the action checks out the
+range's base commit into a worktree, runs your graph-build command there (it
+must write `$BLASTLINE_BASE_OUT/graph.json`), and passes the result as the base
+graph. A PR that deletes a file then selects the surviving tests that depended
+on the deleted symbols, instead of failing open on an unmapped path — the
+deleted code exists only in the base graph, so its dependents are walked there
+and translated back to head paths. Skip the input and deletions keep the
+documented safe degradation.
 
 ## Cross-repo selection over seam graphs
 
