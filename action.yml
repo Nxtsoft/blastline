@@ -21,6 +21,22 @@ inputs:
     description: path to CGraph graph.json for head (default <repo>/cgraph-out/graph.json)
     required: false
     default: ""
+  graph-root:
+    description: >-
+      repo-relative source root to build the head graph from (e.g. src or .).
+      When set and graph-path is empty, the Action installs CGraph
+      (cgraph-version) and runs `cgraph --root <graph-root> --out` itself, so
+      no consumer-supplied graph.json is needed. Mutually exclusive with
+      graph-path — setting both fails loudly. Linux x64 runners only.
+    required: false
+    default: ""
+  cgraph-version:
+    description: >-
+      CGraph release tag installed from Nxtsoft/CGraph (gh release download,
+      asset cgraph-linux-x64.tar.gz) when graph-root triggers the turnkey
+      build. Ignored when graph-root is unset.
+    required: false
+    default: bin-v0.1.0
   base-graph-path:
     description: optional graph.json for the base commit (improves deletion mapping)
     required: false
@@ -84,6 +100,86 @@ runs:
         fi
         echo "range=$range" >> "$GITHUB_OUTPUT"
 
+    - name: Resolve graph path
+      id: graphpath
+      shell: bash
+      env:
+        INPUT_GRAPH_PATH: ${{ inputs.graph-path }}
+        INPUT_GRAPH_ROOT: ${{ inputs.graph-root }}
+      run: |
+        set -euo pipefail
+        if [ -n "$INPUT_GRAPH_PATH" ] && [ -n "$INPUT_GRAPH_ROOT" ]; then
+          echo "blastline: graph-path and graph-root are mutually exclusive — set one, not both" >&2
+          exit 1
+        fi
+        if [ -n "$INPUT_GRAPH_PATH" ]; then
+          echo "path=$INPUT_GRAPH_PATH" >> "$GITHUB_OUTPUT"
+        elif [ -n "$INPUT_GRAPH_ROOT" ]; then
+          echo "path=$RUNNER_TEMP/blastline-turnkey-graph/graph.json" >> "$GITHUB_OUTPUT"
+        else
+          echo "path=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Resolve turnkey cache key
+      id: turnkeykey
+      if: ${{ inputs.graph-path == '' && inputs.graph-root != '' }}
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo-path }}
+        INPUT_ROOT: ${{ inputs.graph-root }}
+      run: |
+        set -euo pipefail
+        repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
+        # The graph's own sha256-merkle-v1 content root (embedded in
+        # graph.json) isn't known until after the build, so the cache key
+        # is the tree hash of graph-root instead — deterministic and
+        # available before cgraph ever runs.
+        if [ "$INPUT_ROOT" = "." ]; then
+          hash=$(git -C "$repo" rev-parse "HEAD^{tree}")
+        else
+          hash=$(git -C "$repo" rev-parse "HEAD:$INPUT_ROOT")
+        fi
+        echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+    - name: Cache turnkey graph
+      id: turnkeycache
+      if: ${{ inputs.graph-path == '' && inputs.graph-root != '' }}
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/blastline-turnkey-graph
+        key: blastline-graph-v1-${{ inputs.cgraph-version }}-${{ steps.turnkeykey.outputs.hash }}
+
+    - name: Install cgraph (prebuilt release binaries)
+      if: ${{ inputs.graph-path == '' && inputs.graph-root != '' && steps.turnkeycache.outputs.cache-hit != 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CGRAPH_VERSION: ${{ inputs.cgraph-version }}
+      run: |
+        set -euo pipefail
+        gh release download "$CGRAPH_VERSION" --repo Nxtsoft/CGraph \
+          --pattern cgraph-linux-x64.tar.gz --output cgraph-bin.tar.gz
+        mkdir -p "$HOME/.local/bin"
+        tar -xzf cgraph-bin.tar.gz -C "$HOME/.local/bin"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Build graph from graph-root (turnkey)
+      if: ${{ inputs.graph-path == '' && inputs.graph-root != '' && steps.turnkeycache.outputs.cache-hit != 'true' }}
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo-path }}
+        INPUT_ROOT: ${{ inputs.graph-root }}
+        OUT_DIR: ${{ runner.temp }}/blastline-turnkey-graph
+      run: |
+        set -euo pipefail
+        repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
+        mkdir -p "$OUT_DIR"
+        cgraph --root "$repo/$INPUT_ROOT" --out "$OUT_DIR"
+        test -f "$OUT_DIR/graph.json" || {
+          echo "cgraph did not produce \$OUT_DIR/graph.json" >&2
+          exit 1
+        }
+
     - name: Build base graph at the range's base commit
       id: basegraph
       if: ${{ inputs.base-graph-command != '' && inputs.base-graph-path == '' }}
@@ -115,7 +211,7 @@ runs:
       env:
         RANGE: ${{ steps.range.outputs.range }}
         INPUT_REPO: ${{ inputs.repo-path }}
-        INPUT_GRAPH: ${{ inputs.graph-path }}
+        INPUT_GRAPH: ${{ steps.graphpath.outputs.path }}
         INPUT_BASE_GRAPH: ${{ inputs.base-graph-path }}
         AUTO_BASE_GRAPH: ${{ steps.basegraph.outputs.path }}
         INPUT_IGNORE: ${{ inputs.ignore }}

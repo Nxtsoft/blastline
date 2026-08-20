@@ -102,6 +102,21 @@ Working from source (contributors): `git clone https://github.com/Nxtsoft/blastl
 
 ## GitHub Action
 
+Zero-config — point it at your source root and the Action installs CGraph and builds the graph itself:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- uses: Nxtsoft/blastline@v0
+  id: blastline
+  with:
+    graph-root: src                     # builds + caches the graph itself, no graph.json required
+    github-token: ${{ github.token }}   # posts/updates the PR comment
+```
+
+Bring your own graph instead with `graph-path` — e.g. a monorepo build step, or when you also want `base-graph-command`'s deletion mapping. The two are mutually exclusive; the Action fails loudly if both are set:
+
 ```yaml
 - uses: actions/checkout@v4
   with:
@@ -117,7 +132,7 @@ Working from source (contributors): `git clone https://github.com/Nxtsoft/blastl
       ^docs/
 ```
 
-Outputs: `kind` (`subset` or `all`) and `tests` (newline-separated files), so a downstream job can run only the selected tests. The comment shows the impacted tests and a collapsible blast radius; on fail-open it says "run the full suite" and why. Supply `graph-path` from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
+Outputs: `kind` (`subset` or `all`) and `tests` (newline-separated files), so a downstream job can run only the selected tests. The comment shows the impacted tests and a collapsible blast radius; on fail-open it says "run the full suite" and why. With `graph-root`, the build is cached via `actions/cache` keyed on the tree hash of `graph-root` (`git rev-parse HEAD:<graph-root>`) rather than the graph's own content-root hash, since that hash lives inside `graph.json` and isn't known until after the build runs. `cgraph-version` (default `bin-v0.1.0`) pins the `Nxtsoft/CGraph` release tag the turnkey build installs from; currently Linux x64 runners only. With `graph-path`, supply your own graph from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
 
 `base-graph-command` automates deletion mapping: the action checks out the
 range's base commit into a worktree, runs your graph-build command there (it
