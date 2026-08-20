@@ -11,6 +11,7 @@ import { dependencyDirection } from "./graph.js";
  * - C/C++ (googletest/ctest convention): *_test.<ext> and test_*.<ext> for
  *   translation units only (.c/.cc/.cpp/.cxx) — headers are shared fixtures,
  *   and fuzz harnesses (*_fuzzer.cpp) deliberately do not match
+ * - Rust (Cargo integration tests): see isRustTestPath
  */
 export function isTestPath(path: string): boolean {
   return (
@@ -20,8 +21,40 @@ export function isTestPath(path: string): boolean {
     /_test\.py$/.test(path) ||
     /_test\.go$/.test(path) ||
     /_test\.(c|cc|cpp|cxx)$/.test(path) ||
-    /(^|\/)test_[^/]*\.(c|cc|cpp|cxx)$/.test(path)
+    /(^|\/)test_[^/]*\.(c|cc|cpp|cxx)$/.test(path) ||
+    isRustTestPath(path)
   );
+}
+
+/**
+ * Rust's Cargo integration-test convention: a `.rs` file under a package-root
+ * `tests/` directory. Cargo compiles `tests/<name>.rs` and `tests/<name>/main.rs`
+ * as their own test binaries, and every other file in `tests/<name>/` is a module
+ * of that binary — so file granularity is finer than target granularity, and the
+ * runner recipe maps a selected file back to its target (see README).
+ *
+ * Deliberately NOT tests:
+ * - `mod.rs` — the documented shared-helper form (`tests/common/mod.rs`) exists
+ *   precisely so a helper is not compiled as its own target; it is the Rust
+ *   analog of conftest.py. A change to one still selects the targets that
+ *   include it, through the dependents walk.
+ * - `src/tests/` — an in-crate unit-test module, not an integration target.
+ * - `benches/` and `examples/` — different Cargo target kinds; a `#[test]` there
+ *   does not run in `cargo test`'s default set.
+ *
+ * Rust UNIT tests have no path signature at all: they live inside the file they
+ * cover as `#[cfg(test)] mod tests`, so the file under test IS the test file.
+ * Path detection cannot find them and does not pretend to — the README states
+ * what that means for selection.
+ */
+export function isRustTestPath(path: string): boolean {
+  if (!path.endsWith(".rs")) return false;
+  const segments = path.split("/");
+  if (segments.pop() === "mod.rs") return false;
+  const i = segments.indexOf("tests");
+  if (i === -1) return false;
+  if (i > 0 && segments[i - 1] === "src") return false;
+  return !segments.includes("benches") && !segments.includes("examples");
 }
 
 /**

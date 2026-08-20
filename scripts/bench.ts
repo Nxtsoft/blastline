@@ -48,6 +48,15 @@ const n = Number(arg("n", "20"));
 const cgraphBin = process.env["CGRAPH_BIN"] ?? "cgraph";
 const ignoreRes = argAll("ignore").map((r) => new RegExp(r));
 const ignore = (p: string) => ignoreRes.some((r) => r.test(p));
+// Lowering the disconnected-tests floor is how a blind language family gets
+// measured instead of guessed: with the guard at its default the replay is all
+// honest ALLs, which says nothing about how much the graph would have missed.
+// Set it to 0 to score the subsets the guard is suppressing.
+const minReachIdx = process.argv.indexOf("--min-test-reachability");
+const guardOpts =
+  minReachIdx !== -1 && process.argv[minReachIdx + 1]
+    ? { minTestReachability: Number(process.argv[minReachIdx + 1]) }
+    : {};
 
 const git = (...a: string[]) =>
   execFileSync("git", ["-C", repo, ...a], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
@@ -114,9 +123,9 @@ for (const commit of commits) {
   const changed = parseUnifiedDiff(diffText);
 
   const t1 = Date.now();
-  const sel = select(diffText, { graph, ignore, ...(baseGraph !== undefined && { baseGraph }) });
+  const sel = select(diffText, { graph, ignore, ...guardOpts, ...(baseGraph !== undefined && { baseGraph }) });
   const selectMs = Date.now() - t1;
-  const sel2 = select(diffText, { graph, ignore, ...(baseGraph !== undefined && { baseGraph }) });
+  const sel2 = select(diffText, { graph, ignore, ...guardOpts, ...(baseGraph !== undefined && { baseGraph }) });
   const deterministic = JSON.stringify(sel) === JSON.stringify(sel2);
 
   // Safety proxy: selection computed from non-test changes must contain the
@@ -141,7 +150,7 @@ for (const commit of commits) {
   const hasCodeChange = /^diff --git /m.test(nonTestDiff);
   const scoredCoChanged = hasCodeChange ? coChangedTests.length : 0;
   if (scoredCoChanged > 0) {
-    const proxySel = select(nonTestDiff, { graph, ignore, ...(baseGraph !== undefined && { baseGraph }) });
+    const proxySel = select(nonTestDiff, { graph, ignore, ...guardOpts, ...(baseGraph !== undefined && { baseGraph }) });
     for (const t of coChangedTests) {
       const hit = proxySel.kind === "all" || proxySel.tests.some((abs) => abs.endsWith(`/${t}`));
       if (hit) coHit++;
