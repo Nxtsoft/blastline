@@ -12,6 +12,7 @@ import { dependencyDirection } from "./graph.js";
  *   translation units only (.c/.cc/.cpp/.cxx) — headers are shared fixtures,
  *   and fuzz harnesses (*_fuzzer.cpp) deliberately do not match
  * - Rust (Cargo integration tests): see isRustTestPath
+ * - JVM / JUnit (Java + Kotlin): see isJvmTestPath
  */
 export function isTestPath(path: string): boolean {
   return (
@@ -22,7 +23,37 @@ export function isTestPath(path: string): boolean {
     /_test\.go$/.test(path) ||
     /_test\.(c|cc|cpp|cxx)$/.test(path) ||
     /(^|\/)test_[^/]*\.(c|cc|cpp|cxx)$/.test(path) ||
-    isRustTestPath(path)
+    isRustTestPath(path) ||
+    isJvmTestPath(path)
+  );
+}
+
+/**
+ * JVM test conventions for Java and Kotlin, taken from the build tools' own
+ * default class-name patterns — the JVM analog of Go's compiler-enforced
+ * `_test.go`. These are what Maven Surefire/Failsafe (and, by convention, Gradle)
+ * actually collect and run, matched on the class file's basename:
+ * - Surefire (unit):        `Test*`, `*Test`, `*Tests`, `*TestCase`
+ * - Failsafe (integration): `IT*`, `*IT`, `*ITCase`
+ * - Kotlin (Kotest/Spek):   `*Spec` — the idiomatic Kotlin spec suffix
+ *
+ * Applied only to `.java` and `.kt` translation units. `.kts` (Gradle build
+ * scripts such as `build.gradle.kts`) deliberately does NOT match. A test helper
+ * or abstract base under `src/test/` that does not match these names is not a
+ * runnable test on its own — a change to it still selects the tests that use it
+ * through the dependents walk, exactly like conftest.py and Rust's `mod.rs`.
+ *
+ * Selection is at file granularity, but Gradle/Maven select tests by
+ * fully-qualified class name, not path — so the runner recipe maps a selected
+ * `src/test/{java,kotlin}/<pkg>/<Name>.<ext>` file back to `<pkg>.<Name>` for
+ * `--tests` / `-Dtest` (see README).
+ */
+export function isJvmTestPath(path: string): boolean {
+  const base = path.split("/").pop() ?? "";
+  return (
+    /^(Test|IT)[^/]*\.(java|kt)$/.test(base) ||
+    /(Test|Tests|TestCase|IT|ITCase)\.(java|kt)$/.test(base) ||
+    /Spec\.kt$/.test(base)
   );
 }
 
