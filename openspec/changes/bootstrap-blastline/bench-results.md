@@ -441,3 +441,37 @@ recall where measured clears that bar. Rust ships **advisory** at #62 — `blast
 returns subsets on repos above the floor, fails open honestly below it (fd, ripgrep). The
 0.25 floor stays as the per-repo safety net. Known remaining gaps: tokio's async-dispatch
 class (CGraph#60) and ripgrep's one unverified likely-real miss.
+
+## Addendum 9 (2026-08-20): re-measure at CGraph#64 — the last genuine miss closes
+
+CGraph#64 shipped macro-interior item extraction: a source pre-pass blanks `cfg_*! { ... }`
+item-wrapper macros before parsing (byte-offset-preserving), so the fn/impl/struct inside —
+opaque token-trees to tree-sitter before — parse in place with real impl context and line
+numbers. tokio gates most of its code behind these macros (317 sites in `tokio/src`), so it
+was the one repo the fix moved; fd/clap/regex/ripgrep/serde carry no `cfg_*!` and their
+graphs are byte-identical to #62 (the pre-pass no-ops).
+
+Re-measured at #64:
+
+| repo | reachability #62 → #64 | co-changed recall #62 → #64 |
+| --- | --- | --- |
+| tokio | 0.591 → **0.912** | 6/12 → **11/12** |
+| clap | 0.859 → 0.859 | 22/29 → **23/29** |
+| fd / regex / ripgrep / serde | unchanged | unchanged |
+
+The behavioral oracle (Addendum 7) settles what the proxy jump means. tokio's one
+oracle-confirmed genuine miss was `dd344a55` — its new test exercises the changed
+`SimplexStream::poll_read_internal`, which had **zero callers** because the method calling it
+(`poll_read`) was hidden inside `cfg_coop!`. Not the async ext-trait dispatch #60
+hypothesized: the method simply did not exist to the parser. At #64 it does, the reverse walk
+reaches the test, and `dd344a55` is selected — tokio's dependency-filtered true recall goes
+**6/7 → 7/7**. Combined with serde (0 true dependents) and regex (4/4 of its real dependents),
+**no behaviorally-confirmed genuine miss remains** across the six repos. ripgrep's one
+likely-real miss stays unverified (its MSRV rejects the local rustc), the sole open question.
+
+**Decision:** unchanged mechanism, strengthened case. Rust stays advisory (the 0.25 floor is
+still the per-repo safety net, still failing open on fd and ripgrep). But the confidence is
+now materially higher: reachability clears the floor on four of six repos with room to spare,
+and the last confirmed genuine gap is closed. A future move to *gate* on Rust selections —
+trusting a subset to skip tests — is now defensible for cfg-macro-heavy async crates
+specifically, pending resolution of the ripgrep unknown and a mutation-based ground-truth pass.
