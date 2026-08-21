@@ -475,3 +475,30 @@ now materially higher: reachability clears the floor on four of six repos with r
 and the last confirmed genuine gap is closed. A future move to *gate* on Rust selections —
 trusting a subset to skip tests — is now defensible for cfg-macro-heavy async crates
 specifically, pending resolution of the ripgrep unknown and a mutation-based ground-truth pass.
+
+## Addendum 10 (2026-08-20): ripgrep's miss verified — a real one, and unfixable
+
+Addendum 9 called ripgrep's miss "unverified" (the local rustc 1.95 fell under ripgrep's
+1.96 MSRV) and said no confirmed genuine miss remained. Resolving the toolchain (rustc 1.98)
+and running the oracle **corrects both claims**.
+
+ripgrep's `index/disallowed` tests are gated behind `#[cfg(feature = "unstable-index")]`, so
+the first oracle run — without the feature — never compiled them and was inconclusive, not
+"noise." Re-run with `--features unstable-index` on `2ed0c006`: baseline passes (338 tests);
+reverting the flag change (`crates/core/flags/{defs,hiargs}.rs`) **fails 14 tests**, including
+`index::disallowed::{search_mode, unrestricted, no_ignore}` — the exact
+`tests/index/disallowed.rs` blastline missed. **It is a genuine dependent.**
+
+But it is not a graph bug. The tests exercise the flags by running the built binary as a
+subprocess — `dir.command()` builds a `process::Command::new(rg)` (`tests/util.rs:182`) — so
+the dependency is a process invocation of the compiled artifact, not a function call. No
+static edge ties the test to the flag code, and none can: static reachability cannot model
+"this integration test shells out to the binary this code compiles into." This is the
+boundary of the technique, not a missing edge.
+
+**Decision, revised:** Rust stays **advisory**; do NOT gate. This miss is the canonical case
+the "run at least these, never safe to skip" contract exists for — a real dependency invisible
+to any static graph. It is not resolved by a mutation-based ground-truth pass (that would
+confirm it, as this did) nor by any extraction fix. So the honest tally across the six repos
+is **one confirmed genuine miss (ripgrep), and it is unfixable in principle** — which is
+precisely why blastline is a fail-open superset and never a certified skip-gate.
