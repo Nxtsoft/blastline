@@ -50,7 +50,7 @@ git diff --unified=0 base..head
    → innermost graph node per line      (src/mapping.ts — whole-file adds seed every symbol)
    → transitive dependents walk         (src/impact.ts — CALLS, imports, re_exports, contains, inherits;
                                           dispatch barrier: interface contracts propagate to callers only)
-   → intersect with test files          (src/detect.ts — JS/TS, pytest, Go, C/C++, Cargo conventions)
+   → intersect with test files          (src/detect.ts — JS/TS, pytest, Go, C/C++, Cargo, JVM conventions)
    → subset + blast radius, or ALL with reasons
 ```
 
@@ -235,6 +235,8 @@ Scope, stated plainly: four of the five language families are **replay-verified*
 
 The pipeline is unit-tested (69 tests) and replay-benchmarked on eight repos (clap and tokio added in 0.9.0); the Action and MCP server are exercised end-to-end in CI.
 
+**JVM — Java and Kotlin (0.10.0) ship *advisory*, detection first.** `isTestPath` now recognizes the JUnit conventions the build tools themselves collect — Maven Surefire's `Test*`/`*Test`/`*Tests`/`*TestCase`, Failsafe's `IT*`/`*IT`/`*ITCase`, and Kotest/Spek's `*Spec.kt` — over `.java` and `.kt` sources (`.kts` Gradle scripts excluded), and the runner recipe below folds a selected file to the fully-qualified class Gradle/Maven run. As with every language the ceiling is what CGraph extracts. Kotlin extraction was non-functional (zero symbols on real source, a grammar-field mismatch) until [CGraph#65](https://github.com/Nxtsoft/CGraph/pull/65) repaired it — a Kotlin repo now produces class/function nodes and call edges. Java resolves direct and same-file calls, but two edge classes are still missing in CGraph: constructor calls (`new Foo()`) and interface/polymorphic dispatch, where a method name shared between an interface and its implementors is dropped as ambiguous — the exact gap CGraph#47 closed for Go with `implements`/`dispatches_to` edges, tracked as a JVM follow-up. Until then the disconnected-tests floor does its job: interface-heavy Java graphs that fall under it fail open rather than under-select. Replay verification on real JVM repos — the bar the other families cleared — is in progress; the families above remain the replay-verified set.
+
 Runner recipes per ecosystem:
 
 ```sh
@@ -245,7 +247,12 @@ blastline tests main..HEAD | xargs -n1 basename | sed -E 's/\.(c|cc|cpp|cxx)$//'
   | xargs -I{} ctest --test-dir build -R {}                                    # C/C++ (ctest name match)
 blastline tests main..HEAD | sed -E 's#^(.*)/tests/([^/]+).*#\1 \2#; s#\.rs$##' | sort -u \
   | while read -r pkg t; do cargo test --manifest-path "$pkg/Cargo.toml" --test "$t"; done   # Rust
+blastline tests main..HEAD \
+  | sed -E 's#^.*/src/test/(java|kotlin)/##; s#\.(java|kt)$##; s#/#.#g; s/^/--tests /' \
+  | xargs ./gradlew test                                                        # JVM (Gradle, JUnit)
 ```
+
+The JVM recipe maps a selected file back to the fully-qualified class name Gradle/Maven select by — Gradle's `--tests` and Maven's `-Dtest` take a class, not a path. Under the standard layout the package path is everything after `src/test/{java,kotlin}/`, so stripping that prefix, dropping the extension, and turning `/` into `.` yields `com.example.CalculatorTest` from `.../src/test/kotlin/com/example/CalculatorTest.kt`. Maven is the same transform with a comma-joined list: `… | paste -sd, - | xargs -I{} mvn -Dtest={} test`. A helper or abstract base under `src/test/` that a change touches still selects the concrete tests that use it through the dependents walk, so it need not match the runnable-test name convention itself.
 
 The Rust recipe folds a selected file back to the Cargo target that owns it: `tests/<name>.rs` and every file under `tests/<name>/` belong to target `<name>`, and the directory above `tests/` is the package, so `--manifest-path` keeps workspaces (clap, tokio, ripgrep) pointed at the right member. Selection is finer-grained than Cargo can run — several selected files can collapse to one target — so `sort -u` is load-bearing, not decoration.
 

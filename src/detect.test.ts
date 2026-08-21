@@ -54,6 +54,29 @@ describe("isTestPath", () => {
     expect(isTestPath("tests")).toBe(false);
   });
 
+  it("matches JVM JUnit conventions (Surefire/Failsafe + Kotest)", () => {
+    expect(isTestPath("src/test/java/com/x/CalculatorTest.java")).toBe(true); // *Test
+    expect(isTestPath("src/test/kotlin/com/x/PaymentTests.kt")).toBe(true); // *Tests
+    expect(isTestPath("src/test/java/com/x/WidgetTestCase.java")).toBe(true); // *TestCase
+    expect(isTestPath("app/src/test/java/com/x/TestRunner.java")).toBe(true); // Surefire Test* prefix
+    expect(isTestPath("src/integ/PaymentIT.java")).toBe(true); // Failsafe *IT
+    expect(isTestPath("src/integ/BillingITCase.java")).toBe(true); // Failsafe *ITCase
+    expect(isTestPath("src/integ/ITWorkflow.kt")).toBe(true); // Failsafe IT* prefix
+    expect(isTestPath("src/test/kotlin/com/x/CalculatorSpec.kt")).toBe(true); // Kotest/Spek *Spec.kt
+  });
+
+  it("does not match JVM non-tests", () => {
+    expect(isTestPath("build.gradle.kts")).toBe(false); // Gradle script, not a .kt unit
+    expect(isTestPath("settings.gradle.kts")).toBe(false);
+    expect(isTestPath("src/main/java/com/x/Calculator.java")).toBe(false); // production source
+    expect(isTestPath("src/main/kotlin/com/x/Payment.kt")).toBe(false);
+    expect(isTestPath("src/main/java/com/x/Latest.java")).toBe(false); // "test" only lowercase
+    expect(isTestPath("src/main/kotlin/com/x/GreatestHits.kt")).toBe(false);
+    expect(isTestPath("src/main/java/com/x/Attest.java")).toBe(false); // "attest", not a Test suffix
+    expect(isTestPath("src/test/resources/TestData.json")).toBe(false); // fixture, not .java/.kt
+    expect(isTestPath("CalculatorSpec.java")).toBe(false); // *Spec is a Kotlin-only signal
+  });
+
   it("does not match near-misses", () => {
     expect(isTestPath("src/latest.ts")).toBe(false);
     expect(isTestPath("src/contest.spec/readme.ts")).toBe(false);
