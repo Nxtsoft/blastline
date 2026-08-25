@@ -43,6 +43,13 @@ const repo = arg("repo");
 const features = arg("cargo-features", "full");
 const rustflags = arg("rustflags", "--cfg tokio_unstable");
 const testCmd = arg("test-cmd", "");
+// Which changed files count as CODE to revert, and which paths are tests to
+// leave alone. Defaults preserve the original Cargo behavior exactly. They are
+// parameters because the revert is the load-bearing half of the oracle: point
+// them at the wrong extension and nothing gets reverted, every missed test
+// re-passes, and the run reports "all noise" — a confident, wrong answer.
+const codeRe = new RegExp(arg("code-re", "\\.rs$"));
+const testPathRe = new RegExp(arg("test-path-re", "(^|/)tests/|_test\\.rs$"));
 
 const git = (...a: string[]) =>
   execFileSync("git", ["-C", repo, ...a], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
@@ -58,8 +65,20 @@ function cargoTarget(testPath: string): { pkg: string; test: string } | null {
 // failure OR compile error (a compile error is a dependency signal too).
 function runTest(wt: string, testPath: string): boolean {
   const t = cargoTarget(testPath);
+  // Outside Cargo's layout `{test}` is the file's basename without extension —
+  // the JUnit/Kotest class name Maven's -Dtest and Gradle's --tests select by,
+  // and the target name most other runners use. Without this fallback a
+  // non-Cargo path substitutes an empty string and the runner silently selects
+  // NOTHING, which passes, which scores every miss as noise.
+  const basename = (testPath.split("/").pop() ?? "").replace(/\.[^.]+$/, "");
   const cmd = testCmd
-    ? testCmd.split("{wt}").join(wt).split("{pkg}").join(t?.pkg ?? "").split("{test}").join(t?.test ?? "")
+    ? testCmd
+        .split("{wt}")
+        .join(wt)
+        .split("{pkg}")
+        .join(t?.pkg ?? "")
+        .split("{test}")
+        .join(t?.test ?? basename)
     : `cargo test -p ${t?.pkg} --test ${t?.test} --features ${features}`;
   try {
     execSync(cmd, { cwd: wt, stdio: "ignore", env: { ...process.env, RUSTFLAGS: rustflags } });
@@ -101,10 +120,26 @@ for (const row of rowsWithMisses) {
   for (const t of row.missed) baseline.set(t, runTest(wt, t));
 
   // Revert the commit's non-test .rs code files to their parent version.
-  const changedFiles = git("show", "--name-only", "--format=", sha)
+  // `git show --name-only` prints NOTHING for a merge commit (git suppresses the
+  // combined diff), so on a PR-merge history every commit looked like it changed
+  // no code, nothing was reverted, and every missed test re-passed as "noise".
+  // Diff against the first parent instead — the same range bench.ts selects on
+  // (`<sha>~1..<sha>`), so the oracle reverts exactly what the proxy measured.
+  const changedFiles = git("diff", "--name-only", `${sha}~1`, sha)
     .trim()
     .split("\n")
-    .filter((f) => /\.rs$/.test(f) && !/(^|\/)tests\//.test(f) && !/_test\.rs$/.test(f));
+    .filter((f) => codeRe.test(f) && !testPathRe.test(f));
+  if (changedFiles.length === 0) {
+    // Nothing to revert means the re-run is identical to the baseline, so every
+    // missed test would pass and be scored "noise" on no evidence. Refuse.
+    console.error(
+      `  ${row.commit}: no code files matched --code-re (${codeRe.source}) — cannot revert, skipping`,
+    );
+    for (const t of row.missed) {
+      classified.push({ commit: row.commit, test: t, verdict: "inconclusive" });
+    }
+    continue;
+  }
   for (const f of changedFiles) {
     try {
       const parentContent = git("show", `${sha}~1:${f}`);
