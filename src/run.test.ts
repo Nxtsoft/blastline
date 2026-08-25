@@ -49,4 +49,36 @@ index 3..4 100644
     });
     expect(sel.kind).toBe("subset");
   });
+
+  it("names an unparseable ignore pattern instead of blaming the graph", () => {
+    // A glob passed where a regex is expected — `**` is "nothing to repeat".
+    const sel = runSelection({
+      repo: "/anywhere",
+      diffText: DIFF,
+      graphPath: FIXTURE,
+      minDensity: 0,
+      ignore: ["openspec/**"],
+    });
+    expect(sel.kind).toBe("all");
+    if (sel.kind !== "all") return;
+    const reason = sel.reasons[0];
+    expect(reason?.kind).toBe("invalid-ignore-pattern");
+    if (reason?.kind !== "invalid-ignore-pattern") return;
+    expect(reason.pattern).toBe("openspec/**");
+    // The graph is readable here; the old code reported graph-unavailable.
+    expect(sel.reasons.some((r) => r.kind === "graph-unavailable")).toBe(false);
+  });
+
+  it("rejects a bad ignore pattern even when the graph is unreadable", () => {
+    // Pattern validation precedes graph loading, so the operator error wins.
+    const sel = runSelection({
+      repo: "/anywhere",
+      diffText: DIFF,
+      graphPath: "/nope/graph.json",
+      ignore: ["["],
+    });
+    expect(sel.kind).toBe("all");
+    if (sel.kind !== "all") return;
+    expect(sel.reasons[0]?.kind).toBe("invalid-ignore-pattern");
+  });
 });
