@@ -36,7 +36,7 @@ inputs:
       asset cgraph-linux-x64.tar.gz) when graph-root triggers the turnkey
       build. Ignored when graph-root is unset.
     required: false
-    default: bin-v0.1.0
+    default: bin-v0.2.0
   base-graph-path:
     description: optional graph.json for the base commit (improves deletion mapping)
     required: false

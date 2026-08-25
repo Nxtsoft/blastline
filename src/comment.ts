@@ -21,6 +21,14 @@ export function renderComment(selection: Selection, range: string): string {
             return `- extraction warning on \`${r.path}\``;
           case "graph-unavailable":
             return `- ${r.detail}`;
+          case "invalid-ignore-pattern":
+            return `- \`--ignore\` pattern \`${r.pattern}\` is not a valid regex (${r.detail}) — \`--ignore\` takes regexes, not globs`;
+          default: {
+            // A new FailOpenReason must render here; without this the switch
+            // falls through to undefined and the PR comment prints "undefined".
+            const unhandled: never = r;
+            return unhandled;
+          }
         }
       })
       .join("\n");

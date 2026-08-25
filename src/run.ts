@@ -52,7 +52,8 @@ export function daemonContentRoot(repo: string): { root?: string; error?: string
 /**
  * The one selection entry point shared by the CLI and the MCP server:
  * resolve the diff, load the graph(s), apply the freshness guard, select.
- * Never throws — an unreadable graph becomes a graph-unavailable fail-open.
+ * Never throws — an unreadable graph becomes a graph-unavailable fail-open, and
+ * an unparseable --ignore pattern an invalid-ignore-pattern one.
  */
 export function runSelection(o: RunOptions): Selection {
   const repo = resolve(o.repo);
@@ -64,6 +65,20 @@ export function runSelection(o: RunOptions): Selection {
   else if (o.diffFile !== undefined) diffText = readFileSync(o.diffFile, "utf8");
   else if (o.range !== undefined) diffText = git("diff", "--unified=0", o.range);
   else return { kind: "all", reasons: [{ kind: "graph-unavailable", detail: "no range, diff, or diff file given" }] };
+
+  // Compiled before the graph-loading try: an unparseable --ignore pattern is
+  // operator error, not a graph limitation, and must not be reported as one.
+  const regexes: RegExp[] = [];
+  for (const pattern of o.ignore ?? []) {
+    try {
+      regexes.push(new RegExp(pattern));
+    } catch (e) {
+      return {
+        kind: "all",
+        reasons: [{ kind: "invalid-ignore-pattern", pattern, detail: (e as Error).message }],
+      };
+    }
+  }
 
   const graphPath = o.graphPath ?? resolve(repo, "cgraph-out/graph.json");
   try {
@@ -93,7 +108,6 @@ export function runSelection(o: RunOptions): Selection {
       expectedContentRoot = daemon.root;
     }
 
-    const regexes = (o.ignore ?? []).map((p) => new RegExp(p));
     return select(diffText, {
       graph,
       ...(baseGraph !== undefined && { baseGraph }),
