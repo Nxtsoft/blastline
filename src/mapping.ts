@@ -1,3 +1,5 @@
+import { declaredTests, isCMakePath } from "./cmake.js";
+import { isTestPath } from "./detect.js";
 import type { CodeGraph, GraphNode } from "./graph.js";
 import { nodesInFile } from "./graph.js";
 import type { ChangedFile, FailOpenReason } from "./types.js";
@@ -10,6 +12,43 @@ export interface MappingResult {
 
 function spanSize(n: GraphNode): number {
   return n.source_location!.end_line - n.source_location!.start_line;
+}
+
+/** Directory part of a repo-relative path, "" at the repo root. */
+function dirOf(path: string): string {
+  const cut = path.lastIndexOf("/");
+  return cut === -1 ? "" : path.slice(0, cut + 1);
+}
+
+/**
+ * A build file the graph has no node for is normally a fail-open. When it is a
+ * CMake file whose diff does nothing but register new test targets, it is not
+ * opaque: it names the tests that appeared, and their sources seed the walk
+ * like any other changed test file (issue #22).
+ *
+ * Returns null — meaning "fail open, as before" — unless EVERY declared source
+ * is a recognized test path AND is present in the graph. A declared source the
+ * graph has never seen cannot be selected, and silently seeding nothing would
+ * turn a loud "run everything" into a quiet "run nothing".
+ */
+function registeredTestSeeds(graph: CodeGraph, file: ChangedFile): Set<string> | null {
+  if (!isCMakePath(file.path)) return null;
+  if (file.added === undefined || file.removed === undefined) return null;
+  const tests = declaredTests(file.added, file.removed);
+  if (tests === null) return null;
+
+  const dir = dirOf(file.path);
+  const seeds = new Set<string>();
+  for (const test of tests) {
+    const sources = test.sources.map((s) => `${dir}${s}`).filter(isTestPath);
+    if (sources.length === 0) return null; // registered something that is not a test
+    for (const source of sources) {
+      const nodes = nodesInFile(graph, source);
+      if (nodes.length === 0) return null; // declared but unextracted
+      for (const n of nodes) seeds.add(n.id);
+    }
+  }
+  return seeds;
 }
 
 /**
@@ -40,6 +79,11 @@ export function mapDiffToSeeds(
     const baseNodes = opts.baseGraph ? nodesInFile(opts.baseGraph, file.oldPath) : [];
 
     if (headNodes.length === 0 && file.status !== "deleted") {
+      const registered = registeredTestSeeds(graph, file);
+      if (registered !== null) {
+        for (const id of registered) seeds.add(id);
+        continue;
+      }
       failOpen.push({ kind: "unmapped-file", path: file.path });
       continue;
     }

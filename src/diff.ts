@@ -26,6 +26,8 @@ export function parseUnifiedDiff(text: string): ChangedFile[] {
         oldPath,
         status: oldPath === newPath ? "modified" : "renamed",
         ranges: [],
+        added: [],
+        removed: [],
       };
       files.push(current);
       sawDeletedFile = false;
@@ -61,6 +63,15 @@ export function parseUnifiedDiff(text: string): ChangedFile[] {
         range = { start: newStart, end: newStart + newCount - 1, deletion: false };
       }
       current.ranges.push(range);
+      continue;
+    }
+
+    // Body lines. `---`/`+++` are file headers, not content, and are excluded
+    // by the two-character check.
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      current.added?.push(line.slice(1));
+    } else if (line.startsWith("-") && !line.startsWith("---")) {
+      current.removed?.push(line.slice(1));
     }
   }
 

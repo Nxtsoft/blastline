@@ -16,6 +16,15 @@ export interface ChangedFile {
   oldPath: string;
   status: "added" | "deleted" | "modified" | "renamed";
   ranges: ChangedRange[];
+  /**
+   * Verbatim `+` line contents, in order, with the marker stripped. Populated
+   * for every file; consumed only by readers that need to understand a file the
+   * graph has no node for (see `cmake.ts`). Line ranges remain the mapping
+   * mechanism for everything the graph does cover.
+   */
+  added?: string[];
+  /** Verbatim `-` line contents, in order, with the marker stripped. */
+  removed?: string[];
 }
 
 /** Why a run fell open to selecting the full test suite. */

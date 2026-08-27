@@ -82,4 +82,34 @@ describe("parseUnifiedDiff", () => {
   it("returns an empty list for an empty diff", () => {
     expect(parseUnifiedDiff("")).toEqual([]);
   });
+
+  // Line ranges stay the mapping mechanism; contents exist only so a reader can
+  // understand a file the graph has no node for (see cmake.ts, issue #22).
+  it("keeps added and removed line contents, excluding the +++/--- headers", () => {
+    const diff = [
+      "diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt",
+      "--- a/tests/CMakeLists.txt",
+      "+++ b/tests/CMakeLists.txt",
+      "@@ -4,1 +4,2 @@",
+      "-add_test(NAME old COMMAND old)",
+      "+add_executable(a_test a_test.cpp)",
+      "+add_test(NAME a_test COMMAND a_test)",
+    ].join("\n");
+    const file = parseUnifiedDiff(diff)[0]!;
+    expect(file.added).toEqual([
+      "add_executable(a_test a_test.cpp)",
+      "add_test(NAME a_test COMMAND a_test)",
+    ]);
+    expect(file.removed).toEqual(["add_test(NAME old COMMAND old)"]);
+  });
+
+  it("keeps an added blank line as an empty string, not a dropped entry", () => {
+    const diff = [
+      "diff --git a/a.txt b/a.txt",
+      "@@ -0,0 +1,2 @@",
+      "+first",
+      "+",
+    ].join("\n");
+    expect(parseUnifiedDiff(diff)[0]!.added).toEqual(["first", ""]);
+  });
 });

@@ -58,7 +58,7 @@ Fail-open triggers, each a typed reason in the output:
 
 | Reason | Fires when |
 | --- | --- |
-| `unmapped-file` | a changed file has no graph node (configs, lockfiles, assets) — declare irrelevant paths with `--ignore` |
+| `unmapped-file` | a changed file has no graph node (configs, lockfiles, assets) — declare irrelevant paths with `--ignore`. One exception: a **CMake hunk that does nothing but register new test targets** is read rather than refused, and the tests it declares are selected (see below) |
 | `stale-graph` | the graph fails a content-root pin (`--expect-root`, or `--daemon-verify` against the live CGraph daemon), or `graph.json` is older than the head commit |
 | `sparse-graph` | the graph averages under 3 edges per file — an under-extracted graph produces subsets that look smart and are blind, so blastline refuses |
 | `disconnected-tests` | tests can forward-reach under 25% of the code's symbols — the graph passed the density floor but is blind for selection (how broken Go/Python extraction presented, and how every Rust graph presents today) |
@@ -67,6 +67,10 @@ Fail-open triggers, each a typed reason in the output:
 | `invalid-ignore-pattern` | an `--ignore` value is not a valid regex — note these are **regexes, not globs**, so `openspec/**` is an error and `^openspec/` is what you want |
 
 Pure deletions map against a `--base-graph` when supplied, and degrade to the file node (a superset-safe approximation) when not.
+
+**Test-registration files.** A build file has no graph node, so touching one normally fails the whole selection open — which made selection blind on exactly the PRs that *add* tests, since registering a test means editing the file that declares it. On our own dogfood loop, five of eleven CGraph PRs failed open and every one of them was a new test being registered. A CMake hunk that is **purely additive and does nothing but declare new test targets** is now read instead: at least one `add_test(NAME t …)`, an `add_executable(t src…)` for each, and no other command touching anything but those targets. The declared sources then seed the walk like any other changed test file.
+
+Everything else still fails open, deliberately — a CMakeLists edit can change a compile flag or a link library in ways that affect every target in the file, and no line-level rule tells that apart from a registration. Any removed line, any command naming an undeclared target, any `${…}` expansion, the legacy positional `add_test` form, or a declared source that is missing from the graph all return to "run the full suite." Other build systems (Gradle, Cargo, Maven, Bazel) are not covered; they express this differently and a half-supported matrix is worse than none.
 
 ## Benchmarks
 
