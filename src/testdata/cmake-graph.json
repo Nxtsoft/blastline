@@ -1,0 +1,52 @@
+{
+  "directed": true,
+  "graph": {},
+  "multigraph": false,
+  "nodes": [
+    {
+      "id": "f_engine",
+      "label": "engine.cpp",
+      "type": "file",
+      "source_file": "/repo/src/engine.cpp"
+    },
+    {
+      "id": "fn_resolve",
+      "label": "resolve",
+      "type": "function",
+      "source_file": "/repo/src/engine.cpp",
+      "source_location": { "start_line": 10, "end_line": 40 }
+    },
+    {
+      "id": "f_new_test",
+      "label": "import_disambiguation_test.cpp",
+      "type": "file",
+      "source_file": "/repo/tests/smoke/import_disambiguation_test.cpp"
+    },
+    {
+      "id": "fn_new_test_main",
+      "label": "main",
+      "type": "function",
+      "source_file": "/repo/tests/smoke/import_disambiguation_test.cpp",
+      "source_location": { "start_line": 5, "end_line": 20 }
+    },
+    {
+      "id": "f_other_test",
+      "label": "engine_test.cpp",
+      "type": "file",
+      "source_file": "/repo/tests/smoke/engine_test.cpp"
+    },
+    {
+      "id": "fn_other_test_main",
+      "label": "main",
+      "type": "function",
+      "source_file": "/repo/tests/smoke/engine_test.cpp",
+      "source_location": { "start_line": 5, "end_line": 20 }
+    }
+  ],
+  "links": [
+    { "source": "f_engine", "target": "fn_resolve", "relation": "contains" },
+    { "source": "f_new_test", "target": "fn_new_test_main", "relation": "contains" },
+    { "source": "f_other_test", "target": "fn_other_test_main", "relation": "contains" },
+    { "source": "fn_other_test_main", "target": "fn_resolve", "relation": "calls" }
+  ]
+}
