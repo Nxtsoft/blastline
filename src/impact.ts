@@ -23,7 +23,21 @@ import type { CodeGraph } from "./graph.js";
  */
 const STRUCTURAL_RELATIONS = new Set(["contains", "method", "method_of", "implements", "inherits"]);
 
-export function dependents(graph: CodeGraph, seeds: Iterable<string>): Set<string> {
+/** Thrown when the walk exceeds its node budget. Never caught inside impact:
+ * a partially traversed subset is indistinguishable from a complete one, so the
+ * only safe response is to abandon selection entirely. */
+export class TraversalExhausted extends Error {
+  constructor(readonly visited: number, readonly budget: number) {
+    super(`traversal visited ${visited} nodes, budget ${budget}`);
+    this.name = "TraversalExhausted";
+  }
+}
+
+export function dependents(
+  graph: CodeGraph,
+  seeds: Iterable<string>,
+  budget = Number.POSITIVE_INFINITY,
+): Set<string> {
   const seedSet = new Set(seeds);
   // Modes: full walk (false) vs contract-reached (true). A node first seen in
   // contract mode may be revisited in full mode — full expands strictly more.
@@ -34,7 +48,9 @@ export function dependents(graph: CodeGraph, seeds: Iterable<string>): Set<strin
     contract: false,
   }));
   const result = new Set<string>();
+  let visited = 0;
   while (queue.length > 0) {
+    if (++visited > budget) throw new TraversalExhausted(visited, budget);
     const { id, contract } = queue.pop() as { id: string; contract: boolean };
     for (const { from, relation } of graph.incoming.get(id) ?? []) {
       if (contract && STRUCTURAL_RELATIONS.has(relation)) continue;

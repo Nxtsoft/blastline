@@ -18,6 +18,8 @@ export interface RunOptions {
   baseGraphPath?: string;
   ignore?: string[];
   maxFiles?: number;
+  maxSelectedFraction?: number;
+  maxTraversalNodes?: number;
   minDensity?: number;
   minTestReachability?: number;
   /** pin the selection to this sha256-merkle-v1 content root */
@@ -119,6 +121,8 @@ export function runSelection(o: RunOptions): Selection {
       ...(baseGraph !== undefined && { baseGraph }),
       ...(regexes.length > 0 && { ignore: (p: string) => regexes.some((r) => r.test(p)) }),
       ...(o.maxFiles !== undefined && { maxFiles: o.maxFiles }),
+      ...(o.maxSelectedFraction !== undefined && { maxSelectedFraction: o.maxSelectedFraction }),
+      ...(o.maxTraversalNodes !== undefined && { maxTraversalNodes: o.maxTraversalNodes }),
       ...(o.minDensity !== undefined && { minDensity: o.minDensity }),
       ...(o.minTestReachability !== undefined && { minTestReachability: o.minTestReachability }),
       ...(expectedContentRoot !== undefined && { expectedContentRoot }),

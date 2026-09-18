@@ -36,6 +36,8 @@ export type FailOpenReason =
   | { kind: "sparse-graph"; edgesPerFile: number; threshold: number }
   | { kind: "disconnected-tests"; coverage: number; threshold: number }
   | { kind: "no-test-files" }
+  | { kind: "selection-saturated"; selected: number; total: number; threshold: number }
+  | { kind: "traversal-exhausted"; visited: number; budget: number }
   | { kind: "graph-unavailable"; detail: string }
   | { kind: "invalid-ignore-pattern"; pattern: string; detail: string };
 

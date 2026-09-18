@@ -11,6 +11,10 @@ function renderReason(r: Exclude<FailOpenReason, { kind: "unmapped-file" }>): st
       return `tests can reach only ${Math.round(r.coverage * 100)}% of the code in the graph (floor ${Math.round(r.threshold * 100)}%) — selection would be blind`;
     case "no-test-files":
       return `the graph contains no test files at all — selection would have to answer "none", which is not the same as "no tests are affected"`;
+    case "selection-saturated":
+      return `selection reached ${r.selected} of ${r.total} tests (${Math.round(r.threshold * 100)}% or more) — running everything is the same work, and an honest description of it`;
+    case "traversal-exhausted":
+      return `the dependency walk exceeded its budget (${r.visited} nodes, limit ${r.budget}) — a partially walked graph cannot be trusted to name every impacted test`;
     case "diff-too-large":
       return `diff touches ${r.files} files (limit ${r.limit})`;
     case "extraction-warning":

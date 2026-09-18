@@ -112,6 +112,52 @@ describe("select", () => {
     expect(sel.reasons.some((r) => r.kind === "unmapped-file" && r.path.startsWith("research/"))).toBe(false);
   });
 
+  // File count was never a safety property: selection is a union of per-file
+  // sound supersets, and count does not enter that argument. It is opt-in now.
+  it("does not fail open on a large diff by default", () => {
+    const many = Array.from({ length: 500 }, (_, i) => `research/evidence/run-${i}/result.json`);
+    const diff = diffOver([...many, "src/lib.ts"]);
+    const sel = select(diff, { graph: g, minDensity: 0, pathVerdicts: verdicts });
+    expect(sel.kind).toBe("subset");
+  });
+
+  it("still fails open on a large diff when --max-files is set explicitly", () => {
+    const diff = diffOver(Array.from({ length: 30 }, (_, i) => `research/e/${i}.json`).concat(["src/lib.ts"]));
+    const sel = select(diff, { graph: g, minDensity: 0, maxFiles: 10 });
+    expect(sel.kind).toBe("all");
+    if (sel.kind !== "all") return;
+    expect(sel.reasons).toContainEqual({ kind: "diff-too-large", files: 31, limit: 10 });
+  });
+
+  // The safety property of the budget: an exhausted walk must produce ALL, never
+  // the partial set collected so far. A truncated walk is indistinguishable from
+  // a complete one, so emitting it would silently drop tests.
+  it("an exhausted traversal fails open instead of returning what it walked", () => {
+    const sel = select(DIFF_IN_PARSE, { graph: g, minDensity: 0, maxTraversalNodes: 1 });
+    expect(sel.kind).toBe("all");
+    if (sel.kind !== "all") return;
+    expect(sel.reasons[0]?.kind).toBe("traversal-exhausted");
+  });
+
+  // A ratio over a tiny denominator is noise; the floor keeps small suites
+  // informative rather than collapsing them to ALL.
+  it("does not saturate on a suite below the floor", () => {
+    const sel = select(DIFF_IN_PARSE, { graph: g, minDensity: 0, maxSelectedFraction: 0.5 });
+    expect(sel.kind).toBe("subset");
+  });
+
+  it("saturates when the selection reaches nearly the whole suite", () => {
+    const sel = select(DIFF_IN_PARSE, {
+      graph: g,
+      minDensity: 0,
+      maxSelectedFraction: 0.5,
+      minSuiteForSaturation: 1,
+    });
+    expect(sel.kind).toBe("all");
+    if (sel.kind !== "all") return;
+    expect(sel.reasons[0]?.kind).toBe("selection-saturated");
+  });
+
   it("fails open to ALL when the diff touches an unmapped file", () => {
     const sel = select(DIFF_WITH_DOC, { graph: g, minDensity: 0 });
     expect(sel).toEqual({ kind: "all", reasons: [{ kind: "unmapped-file", path: "README.md" }] });

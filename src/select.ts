@@ -3,7 +3,7 @@ import { testFiles, testReachability } from "./detect.js";
 import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
 import { translatePath } from "./graph.js";
-import { dependents } from "./impact.js";
+import { TraversalExhausted, dependents } from "./impact.js";
 import { mapDiffToSeeds } from "./mapping.js";
 import { isDeliberatelyIgnored } from "./paths.js";
 import type { PathVerdicts } from "./paths.js";
@@ -26,8 +26,38 @@ export interface SelectOptions {
    * no extractor claimed them, so the graph may be incomplete because of them.
    */
   pathVerdicts?: PathVerdicts;
-  /** fail open when the diff touches more files than this (default 200) */
+  /**
+   * Fail open when the diff touches more files than this. **Unbounded by
+   * default.** File count was never a safety property: selection is the union
+   * over changed files of dependents(seeds(file)) ∩ tests, each term is a sound
+   * superset, and a union of sound supersets is sound -- count does not enter
+   * that argument. The guards that do measure uncertainty (`unmapped-file`,
+   * `sparse-graph`, `disconnected-tests`, `no-test-files`) still fire per case.
+   * What the count incidentally bounded was traversal COST, which
+   * `maxTraversalNodes` now bounds directly. Retained as an opt-in.
+   */
   maxFiles?: number;
+  /**
+   * Fail open when the selected tests reach this fraction of the whole suite
+   * (default 0.9). Not a safety guard -- it can only turn a subset into ALL,
+   * never the reverse. It is honesty: listing 95% of the suite as "impacted"
+   * is worse than saying run everything, and it hides that selection bought
+   * nothing.
+   */
+  maxSelectedFraction?: number;
+  /**
+   * Smallest suite the saturation check applies to (default 20). Below it the
+   * ratio is noise -- selecting 2 of 2 tests is not evidence that selection
+   * bought nothing -- and running a tiny suite is cheap regardless.
+   */
+  minSuiteForSaturation?: number;
+  /**
+   * Abandon selection when the dependency walk visits more than this many nodes
+   * (default 2,000,000). Exhaustion returns ALL, never a partially traversed
+   * subset -- a truncated walk is indistinguishable from a complete one, so
+   * emitting it would silently drop tests.
+   */
+  maxTraversalNodes?: number;
   /**
    * Fail open when the graph averages fewer edges per file node than this
    * (default 3). Healthy TS extraction runs ~9-10 edges/file; the benchmark's
@@ -79,7 +109,7 @@ export function select(diffText: string, opts: SelectOptions): Selection {
             ),
         );
 
-  const maxFiles = opts.maxFiles ?? 200;
+  const maxFiles = opts.maxFiles ?? Number.POSITIVE_INFINITY;
   if (changed.length > maxFiles) {
     reasons.push({ kind: "diff-too-large", files: changed.length, limit: maxFiles });
   }
@@ -159,7 +189,18 @@ export function select(diffText: string, opts: SelectOptions): Selection {
     else baseSeeds.add(id);
   }
 
-  const blastIds = dependents(opts.graph, headSeeds);
+  const budget = opts.maxTraversalNodes ?? 2_000_000;
+  let blastIds: Set<string>;
+  try {
+    blastIds = dependents(opts.graph, headSeeds, budget);
+  } catch (e) {
+    // A truncated walk cannot be told apart from a complete one, so the only
+    // safe response is ALL -- never the partial set collected so far.
+    if (e instanceof TraversalExhausted) {
+      return { kind: "all", reasons: [{ kind: "traversal-exhausted", visited: e.visited, budget: e.budget }] };
+    }
+    throw e;
+  }
   const testSet = knownTests;
   const blast: string[] = [];
   const tests = new Set<string>();
@@ -178,7 +219,7 @@ export function select(diffText: string, opts: SelectOptions): Selection {
 
   if (baseSeeds.size > 0 && opts.baseGraph) {
     const headFiles = new Set(opts.graph.byFile.keys());
-    for (const id of dependents(opts.baseGraph, baseSeeds)) {
+    for (const id of dependents(opts.baseGraph, baseSeeds, budget)) {
       const node = opts.baseGraph.byId.get(id);
       if (!node?.source_file) continue;
       const headFile = translatePath(node.source_file, headFiles);
@@ -188,6 +229,28 @@ export function select(diffText: string, opts: SelectOptions): Selection {
       if (testSet.has(headFile)) tests.add(headFile);
     }
   }
+  // Selection that reaches almost the whole suite bought nothing. Saying so is
+  // more honest than listing 95% of the tests as "impacted", and this can only
+  // widen the result to ALL -- it never removes a test from the run.
+  // A ratio over a tiny denominator is noise, not signal: on a three-test suite
+  // any real selection "saturates". Below this floor the whole suite is cheap
+  // anyway, so the subset is kept and stays informative.
+  const saturationFloor = opts.minSuiteForSaturation ?? 20;
+  const saturation = opts.maxSelectedFraction ?? 0.9;
+  if (testSet.size >= saturationFloor && tests.size / testSet.size >= saturation) {
+    return {
+      kind: "all",
+      reasons: [
+        {
+          kind: "selection-saturated",
+          selected: tests.size,
+          total: testSet.size,
+          threshold: saturation,
+        },
+      ],
+    };
+  }
+
   return {
     kind: "subset",
     tests: [...tests].sort(),

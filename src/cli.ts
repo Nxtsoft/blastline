@@ -27,7 +27,9 @@ options:
   --base-graph <path>  graph.json for base — improves pure-deletion mapping
   --diff-file <path>   read a unified-0 diff from a file instead of running git
   --ignore <regex>     repo-relative paths declared irrelevant (repeatable)
-  --max-files <n>      fail open when the diff touches more files (default 200)
+  --max-files <n>      fail open when the diff touches more files (opt-in; unbounded by default)
+  --max-selected-fraction <f>  fail open when selection reaches this share of the suite (default 0.9)
+  --max-traversal-nodes <n>    abandon selection above this walk size (default 2000000)
   --min-density <n>    fail open below this edges-per-file floor (default 3)
   --min-test-reachability <f>  fail open when tests reach under this fraction of code (default 0.25)
   --expect-root <sha256>  pin the selection to this content root (fail open on mismatch)
@@ -111,6 +113,8 @@ if (command === "mcp") {
   if (!range && !diffFile) fail("blastline: provide <base>..<head> or --diff-file\n\n" + USAGE);
 
   const maxFilesRaw = opt("max-files");
+  const maxSelectedRaw = opt("max-selected-fraction");
+  const maxNodesRaw = opt("max-traversal-nodes");
   const minDensityRaw = opt("min-density");
   const minReachRaw = opt("min-test-reachability");
   const expectRoot = opt("expect-root");
@@ -122,6 +126,8 @@ if (command === "mcp") {
     ...(opt("base-graph") !== undefined && { baseGraphPath: opt("base-graph") as string }),
     ignore: optAll("ignore"),
     ...(maxFilesRaw !== undefined && { maxFiles: Number(maxFilesRaw) }),
+    ...(maxSelectedRaw !== undefined && { maxSelectedFraction: Number(maxSelectedRaw) }),
+    ...(maxNodesRaw !== undefined && { maxTraversalNodes: Number(maxNodesRaw) }),
     ...(minDensityRaw !== undefined && { minDensity: Number(minDensityRaw) }),
     ...(minReachRaw !== undefined && { minTestReachability: Number(minReachRaw) }),
     ...(expectRoot !== undefined && { expectedContentRoot: expectRoot }),

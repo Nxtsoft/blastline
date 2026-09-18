@@ -62,7 +62,9 @@ Fail-open triggers, each a typed reason in the output:
 | `stale-graph` | the graph fails a content-root pin (`--expect-root`, or `--daemon-verify` against the live CGraph daemon), or `graph.json` is older than the head commit |
 | `sparse-graph` | the graph averages under 3 edges per file — an under-extracted graph produces subsets that look smart and are blind, so blastline refuses |
 | `disconnected-tests` | tests can forward-reach under 25% of the code's symbols — the graph passed the density floor but is blind for selection (how broken Go/Python extraction presented, and how every Rust graph presents today) |
-| `diff-too-large` | the diff touches more files than `--max-files` (default 200) |
+| `diff-too-large` | the diff touches more files than `--max-files` — **opt-in, unbounded by default**: file count measures neither uncertainty nor traversal work, and selection is a union of per-file sound supersets, so count never entered the safety argument |
+| `selection-saturated` | selection reached 90% or more of the suite (`--max-selected-fraction`, min suite 20) — running everything is the same work and an honest description of it |
+| `traversal-exhausted` | the dependency walk exceeded `--max-traversal-nodes` (default 2,000,000) — a partially walked graph cannot name every impacted test, so the partial set is discarded |
 | `graph-unavailable` | no readable `graph.json` |
 | `invalid-ignore-pattern` | an `--ignore` value is not a valid regex — note these are **regexes, not globs**, so `openspec/**` is an error and `^openspec/` is what you want |
 
@@ -224,7 +226,9 @@ blastline mcp                                # MCP server over stdio
 | `--base-graph <path>` | `graph.json` for base — improves pure-deletion mapping |
 | `--diff-file <path>` | read a unified-0 diff from a file instead of running git |
 | `--ignore <regex>` | repo-relative paths declared irrelevant (repeatable) |
-| `--max-files <n>` | fail open above this many changed files (default 200) |
+| `--max-files <n>` | fail open above this many changed files (opt-in; unbounded by default) |
+| `--max-selected-fraction <f>` | fail open when selection reaches this share of the suite (default 0.9) |
+| `--max-traversal-nodes <n>` | abandon selection above this walk size (default 2000000) |
 | `--min-density <n>` | fail open below this edges-per-file floor (default 3) |
 | `--json` | structured output |
 
