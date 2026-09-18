@@ -5,6 +5,8 @@ import type { CodeGraph } from "./graph.js";
 import { translatePath } from "./graph.js";
 import { dependents } from "./impact.js";
 import { mapDiffToSeeds } from "./mapping.js";
+import { isDeliberatelyIgnored } from "./paths.js";
+import type { PathVerdicts } from "./paths.js";
 import type { FailOpenReason, Selection } from "./types.js";
 
 export interface SelectOptions {
@@ -12,6 +14,18 @@ export interface SelectOptions {
   baseGraph?: CodeGraph;
   /** repo-relative path predicate for files declared irrelevant by the user */
   ignore?: (path: string) => boolean;
+  /**
+   * cgraph's own verdict per path, from paths.json beside graph.json. Unlike
+   * `ignore` -- a user DECLARATION that a path is irrelevant -- an `ignored`
+   * verdict here is EVIDENCE: cgraph skipped the file via the root .gitignore
+   * or a dependency directory, so the graph is complete without it and the file
+   * contributes no uncertainty. That is what makes it sound to drop such files
+   * before the size guard, which `ignore` alone would not justify.
+   *
+   * `unindexed` is never consulted for skipping: cgraph visited those files and
+   * no extractor claimed them, so the graph may be incomplete because of them.
+   */
+  pathVerdicts?: PathVerdicts;
   /** fail open when the diff touches more files than this (default 200) */
   maxFiles?: number;
   /**
@@ -43,8 +57,27 @@ export interface SelectOptions {
 
 /** The full selection pipeline: diff text in, Selection out. Deterministic. */
 export function select(diffText: string, opts: SelectOptions): Selection {
-  const changed = parseUnifiedDiff(diffText);
+  const parsed = parseUnifiedDiff(diffText);
   const reasons: FailOpenReason[] = [];
+
+  // Files cgraph deliberately skipped are removed from the diff before any
+  // guard runs. The size guard counts files whose effect on the graph is
+  // unknown; a file cgraph ignored by rule has a KNOWN effect -- none -- so
+  // counting it overstates the uncertainty. This is the half that a user
+  // `--ignore` rule could not deliver: the guard reads `changed.length`
+  // before mapping applies `ignore`, so an ignore rule never rescued a large
+  // diff. Both endpoints of a rename must be ignored, matching mapping.ts.
+  const verdicts = opts.pathVerdicts;
+  const changed =
+    verdicts === undefined
+      ? parsed
+      : parsed.filter(
+          (f) =>
+            !(
+              isDeliberatelyIgnored(verdicts, f.path) &&
+              (f.oldPath === undefined || isDeliberatelyIgnored(verdicts, f.oldPath))
+            ),
+        );
 
   const maxFiles = opts.maxFiles ?? 200;
   if (changed.length > maxFiles) {
