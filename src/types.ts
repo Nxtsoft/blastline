@@ -35,6 +35,7 @@ export type FailOpenReason =
   | { kind: "diff-too-large"; files: number; limit: number }
   | { kind: "sparse-graph"; edgesPerFile: number; threshold: number }
   | { kind: "disconnected-tests"; coverage: number; threshold: number }
+  | { kind: "no-test-files" }
   | { kind: "graph-unavailable"; detail: string }
   | { kind: "invalid-ignore-pattern"; pattern: string; detail: string };
 

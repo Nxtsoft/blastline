@@ -72,6 +72,19 @@ export function select(diffText: string, opts: SelectOptions): Selection {
       });
     }
   }
+  // A graph with no test-file nodes cannot answer "which tests does this change
+  // affect", so it must not be allowed to answer "none". testReachability
+  // returns null in exactly that case, and a null SKIPS the disconnected-tests
+  // guard below rather than tripping it -- so without this check selection runs
+  // to completion, intersects the blast radius against an empty test set, and
+  // returns {kind:"subset", tests:[]}. The comment then renders that as "none --
+  // no test file depends on the changed code": a confident answer built on an
+  // empty graph. The disconnected-tests guard exists for this class of
+  // blindness; this is its most extreme instance, not an exemption from it.
+  const knownTests = testFiles(opts.graph);
+  if (knownTests.size === 0) {
+    reasons.push({ kind: "no-test-files" });
+  }
   const minReach = opts.minTestReachability ?? 0.25;
   const coverage = testReachability(opts.graph);
   if (coverage !== null && coverage < minReach) {
@@ -114,7 +127,7 @@ export function select(diffText: string, opts: SelectOptions): Selection {
   }
 
   const blastIds = dependents(opts.graph, headSeeds);
-  const testSet = testFiles(opts.graph);
+  const testSet = knownTests;
   const blast: string[] = [];
   const tests = new Set<string>();
   for (const id of blastIds) {
