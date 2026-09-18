@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadGraph } from "./graph.js";
+import { loadPathVerdicts } from "./paths.js";
 import { fileMtimeMs, select } from "./select.js";
 import type { Selection } from "./types.js";
 
@@ -108,8 +109,13 @@ export function runSelection(o: RunOptions): Selection {
       expectedContentRoot = daemon.root;
     }
 
+    // cgraph writes paths.json beside graph.json. Absent (an older cgraph, or a
+    // hand-built graph) simply means no verdicts and today's behaviour.
+    const pathVerdicts = loadPathVerdicts(graphPath);
+
     return select(diffText, {
       graph,
+      ...(pathVerdicts !== undefined && { pathVerdicts }),
       ...(baseGraph !== undefined && { baseGraph }),
       ...(regexes.length > 0 && { ignore: (p: string) => regexes.some((r) => r.test(p)) }),
       ...(o.maxFiles !== undefined && { maxFiles: o.maxFiles }),

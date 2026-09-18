@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { indexGraph, loadGraph } from "./graph.js";
 import { select } from "./select.js";
+import type { PathVerdicts } from "./paths.js";
 
 const FIXTURE = fileURLToPath(new URL("./testdata/mini-graph.json", import.meta.url));
 const g = loadGraph(FIXTURE);
@@ -62,6 +63,53 @@ describe("select", () => {
     expect(sel.kind).toBe("all");
     if (sel.kind !== "all") return;
     expect(sel.reasons).toContainEqual({ kind: "no-test-files" });
+  });
+
+  // cgraph PR #73's exact shape: a diff dominated by files cgraph deliberately
+  // ignores. Two guards fired there, and an --ignore rule could fix neither:
+  // the size guard reads changed.length BEFORE mapping applies `ignore`, and
+  // every ignored file still produced an unmapped-file reason. cgraph's own
+  // verdict resolves both, because "skipped by rule" is evidence of no effect
+  // rather than a user's declaration of irrelevance.
+  const verdicts: PathVerdicts = {
+    ignoredDirectories: ["research"],
+    ignoredFiles: new Set<string>(),
+    unindexed: new Set<string>([".github/workflows/ci.yml"]),
+  };
+
+  function diffOver(paths: string[]): string {
+    return paths
+      .map(
+        (p) =>
+          `diff --git a/${p} b/${p}\nindex 1..2 100644\n--- a/${p}\n+++ b/${p}\n@@ -1,0 +2,1 @@\n+x\n`,
+      )
+      .join("");
+  }
+
+  it("a large diff of cgraph-ignored files no longer trips the size guard", () => {
+    const many = Array.from({ length: 400 }, (_, i) => `research/evidence/run-${i}/result.json`);
+    const diff = diffOver([...many, "src/lib.ts"]);
+    // Without the verdicts: 401 files, over the limit of 200.
+    const before = select(diff, { graph: g, minDensity: 0, maxFiles: 200 });
+    expect(before.kind).toBe("all");
+    if (before.kind === "all") {
+      expect(before.reasons).toContainEqual({ kind: "diff-too-large", files: 401, limit: 200 });
+    }
+    // With them: 400 are skipped by rule, so only src/lib.ts is counted.
+    const after = select(diff, { graph: g, minDensity: 0, maxFiles: 200, pathVerdicts: verdicts });
+    expect(after.kind).toBe("subset");
+  });
+
+  // The safety half: an unindexed file must still fail open. cgraph visited it
+  // and no extractor claimed it, so the graph may be incomplete because of it.
+  it("an unindexed file still fails open even with verdicts present", () => {
+    const diff = diffOver(["research/evidence/a.json", ".github/workflows/ci.yml"]);
+    const sel = select(diff, { graph: g, minDensity: 0, pathVerdicts: verdicts });
+    expect(sel.kind).toBe("all");
+    if (sel.kind !== "all") return;
+    expect(sel.reasons).toContainEqual({ kind: "unmapped-file", path: ".github/workflows/ci.yml" });
+    // and the ignored one contributed no reason at all
+    expect(sel.reasons.some((r) => r.kind === "unmapped-file" && r.path.startsWith("research/"))).toBe(false);
   });
 
   it("fails open to ALL when the diff touches an unmapped file", () => {

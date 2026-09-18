@@ -57,7 +57,7 @@ function renderUnmapped(paths: string[]): string {
   const listed = paths.slice(0, 50).map((p) => p).join("\n");
   const more = paths.length > 50 ? `\n… ${paths.length - 50} more` : "";
   return [
-    `**${paths.length} file${paths.length === 1 ? "" : "s"} have no graph node** (config / asset / unextracted).`,
+    `**${paths.length} file${paths.length === 1 ? " has" : "s have"} no graph node** (config / asset / unextracted).`,
     "",
     "```",
     bars,
