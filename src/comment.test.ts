@@ -23,6 +23,7 @@ describe("renderComment", () => {
           { kind: "diff-too-large", files: 300, limit: 200 },
           { kind: "extraction-warning", path: "y.ts" },
           { kind: "graph-unavailable", detail: "no graph" },
+          { kind: "no-test-files" },
         ],
       },
       "a..b",
@@ -30,6 +31,7 @@ describe("renderComment", () => {
     expect(md).toContain("Run the full suite");
     expect(md).toContain("1.9 edges/file");
     expect(md).toContain("`x.json`");
+    expect(md).toContain("no test files at all");
   });
 
 

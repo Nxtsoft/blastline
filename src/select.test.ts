@@ -31,6 +31,39 @@ describe("select", () => {
     expect(sel.blast.join("\n")).toContain("function use");
   });
 
+  // A graph with no test-file nodes cannot answer "which tests does this change
+  // affect". testReachability returns null for that graph, which SKIPS the
+  // disconnected-tests guard rather than tripping it, so selection used to run
+  // to completion and intersect against an empty test set -- returning
+  // {kind:"subset", tests:[]}, i.e. "run nothing", with no reason and no
+  // warning. Every other fail-open path is over-conservative; this one was the
+  // opposite, so it is the one that could actually let a regression through.
+  it("fails open when the graph contains no test files at all", () => {
+    const node = (id: string, type: string, file: string) => ({
+      id,
+      label: id,
+      type,
+      source_file: file,
+    });
+    const noTests = indexGraph(
+      [
+        node("f_lib", "file", "/repo/src/lib.ts"),
+        node("fn_parse", "function", "/repo/src/lib.ts"),
+        node("f_consumer", "file", "/repo/src/consumer.ts"),
+        node("fn_use", "function", "/repo/src/consumer.ts"),
+      ],
+      [
+        { source: "f_lib", target: "fn_parse", relation: "contains" },
+        { source: "f_consumer", target: "fn_use", relation: "contains" },
+        { source: "fn_use", target: "fn_parse", relation: "CALLS" },
+      ],
+    );
+    const sel = select(DIFF_IN_PARSE, { graph: noTests, minDensity: 0 });
+    expect(sel.kind).toBe("all");
+    if (sel.kind !== "all") return;
+    expect(sel.reasons).toContainEqual({ kind: "no-test-files" });
+  });
+
   it("fails open to ALL when the diff touches an unmapped file", () => {
     const sel = select(DIFF_WITH_DOC, { graph: g, minDensity: 0 });
     expect(sel).toEqual({ kind: "all", reasons: [{ kind: "unmapped-file", path: "README.md" }] });
