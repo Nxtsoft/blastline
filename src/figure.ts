@@ -96,9 +96,12 @@ function rows(files: ChangedFileImpact[], tests: string[], edges: FileEdge[], ma
   return { changed: cap(changed), reached: cap(reached), test: cap(testRows) };
 }
 
-/** Render the reach figure for a subset selection. Returns null for a fail-open selection. */
+/** Render the reach figure for a subset selection. Null when there is nothing to draw: fail-open, or no mapped file. */
 export function renderFigure(selection: Selection, opts: FigureOptions): string | null {
   if (selection.kind !== "subset") return null;
+  // Nothing mapped (every changed file ignored by policy) leaves no node to
+  // draw: three captions over an empty box explain less than no figure.
+  if (!selection.files.some((f) => f.disposition === "mapped")) return null;
   const t = PALETTE[opts.theme];
   const maxRows = opts.maxRows ?? 12;
   const { changed, reached, test } = rows(selection.files, selection.tests, selection.edges, maxRows);
