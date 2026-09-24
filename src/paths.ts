@@ -58,3 +58,30 @@ export function isDeliberatelyIgnored(verdicts: PathVerdicts, path: string): boo
   // files, so they are never listed individually.
   return verdicts.ignoredDirectories.some((dir) => path === dir || path.startsWith(`${dir}/`));
 }
+
+/** A graph's absolute path shown relative to the repo root; unchanged when it lies outside it. */
+export function relativeTo(repo: string, abs: string): string {
+  const root = repo.endsWith("/") ? repo : `${repo}/`;
+  return abs.startsWith(root) ? abs.slice(root.length) : abs;
+}
+
+/**
+ * The directory most of the given repo-relative paths share, so they can be
+ * shown without it. One file at the repo root must not cancel the prefix for
+ * the eight beside it, so the prefix is taken over the largest group sharing
+ * a first segment; "" when no two paths share a directory.
+ */
+export function sharedDir(paths: string[]): string {
+  const groups = new Map<string, string[]>();
+  for (const p of paths) {
+    const top = p.split("/")[0] as string;
+    groups.set(top, [...(groups.get(top) ?? []), p]);
+  }
+  const largest = [...groups.values()].sort((a, b) => b.length - a.length)[0] ?? [];
+  if (largest.length < 2) return "";
+  const parts = largest.map((p) => p.split("/").slice(0, -1));
+  const first = parts[0] as string[];
+  let n = 0;
+  while (n < first.length && parts.every((p) => p[n] === first[n])) n++;
+  return n === 0 ? "" : `${first.slice(0, n).join("/")}/`;
+}

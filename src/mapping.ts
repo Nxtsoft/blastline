@@ -7,6 +7,8 @@ import type { ChangedFile, FailOpenReason } from "./types.js";
 export interface MappingResult {
   /** node ids seeding the impact walk */
   seeds: Set<string>;
+  /** the same seeds, keyed by the changed file (its `path`) that produced them */
+  seedsByFile: Map<string, Set<string>>;
   failOpen: FailOpenReason[];
 }
 
@@ -70,10 +72,17 @@ export function mapDiffToSeeds(
   opts: { baseGraph?: CodeGraph; ignore?: (path: string) => boolean } = {},
 ): MappingResult {
   const seeds = new Set<string>();
+  const seedsByFile = new Map<string, Set<string>>();
   const failOpen: FailOpenReason[] = [];
 
   for (const file of changed) {
     if (opts.ignore?.(file.path) && opts.ignore?.(file.oldPath)) continue;
+    const own = new Set<string>();
+    seedsByFile.set(file.path, own);
+    const seed = (id: string): void => {
+      seeds.add(id);
+      own.add(id);
+    };
 
     const headNodes = file.status === "deleted" ? [] : nodesInFile(graph, file.path);
     const baseNodes = opts.baseGraph ? nodesInFile(opts.baseGraph, file.oldPath) : [];
@@ -81,7 +90,7 @@ export function mapDiffToSeeds(
     if (headNodes.length === 0 && file.status !== "deleted") {
       const registered = registeredTestSeeds(graph, file);
       if (registered !== null) {
-        for (const id of registered) seeds.add(id);
+        for (const id of registered) seed(id);
         continue;
       }
       failOpen.push({ kind: "unmapped-file", path: file.path });
@@ -93,7 +102,7 @@ export function mapDiffToSeeds(
         continue;
       }
       // Whole file gone: every base-side symbol (and the file itself) is a seed.
-      for (const n of baseNodes) seeds.add(n.id);
+      for (const n of baseNodes) seed(n.id);
       continue;
     }
 
@@ -103,7 +112,7 @@ export function mapDiffToSeeds(
     // node — a schema whose canonical file this is) is file-scoped: any change
     // to the file touches it. Seed it unconditionally.
     for (const n of headNodes) {
-      if (n.type !== "file" && !n.source_location) seeds.add(n.id);
+      if (n.type !== "file" && !n.source_location) seed(n.id);
     }
     const baseSymbols = baseNodes.filter((n) => n.type !== "file" && n.source_location);
     const baseFileNode = baseNodes.find((n) => n.type === "file");
@@ -112,7 +121,7 @@ export function mapDiffToSeeds(
       if (range.deletion && !opts.baseGraph) {
         // Old-side line numbers cannot be resolved against head spans; the
         // file node is the documented superset-safe degradation.
-        if (fileNode) seeds.add(fileNode.id);
+        if (fileNode) seed(fileNode.id);
         continue;
       }
       const pool = range.deletion ? baseSymbols : symbols;
@@ -123,12 +132,12 @@ export function mapDiffToSeeds(
         );
         if (containing.length > 0) {
           containing.sort((a, b) => spanSize(a) - spanSize(b));
-          seeds.add((containing[0] as GraphNode).id);
+          seed((containing[0] as GraphNode).id);
         } else if (fallback) {
-          seeds.add(fallback.id);
+          seed(fallback.id);
         }
       }
     }
   }
-  return { seeds, failOpen };
+  return { seeds, seedsByFile, failOpen };
 }

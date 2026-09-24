@@ -35,7 +35,7 @@ Deciding which tests a diff needs means knowing what the change *reaches* — an
 | | |
 | --- | --- |
 | 🎯 **Impacted tests, not guesses** | Changed lines map to graph symbols; a transitive-dependents walk finds every test that reaches them. `blastline tests main..HEAD \| xargs vitest run` runs exactly those. |
-| 💥 **Blast radius on every PR** | The GitHub Action comments each PR with the change's transitive dependents, with `file:line` — the reviewer sees what the diff touches before reading it. |
+| 💥 **Blast radius on every PR** | The GitHub Action comments each PR with what the diff reaches: the verdict with its denominator, a reach figure (changed files, the files they reach, the tests at the end), one row per changed file, and the transitive dependents behind a fold — the reviewer sees what the diff touches before reading it. |
 | 🛡️ **Safe superset, fail-open** | The contract is "run *at least* these," never "safe to skip." Unmapped files, a stale graph, an under-extracted graph, or an oversized diff all fail open to a full run, with machine-readable reasons. |
 | ⚡ **Deterministic & instant** | Selection is pure graph traversal: same repo state + same diff → byte-identical output, in under a millisecond on a built graph. No ML ranking, no coverage run. |
 | 🤖 **Built for coding agents** | `blastline mcp` serves `blastline_tests` / `blastline_blast` / `blastline_check` over MCP, so an agent sees what its edit reaches — and what still references a symbol it's about to change — *before* opening the PR. |
@@ -164,7 +164,17 @@ Bring your own graph instead with `graph-path` — e.g. a monorepo build step, o
       ^docs/
 ```
 
-Outputs: `kind` (`subset` or `all`) and `tests` (newline-separated files), so a downstream job can run only the selected tests. The comment shows the impacted tests and a collapsible blast radius; on fail-open it says "run the full suite" and why. With `graph-root`, the build is cached via `actions/cache` keyed on the tree hash of `graph-root` (`git rev-parse HEAD:<graph-root>`) rather than the graph's own content-root hash, since that hash lives inside `graph.json` and isn't known until after the build runs. `cgraph-version` (default `bin-v0.1.0`) pins the `Nxtsoft/CGraph` release tag the turnkey build installs from; currently Linux x64 runners only. With `graph-path`, supply your own graph from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
+Outputs: `kind` (`subset` or `all`) and `tests` (newline-separated files), so a downstream job can run only the selected tests.
+
+The comment leads with the verdict and its denominator ("6 of 195 test files reach this diff"), a summary table, and a reach figure: the changed files, the files they reach, and the tests at the end, drawn by blastline and hosted on `figure-branch` in your repository (default `blastline-figures`, one directory per PR head sha). Below it, one table row per changed file with the symbols touched, how many files it reaches and how many tests, the tests to run as links to the head blob, and the blast radius grouped by changed file behind a fold. On fail-open it says "run the full suite" and pairs every reason with what you can do about it. One comment per PR, updated in place on every push.
+
+The figure needs `contents: write` on the token so the Action can push the SVG; `pull-requests: write` posts the comment. Without `contents: write` the comment is posted without the figure, with a warning in the job log:
+
+```yaml
+permissions:
+  contents: write        # the reach figure, on figure-branch
+  pull-requests: write   # the comment
+``` With `graph-root`, the build is cached via `actions/cache` keyed on the tree hash of `graph-root` (`git rev-parse HEAD:<graph-root>`) rather than the graph's own content-root hash, since that hash lives inside `graph.json` and isn't known until after the build runs. `cgraph-version` (default `bin-v0.1.0`) pins the `Nxtsoft/CGraph` release tag the turnkey build installs from; currently Linux x64 runners only. With `graph-path`, supply your own graph from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
 
 `base-graph-command` automates deletion mapping: the action checks out the
 range's base commit into a worktree, runs your graph-build command there (it
@@ -216,6 +226,7 @@ Both take `repo` plus a `range` or raw `diff` text, with `graph_path`, `ignore`,
 blastline tests <base>..<head> [options]     # impacted test files (list or --json)
 blastline blast <base>..<head> [options]     # transitive dependents with file:line
 blastline comment <base>..<head> [options]   # the PR-comment markdown
+blastline figure <base>..<head> --out-dir <dir> [options]  # the reach figure the comment embeds (reach-dark.svg, reach-light.svg)
 blastline mcp                                # MCP server over stdio
 ```
 
@@ -231,8 +242,12 @@ blastline mcp                                # MCP server over stdio
 | `--max-traversal-nodes <n>` | abandon selection above this walk size (default 2000000) |
 | `--min-density <n>` | fail open below this edges-per-file floor (default 3) |
 | `--json` | structured output |
+| `--selection <file>` | `comment`/`figure`: render from a saved `--json` selection instead of computing one |
+| `--repo-url <url>` | `comment`: `https://github.com/<owner>/<repo>`, so paths link to the head blob and the shas to a compare view |
+| `--pr <n>` | `comment`/`figure`: the pull request number, shown in the summary |
+| `--figure-url <base>` | `comment`: embed the hosted figure at `<base>/reach-dark.svg` and `<base>/reach-light.svg` |
 
-`tests`/`blast` print one item per line (empty = clean subset with nothing impacted); on fail-open they print `ALL` to stdout and one JSON reason per line to stderr, exit code 0 — consumers branch on the output, not the exit code.
+`tests`/`blast` print one item per line (empty = clean subset with nothing impacted); on fail-open they print `ALL` to stdout and one JSON reason per line to stderr, exit code 0 — consumers branch on the output, not the exit code. A `--json` subset also carries `testsTotal`, one `files` entry per changed file (symbols touched, files reached, tests reached), and the file-level `edges` among them: everything the comment and the figure show.
 
 </details>
 

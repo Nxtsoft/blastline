@@ -1,4 +1,7 @@
-export { renderComment } from "./comment.js";
+export { COMMENT_MARKER, renderComment } from "./comment.js";
+export type { CommentContext } from "./comment.js";
+export { renderFigure } from "./figure.js";
+export type { FigureOptions, FigureTheme } from "./figure.js";
 export { isTestPath, testFiles } from "./detect.js";
 export { parseUnifiedDiff } from "./diff.js";
 export { indexGraph, loadGraph, nodesInFile } from "./graph.js";
@@ -10,4 +13,4 @@ export { runSelection } from "./run.js";
 export type { RunOptions } from "./run.js";
 export { select } from "./select.js";
 export type { SelectOptions } from "./select.js";
-export type { ChangedFile, ChangedRange, FailOpenReason, Selection } from "./types.js";
+export type { ChangedFile, ChangedFileImpact, ChangedRange, FailOpenReason, FileEdge, Selection } from "./types.js";
