@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { renderComment } from "./comment.js";
-import { renderFigure } from "./figure.js";
+import { renderFigure, renderMermaid } from "./figure.js";
 import { serveStdio } from "./mcp.js";
 import { runSelection } from "./run.js";
 import type { Selection } from "./types.js";
@@ -50,6 +50,7 @@ comment and figure options:
   --repo-url <url>     https://github.com/<owner>/<repo>: paths become blob links, shas a compare link
   --pr <n>             pull request number, shown in the summary
   --figure-url <base>  embed the hosted figure: <base>/reach-dark.svg and <base>/reach-light.svg
+  --figure-mermaid     embed the figure as a mermaid block instead (renders in private repositories)
   --head-sha <sha>     name this commit as the head (links, captions) when the range ends elsewhere,
                        e.g. a pull_request merge commit standing in for the PR head
   --out-dir <dir>      (figure) where to write the two SVGs
@@ -197,6 +198,13 @@ if (command === "mcp") {
       process.exit(0);
     }
     const figureBase = opt("figure-url")?.replace(/\/$/, "");
+    const mermaid = argv.includes("--figure-mermaid") ? renderMermaid(selection, { repo }) : null;
+    const figure =
+      mermaid !== null
+        ? { kind: "mermaid" as const, source: mermaid }
+        : figureBase !== undefined && selection.kind === "subset"
+          ? { kind: "image" as const, dark: `${figureBase}/reach-dark.svg`, light: `${figureBase}/reach-light.svg` }
+          : undefined;
     const repoUrl = opt("repo-url")?.replace(/\/$/, "");
     console.log(
       renderComment(selection, {
@@ -206,10 +214,7 @@ if (command === "mcp") {
         ...(shas !== undefined && { baseSha: shas.base, headSha: shas.head }),
         ...(repoUrl !== undefined && { repoUrl }),
         ...(pr !== undefined && { prNumber: Number(pr) }),
-        ...(figureBase !== undefined &&
-          selection.kind === "subset" && {
-            figure: { dark: `${figureBase}/reach-dark.svg`, light: `${figureBase}/reach-light.svg` },
-          }),
+        ...(figure !== undefined && { figure }),
       }),
     );
     process.exit(0);

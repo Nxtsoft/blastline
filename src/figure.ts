@@ -3,15 +3,15 @@ import type { ChangedFileImpact, FileEdge, Selection } from "./types.js";
 
 /**
  * The reach figure: what the diff touched, what that reaches, and which tests
- * sit at the end, as one SVG the PR comment embeds. File-level on purpose --
- * symbol-level graphs of a real PR run to hundreds of nodes and explain
- * nothing at comment width.
+ * sit at the end. File-level on purpose -- symbol-level graphs of a real PR
+ * run to hundreds of nodes and explain nothing at comment width.
  *
- * Layout is deliberate rather than delegated to a graph layout engine: three
- * fixed columns (changed, reached, tests) in dependency order, one row per
- * file, a cap per column with a "+N more" node so a wide PR stays legible, and
- * same-column dependencies drawn as dashed arcs on the column's left so they
- * never cross the column's outgoing edges.
+ * One layout, two renderings. The SVG is the figure at its best: three fixed
+ * columns in dependency order, a "+N more" fold per column, same-column
+ * dependencies as dashed arcs. It needs hosting an image can be fetched from
+ * anonymously, which a private repository cannot offer, so the same layout
+ * also renders as a mermaid block GitHub draws itself: layers become node
+ * shapes and colors, and the engine picks the positions.
  */
 
 export type FigureTheme = "dark" | "light";
@@ -50,6 +50,7 @@ const PALETTE: Record<FigureTheme, Record<string, string>> = {
 };
 
 type Column = "changed" | "reached" | "test";
+const COLUMNS: Column[] = ["changed", "reached", "test"];
 const COLUMN_X: Record<Column, number> = { changed: 36, reached: 384, test: 682 };
 const NODE_W: Record<Column, number> = { changed: 306, reached: 236, test: 240 };
 const WIDTH = 940;
@@ -68,13 +69,28 @@ function fit(label: string, chars: number): string {
   return label.length <= chars ? label : `…${label.slice(label.length - (chars - 1))}`;
 }
 
+function isTest(f: ChangedFileImpact): boolean {
+  return f.tests.some((t) => t.endsWith(`/${f.path}`) || t === f.path);
+}
+
 interface Node {
   key: string;
+  /** Repo-relative path with the shared prefix dropped; "+N more" for a fold. */
   label: string;
   note?: string;
   column: Column;
-  x: number;
-  y: number;
+  /** Row within the column. */
+  index: number;
+  more: boolean;
+}
+
+interface Layout {
+  nodes: Node[];
+  /** Pairs of node keys, dependency first, folded onto "+N more" nodes and deduplicated. */
+  edges: [from: string, to: string][];
+  /** Directory every shown path shares, "" when none. */
+  prefix: string;
+  captions: Record<Column, string>;
 }
 
 /**
@@ -84,7 +100,6 @@ interface Node {
  */
 function rows(files: ChangedFileImpact[], tests: string[], edges: FileEdge[], maxRows: number) {
   // An edited test file is drawn once, in the tests column, where it will run.
-  const isTest = (f: ChangedFileImpact): boolean => f.tests.some((t) => t.endsWith(`/${f.path}`) || t === f.path);
   const changed = files.filter((f) => f.disposition === "mapped" && !isTest(f)).map((f) => f.path);
   const reachCount = new Map<string, number>();
   for (const f of files) for (const r of f.reaches) reachCount.set(r.file, (reachCount.get(r.file) ?? 0) + 1);
@@ -96,80 +111,51 @@ function rows(files: ChangedFileImpact[], tests: string[], edges: FileEdge[], ma
   return { changed: cap(changed), reached: cap(reached), test: cap(testRows) };
 }
 
-/** Render the reach figure for a subset selection. Null when there is nothing to draw: fail-open, or no mapped file. */
-export function renderFigure(selection: Selection, opts: FigureOptions): string | null {
+/** The shared layout, or null when there is nothing to draw: fail-open, or no mapped file outside the tests. */
+export function layout(selection: Selection, repo: string, maxRows = 12): Layout | null {
   if (selection.kind !== "subset") return null;
   // Nothing mapped outside the tests themselves (every changed file ignored
   // by policy, or only test files edited) leaves no reach to draw: captions
   // over an empty box explain less than no figure.
-  const isTest = (f: ChangedFileImpact): boolean => f.tests.some((t) => t.endsWith(`/${f.path}`) || t === f.path);
   if (!selection.files.some((f) => f.disposition === "mapped" && !isTest(f))) return null;
-  const t = PALETTE[opts.theme];
-  const maxRows = opts.maxRows ?? 12;
   const { changed, reached, test } = rows(selection.files, selection.tests, selection.edges, maxRows);
 
   // Changed rows are repo-relative already; reached/test rows are absolute.
   const changedAbs = new Map<string, string>();
   for (const e of selection.edges) {
     for (const abs of [e.from, e.to]) {
-      const rel = relativeTo(opts.repo, abs);
+      const rel = relativeTo(repo, abs);
       if (changed.shown.includes(rel)) changedAbs.set(rel, abs);
     }
   }
-
-  const rowsOf = (c: Column): number => {
-    const list = c === "changed" ? changed : c === "reached" ? reached : test;
-    const n = list.shown.length + (list.hidden > 0 ? 1 : 0);
-    return n * NODE_H + (n - 1) * GAP;
-  };
-  const columnsHeight = Math.max(...(["changed", "reached", "test"] as Column[]).map(rowsOf));
-  const height = TOP + columnsHeight + BOTTOM;
-
-  const nodes = new Map<string, Node>();
   const prefix = sharedDir([
     ...changed.shown,
-    ...reached.shown.map((p) => relativeTo(opts.repo, p)),
-    ...test.shown.map((p) => relativeTo(opts.repo, p)),
+    ...reached.shown.map((p) => relativeTo(repo, p)),
+    ...test.shown.map((p) => relativeTo(repo, p)),
   ]);
   const shown = (key: string): string => {
-    const rel = relativeTo(opts.repo, key);
+    const rel = relativeTo(repo, key);
     return prefix && rel.startsWith(prefix) ? rel.slice(prefix.length) : rel;
   };
+
+  const nodes = new Map<string, Node>();
   const place = (column: Column, keys: string[], hidden: number, note?: (key: string) => string | undefined) => {
-    const n = keys.length + (hidden > 0 ? 1 : 0);
-    const total = n * NODE_H + (n - 1) * GAP;
-    const y0 = TOP + (columnsHeight - total) / 2;
-    keys.forEach((key, i) => {
+    keys.forEach((key, index) => {
       if (nodes.has(key)) return; // a file drawn once stays where it was first placed
       const noteText = note?.(key);
-      const chars = Math.floor((NODE_W[column] - 24 - (noteText?.length ?? 0) * 6) / CHAR_W);
-      nodes.set(key, {
-        key,
-        label: fit(shown(key), chars),
-        ...(noteText !== undefined && { note: noteText }),
-        column,
-        x: COLUMN_X[column],
-        y: y0 + i * (NODE_H + GAP),
-      });
+      nodes.set(key, { key, label: shown(key), ...(noteText !== undefined && { note: noteText }), column, index, more: false });
     });
     if (hidden > 0) {
-      nodes.set(`${column}:more`, {
-        key: `${column}:more`,
-        label: `+${hidden} more`,
-        column,
-        x: COLUMN_X[column],
-        y: y0 + keys.length * (NODE_H + GAP),
-      });
+      nodes.set(`${column}:more`, { key: `${column}:more`, label: `+${hidden} more`, column, index: keys.length, more: true });
     }
   };
-
   const byPath = new Map(selection.files.map((f) => [f.path, f] as const));
   place(
     "changed",
     changed.shown.map((rel) => changedAbs.get(rel) ?? rel),
     changed.hidden,
     (key) => {
-      const f = byPath.get(relativeTo(opts.repo, key));
+      const f = byPath.get(relativeTo(repo, key));
       if (!f) return undefined;
       if (f.status === "added") return "new file";
       if (f.status === "deleted") return "deleted";
@@ -177,92 +163,151 @@ export function renderFigure(selection: Selection, opts: FigureOptions): string 
     },
   );
   place("reached", reached.shown, reached.hidden);
-  const editedTests = new Set(
-    selection.files.filter((f) => f.disposition === "mapped" && f.tests.some((t) => t.endsWith(`/${f.path}`) || t === f.path)).map((f) => f.path),
-  );
-  place("test", test.shown, test.hidden, (key) => (editedTests.has(relativeTo(opts.repo, key)) ? "edited" : undefined));
+  const editedTests = new Set(selection.files.filter((f) => f.disposition === "mapped" && isTest(f)).map((f) => f.path));
+  place("test", test.shown, test.hidden, (key) => (editedTests.has(relativeTo(repo, key)) ? "edited" : undefined));
 
   // An edge to a folded file lands on that column's "+N more" node instead.
   const target = (abs: string): Node | undefined => {
     const direct = nodes.get(abs);
     if (direct) return direct;
-    const rel = relativeTo(opts.repo, abs);
-    const asChanged = nodes.get(changedAbs.get(rel) ?? "");
+    const asChanged = nodes.get(changedAbs.get(relativeTo(repo, abs)) ?? "");
     if (asChanged) return asChanged;
     if (selection.tests.includes(abs)) return nodes.get("test:more");
     if (selection.files.some((f) => f.reaches.some((r) => r.file === abs))) return nodes.get("reached:more");
     return undefined;
   };
   const drawn = new Set<string>();
-  const paths: string[] = [];
+  const edges: [string, string][] = [];
   for (const e of selection.edges) {
     const a = target(e.from);
     const b = target(e.to);
     if (!a || !b || a === b) continue;
+    if (COLUMN_X[b.column] < COLUMN_X[a.column]) continue; // never draw against the dependency flow
     const key = `${a.key}>${b.key}`;
     if (drawn.has(key)) continue;
     drawn.add(key);
-    const ay = a.y + NODE_H / 2;
-    const by = b.y + NODE_H / 2;
-    if (a.column === b.column) {
-      const cx = a.x - 30;
-      paths.push(
-        `<path d="M${a.x},${ay} C${cx},${ay} ${cx},${by} ${b.x},${by}" fill="none" stroke="${t["edge"]}" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#arrow)" opacity=".9"/>`,
-      );
-      continue;
-    }
-    if (COLUMN_X[b.column] < COLUMN_X[a.column]) continue; // never draw against the dependency flow
-    const ax = a.x + NODE_W[a.column];
-    const mx = (ax + b.x) / 2;
-    paths.push(
-      `<path d="M${ax},${ay} C${mx},${ay} ${mx},${by} ${b.x},${by}" fill="none" stroke="${t["edge"]}" stroke-width="1.2" marker-end="url(#arrow)" opacity=".8"/>`,
-    );
+    edges.push([a.key, b.key]);
   }
 
-  const symbolTotal = selection.files
-    .filter((f) => !editedTests.has(f.path))
-    .reduce((n, f) => n + f.symbols.length, 0);
+  const symbolTotal = selection.files.filter((f) => !editedTests.has(f.path)).reduce((n, f) => n + f.symbols.length, 0);
   const reachedFiles = new Set<string>();
   for (const f of selection.files) for (const r of f.reaches) reachedFiles.add(r.file);
-  const captions: [Column, string][] = [
-    [
-      "changed",
-      `CHANGED  ${changed.shown.length + changed.hidden} file${changed.shown.length + changed.hidden === 1 ? "" : "s"}, ${symbolTotal} symbol${symbolTotal === 1 ? "" : "s"}${editedTests.size > 0 ? `, ${editedTests.size} test${editedTests.size === 1 ? "" : "s"} edited` : ""}`,
-    ],
-    ["reached", `REACHES  ${reachedFiles.size} file${reachedFiles.size === 1 ? "" : "s"}, ${selection.blast.length} dependent${selection.blast.length === 1 ? "" : "s"}`],
-    ["test", `TESTS  ${selection.tests.length} of ${selection.testsTotal}`],
-  ];
+  const changedTotal = changed.shown.length + changed.hidden;
+  const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+  const captions: Record<Column, string> = {
+    changed: `CHANGED  ${plural(changedTotal, "file")}, ${plural(symbolTotal, "symbol")}${editedTests.size > 0 ? `, ${plural(editedTests.size, "test")} edited` : ""}`,
+    reached: `REACHES  ${plural(reachedFiles.size, "file")}, ${plural(selection.blast.length, "dependent")}`,
+    test: `TESTS  ${selection.tests.length} of ${selection.testsTotal}`,
+  };
+  return { nodes: [...nodes.values()], edges, prefix, captions };
+}
+
+/** Render the reach figure as an SVG. Null when there is nothing to draw. */
+export function renderFigure(selection: Selection, opts: FigureOptions): string | null {
+  const l = layout(selection, opts.repo, opts.maxRows);
+  if (l === null) return null;
+  const t = PALETTE[opts.theme];
+  const rowsOf = (c: Column): number => {
+    const n = l.nodes.filter((node) => node.column === c).length;
+    return n * NODE_H + (n - 1) * GAP;
+  };
+  const columnsHeight = Math.max(...COLUMNS.map(rowsOf));
+  const height = TOP + columnsHeight + BOTTOM;
+  const y0: Record<Column, number> = { changed: 0, reached: 0, test: 0 };
+  for (const c of COLUMNS) y0[c] = TOP + (columnsHeight - rowsOf(c)) / 2;
+  const pos = new Map(l.nodes.map((n) => [n.key, { x: COLUMN_X[n.column], y: y0[n.column] + n.index * (NODE_H + GAP) }]));
+  const byKey = new Map(l.nodes.map((n) => [n.key, n]));
 
   const out: string[] = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${height}" viewBox="0 0 ${WIDTH} ${height}" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="12" role="img" aria-label="${esc(
-      `${changed.shown.length + changed.hidden} changed files reach ${reachedFiles.size} files and ${selection.tests.length} of ${selection.testsTotal} tests`,
+      `${l.captions.changed}; ${l.captions.reached}; ${l.captions.test}`.toLowerCase(),
     )}">`,
     `<rect width="${WIDTH}" height="${height}" rx="6" fill="${t["bg"]}"/>`,
     `<defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="${t["edge"]}"/></marker></defs>`,
   ];
-  for (const [column, text] of captions) {
-    out.push(`<text x="${COLUMN_X[column]}" y="24" fill="${t[column]}" font-weight="700" letter-spacing=".04em">${esc(text)}</text>`);
+  for (const c of COLUMNS) {
+    out.push(`<text x="${COLUMN_X[c]}" y="24" fill="${t[c]}" font-weight="700" letter-spacing=".04em">${esc(l.captions[c])}</text>`);
   }
-  out.push(...paths);
-  for (const n of nodes.values()) {
+  for (const [from, to] of l.edges) {
+    const a = byKey.get(from) as Node;
+    const b = byKey.get(to) as Node;
+    const pa = pos.get(from) as { x: number; y: number };
+    const pb = pos.get(to) as { x: number; y: number };
+    const ay = pa.y + NODE_H / 2;
+    const by = pb.y + NODE_H / 2;
+    if (a.column === b.column) {
+      const cx = pa.x - 30;
+      out.push(
+        `<path d="M${pa.x},${ay} C${cx},${ay} ${cx},${by} ${pb.x},${by}" fill="none" stroke="${t["edge"]}" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#arrow)" opacity=".9"/>`,
+      );
+      continue;
+    }
+    const ax = pa.x + NODE_W[a.column];
+    const mx = (ax + pb.x) / 2;
+    out.push(
+      `<path d="M${ax},${ay} C${mx},${ay} ${mx},${by} ${pb.x},${by}" fill="none" stroke="${t["edge"]}" stroke-width="1.2" marker-end="url(#arrow)" opacity=".8"/>`,
+    );
+  }
+  for (const n of l.nodes) {
+    const { x, y } = pos.get(n.key) as { x: number; y: number };
     const w = NODE_W[n.column];
     const color = t[n.column];
-    const more = n.key.endsWith(":more");
     out.push(
-      `<rect x="${n.x}" y="${n.y}" width="${w}" height="${NODE_H}" rx="4" fill="${t["panel"]}" stroke="${color}" stroke-width="1.4"${more ? ' stroke-dasharray="4 3"' : ""}/>`,
+      `<rect x="${x}" y="${y}" width="${w}" height="${NODE_H}" rx="4" fill="${t["panel"]}" stroke="${color}" stroke-width="1.4"${n.more ? ' stroke-dasharray="4 3"' : ""}/>`,
     );
-    if (!more) out.push(`<rect x="${n.x}" y="${n.y}" width="4" height="${NODE_H}" rx="2" fill="${color}"/>`);
-    out.push(`<text x="${n.x + 12}" y="${n.y + 17}" fill="${more ? t["muted"] : t["fg"]}">${esc(n.label)}</text>`);
+    if (!n.more) out.push(`<rect x="${x}" y="${y}" width="4" height="${NODE_H}" rx="2" fill="${color}"/>`);
+    const chars = Math.floor((w - 24 - (n.note?.length ?? 0) * 6) / CHAR_W);
+    out.push(`<text x="${x + 12}" y="${y + 17}" fill="${n.more ? t["muted"] : t["fg"]}">${esc(fit(n.label, chars))}</text>`);
     if (n.note !== undefined) {
-      out.push(`<text x="${n.x + w - 8}" y="${n.y + 17}" fill="${t["muted"]}" text-anchor="end" font-size="10">${esc(n.note)}</text>`);
+      out.push(`<text x="${x + w - 8}" y="${y + 17}" fill="${t["muted"]}" text-anchor="end" font-size="10">${esc(n.note)}</text>`);
     }
   }
-  if (prefix) {
-    out.push(`<text x="${COLUMN_X.changed}" y="${height - 10}" fill="${t["muted"]}" font-size="10">${esc(`paths under ${prefix} unless shown in full`)}</text>`);
+  if (l.prefix) {
+    out.push(`<text x="${COLUMN_X.changed}" y="${height - 10}" fill="${t["muted"]}" font-size="10">${esc(`paths under ${l.prefix} unless shown in full`)}</text>`);
   }
   if (opts.caption !== undefined) {
     out.push(`<text x="${WIDTH - 12}" y="${height - 10}" fill="${t["muted"]}" text-anchor="end" font-size="10">${esc(opts.caption)}</text>`);
   }
   out.push("</svg>");
   return out.join("\n");
+}
+
+/** Mermaid node text: quoted, so paths with brackets and parentheses survive; a quote becomes its entity. */
+function mermaidLabel(s: string): string {
+  return `"${s.replace(/"/g, "#quot;")}"`;
+}
+
+/**
+ * Render the same layout as a mermaid `graph LR` block for GitHub to draw
+ * client-side, which works in private repositories where an image cannot be
+ * fetched. Columns become shapes as well as colors: changed files are
+ * double-bordered, tests are rounded, reached files plain, so the layers read
+ * without color. Null when there is nothing to draw.
+ */
+export function renderMermaid(selection: Selection, opts: { repo: string; maxRows?: number }): string | null {
+  const l = layout(selection, opts.repo, opts.maxRows);
+  if (l === null) return null;
+  const id = new Map(l.nodes.map((n, i) => [n.key, `n${i}`]));
+  const shape = (n: Node): string => {
+    const text = mermaidLabel(n.note !== undefined && !n.more ? `${n.label}  (${n.note})` : n.label);
+    if (n.column === "changed") return `[[${text}]]`;
+    if (n.column === "test") return `([${text}])`;
+    return `[${text}]`;
+  };
+  const lines = ["graph LR"];
+  for (const n of l.nodes) lines.push(`  ${id.get(n.key)}${shape(n)}`);
+  for (const [from, to] of l.edges) lines.push(`  ${id.get(from)} --> ${id.get(to)}`);
+  lines.push(
+    "  classDef changed fill:#f5a651,stroke:#b35900,color:#1f2328",
+    "  classDef reached fill:#a5c8ff,stroke:#0969da,color:#1f2328",
+    "  classDef test fill:#8ee0b8,stroke:#1a7f37,color:#1f2328",
+    "  classDef more fill:none,stroke:#8b949e,stroke-dasharray:4 3,color:#8b949e",
+  );
+  for (const c of COLUMNS) {
+    const members = l.nodes.filter((n) => n.column === c && !n.more).map((n) => id.get(n.key));
+    if (members.length > 0) lines.push(`  class ${members.join(",")} ${c}`);
+  }
+  const folds = l.nodes.filter((n) => n.more).map((n) => id.get(n.key));
+  if (folds.length > 0) lines.push(`  class ${folds.join(",")} more`);
+  return lines.join("\n");
 }

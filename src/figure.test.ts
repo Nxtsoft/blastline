@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderFigure } from "./figure.js";
+import { renderFigure, renderMermaid } from "./figure.js";
 import type { Selection } from "./types.js";
 
 const REPO = "/r";
@@ -132,5 +132,41 @@ rename to src/consumer.ts
     const svg = renderFigure(sel, { theme: "dark", repo: "/repo" }) as string;
     expect((svg.match(/<rect x="36" y="[^"]+" width="306"/g) ?? []).length).toBe(2);
     expect((svg.match(/>consumer\.ts</g) ?? []).length).toBe(1);
+  });
+});
+
+describe("renderMermaid", () => {
+  it("emits one shaped node per file, edges by id, and a class per column", () => {
+    const src = renderMermaid(selection(2, 3, 4), { repo: REPO }) as string;
+    expect(src.startsWith("graph LR\n")).toBe(true);
+    // changed files are double-bordered, reached plain, tests rounded
+    expect(src).toContain('[["changed-0.ts  (2 symbols)"]]');
+    expect(src).toContain('["reached-0.ts"]');
+    expect(src).toContain('(["t-0.test.ts"])');
+    expect((src.match(/ --> /g) ?? []).length).toBe(2 * 3 + 3 * 4);
+    expect(src).toMatch(/class n\d+(,n\d+)* changed/);
+    expect(src).toMatch(/class n\d+(,n\d+)* test/);
+    expect(src).not.toContain("/r/src/");
+  });
+
+  it("quotes labels so brackets and parentheses in paths cannot break the graph, and escapes quotes", () => {
+    const sel = selection(1, 1, 1);
+    sel.files[0]!.path = 'src/app/(protected)/[uuid]/x".ts';
+    const src = renderMermaid(sel, { repo: REPO }) as string;
+    expect(src).toContain('[["app/(protected)/[uuid]/x#quot;.ts  (2 symbols)"]]');
+  });
+
+  it("folds rows past the cap into a dashed +N more node", () => {
+    const src = renderMermaid(selection(1, 20, 2), { repo: REPO, maxRows: 5 }) as string;
+    expect(src).toContain('["+15 more"]');
+    expect(src).toMatch(/class n\d+ more/);
+    expect((src.match(/ --> /g) ?? []).length).toBe(6 + 5 * 2 + 2);
+  });
+
+  it("returns null exactly when the SVG would", () => {
+    expect(renderMermaid({ kind: "all", reasons: [{ kind: "no-test-files" }] }, { repo: REPO })).toBeNull();
+    const sel = selection(0, 0, 0);
+    sel.files = [{ path: ".github/x.yml", status: "modified", disposition: "ignored", symbols: [], reaches: [], tests: [] }];
+    expect(renderMermaid(sel, { repo: REPO })).toBeNull();
   });
 });

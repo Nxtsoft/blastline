@@ -74,10 +74,17 @@ describe("renderComment: subset", () => {
   });
 
   it("embeds the hosted figure with a dark and a light source when given", () => {
-    const md = renderComment(subset, { ...ctx, figure: { dark: "https://x/d.svg", light: "https://x/l.svg" } });
+    const md = renderComment(subset, { ...ctx, figure: { kind: "image", dark: "https://x/d.svg", light: "https://x/l.svg" } });
     expect(md).toContain('<source media="(prefers-color-scheme: dark)" srcset="https://x/d.svg">');
     expect(md).toContain('src="https://x/l.svg"');
     expect(renderComment(subset, ctx)).not.toContain("<picture>");
+  });
+
+  it("embeds a mermaid figure as a fenced block with a shape legend", () => {
+    const md = renderComment(subset, { ...ctx, figure: { kind: "mermaid", source: "graph LR\n  n0[[\"a.ts\"]] --> n1([\"a.test.ts\"])" } });
+    expect(md).toContain("```mermaid\ngraph LR\n  n0[[\"a.ts\"]] --> n1([\"a.test.ts\"])\n```");
+    expect(md).toContain("Changed files are double-bordered, tests are rounded");
+    expect(md).not.toContain("<picture>");
   });
 
   it("groups the blast radius by changed file behind a fold", () => {
