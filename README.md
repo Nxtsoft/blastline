@@ -174,7 +174,9 @@ The figure needs `contents: write` on the token so the Action can push the SVG; 
 permissions:
   contents: write        # the reach figure, on figure-branch
   pull-requests: write   # the comment
-``` With `graph-root`, the build is cached via `actions/cache` keyed on the tree hash of `graph-root` (`git rev-parse HEAD:<graph-root>`) rather than the graph's own content-root hash, since that hash lives inside `graph.json` and isn't known until after the build runs. `cgraph-version` (default `bin-v0.1.0`) pins the `Nxtsoft/CGraph` release tag the turnkey build installs from; currently Linux x64 runners only. With `graph-path`, supply your own graph from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
+```
+
+With `graph-root`, the build is cached via `actions/cache` keyed on the tree hash of `graph-root` (`git rev-parse HEAD:<graph-root>`) rather than the graph's own content-root hash, since that hash lives inside `graph.json` and isn't known until after the build runs. `cgraph-version` (default `bin-v0.1.0`) pins the `Nxtsoft/CGraph` release tag the turnkey build installs from; currently Linux x64 runners only. With `graph-path`, supply your own graph from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
 
 `base-graph-command` automates deletion mapping: the action checks out the
 range's base commit into a worktree, runs your graph-build command there (it

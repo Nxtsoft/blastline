@@ -64,3 +64,31 @@ describe("renderFigure", () => {
     expect(renderFigure({ kind: "all", reasons: [{ kind: "no-test-files" }] }, { theme: "dark", repo: REPO })).toBeNull();
   });
 });
+
+// The reviewer's reproduction: a real selection over the mini fixture drew no
+// changed node, because the changed file counted as reaching itself and the
+// reached column overwrote it. The figure must draw the changed file exactly
+// once, in the changed column.
+describe("renderFigure over a real selection", () => {
+  it("draws the changed file in the changed column and never in the reached column", async () => {
+    const { fileURLToPath } = await import("node:url");
+    const { loadGraph } = await import("./graph.js");
+    const { select } = await import("./select.js");
+    const g = loadGraph(fileURLToPath(new URL("./testdata/mini-graph.json", import.meta.url)));
+    const diff = `diff --git a/src/lib.ts b/src/lib.ts
+index 1..2 100644
+--- a/src/lib.ts
++++ b/src/lib.ts
+@@ -9,0 +10,1 @@
++  x();
+`;
+    const sel = select(diff, { graph: g, minDensity: 0 });
+    if (sel.kind !== "subset") throw new Error("expected subset");
+    expect(sel.files[0]!.reaches.map((r) => r.file)).not.toContain("/repo/src/lib.ts");
+    const svg = renderFigure(sel, { theme: "dark", repo: "/repo" }) as string;
+    const changedColumn = svg.match(/<rect x="36" y="[^"]+" width="306"/g) ?? [];
+    expect(changedColumn.length).toBe(1);
+    expect(svg).toContain("CHANGED  1 file");
+    expect((svg.match(/>lib\.ts</g) ?? []).length).toBe(1);
+  });
+});
