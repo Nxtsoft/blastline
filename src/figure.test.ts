@@ -71,6 +71,13 @@ describe("renderFigure", () => {
     sel.files = [{ path: ".github/workflows/x.yml", status: "modified", disposition: "ignored", symbols: [], reaches: [], tests: [] }];
     expect(renderFigure(sel, { theme: "dark", repo: REPO })).toBeNull();
   });
+
+  it("returns null when the only mapped files are the edited tests themselves", () => {
+    const sel = selection(0, 0, 0);
+    sel.tests = ["/r/src/a.test.ts"];
+    sel.files = [{ path: "src/a.test.ts", status: "modified", disposition: "mapped", symbols: ["it"], reaches: [], tests: ["/r/src/a.test.ts"] }];
+    expect(renderFigure(sel, { theme: "dark", repo: REPO })).toBeNull();
+  });
 });
 
 // The reviewer's reproduction: a real selection over the mini fixture drew no
