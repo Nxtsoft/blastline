@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import { testFiles, testReachability } from "./detect.js";
 import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
-import { dependencyDirection, translatePath } from "./graph.js";
+import { dependencyDirection, nodesInFile, translatePath } from "./graph.js";
 import { TraversalExhausted, dependents } from "./impact.js";
 import { mapDiffToSeeds } from "./mapping.js";
 import { isDeliberatelyIgnored } from "./paths.js";
@@ -185,24 +185,18 @@ export function select(diffText: string, opts: SelectOptions): Selection {
   const budget = opts.maxTraversalNodes ?? 2_000_000;
   const headFiles = new Set(opts.graph.byFile.keys());
   const testSet = knownTests;
-  // The graph files the diff actually touched, from the seeds themselves (a
-  // base-graph seed is translated to its head path). A changed file is never
-  // its own dependent in the report: its own file node is walked, but it is
-  // what changed, not what the change reaches.
+  // The graph files the diff touched, resolved from the changed paths the way
+  // mapping resolves them (path-boundary suffix). Not from the seeds: a pure
+  // rename or a mode-only change has no hunk and therefore no seed, yet it is
+  // still a changed file, and a changed file is never its own dependent in the
+  // report. A deleted file has no head node and reaches nothing at head.
   const changedAbs = new Set<string>();
-  for (const id of mapping.seeds) {
-    const node = opts.graph.byId.get(id);
-    if (node?.source_file) {
-      changedAbs.add(node.source_file);
-      continue;
-    }
-    const base = opts.baseGraph?.byId.get(id);
-    if (base?.source_file) {
-      const headFile = translatePath(base.source_file, headFiles);
-      if (headFile !== undefined) changedAbs.add(headFile);
+  for (const file of changed) {
+    if (file.status === "deleted" || !mapping.seedsByFile.has(file.path)) continue;
+    for (const node of nodesInFile(opts.graph, file.path)) {
+      if (node.source_file) changedAbs.add(node.source_file);
     }
   }
-
   /** Walk one seed set (head ids, or base ids translated to head paths). */
   const walk = (
     seeds: Set<string>,

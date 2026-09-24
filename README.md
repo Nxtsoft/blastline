@@ -248,6 +248,7 @@ blastline mcp                                # MCP server over stdio
 | `--repo-url <url>` | `comment`: `https://github.com/<owner>/<repo>`, so paths link to the head blob and the shas to a compare view |
 | `--pr <n>` | `comment`/`figure`: the pull request number, shown in the summary |
 | `--figure-url <base>` | `comment`: embed the hosted figure at `<base>/reach-dark.svg` and `<base>/reach-light.svg` |
+| `--head-sha <sha>` | `comment`/`figure`: name this commit in links and captions when the range ends elsewhere (the Action passes the PR head while diffing against GitHub's merge commit) |
 
 `tests`/`blast` print one item per line (empty = clean subset with nothing impacted); on fail-open they print `ALL` to stdout and one JSON reason per line to stderr, exit code 0 — consumers branch on the output, not the exit code. A `--json` subset also carries `testsTotal`, one `files` entry per changed file (symbols touched, files reached, tests reached), and the file-level `edges` among them: everything the comment and the figure show.
 
