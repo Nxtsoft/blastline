@@ -297,7 +297,7 @@ function renderAll(selection: Extract<Selection, { kind: "all" }>, ctx: CommentC
     "### Test impact: run the full suite",
     "",
     "> [!WARNING]",
-    "> The graph cannot vouch for this diff, so every test file is selected. Nothing is skipped; this is the safe default, not a failure.",
+    "> **Run the full suite.** The graph cannot vouch for this diff, so every test file is selected. Nothing is skipped; this is the safe default, not a failure.",
     "",
     table,
     table ? "" : undefined,
