@@ -301,7 +301,9 @@ runs:
         echo "::warning::blastline: could not push the reach figure after 3 attempts; posting the comment without it"
 
     - name: Render the PR comment
-      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' && inputs.github-token != '' }}
+      # Always rendered, even when nothing posts it: blastline-comment.md is
+      # part of the Action's output on disk (ci.yml's self-test reads it on
+      # push events too).
       shell: bash
       env:
         RANGE: ${{ steps.range.outputs.range }}
@@ -311,7 +313,8 @@ runs:
       run: |
         set -euo pipefail
         repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
-        args=(comment "$RANGE" --repo "$repo" --selection selection.json --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --pr "$PR_NUMBER")
+        args=(comment "$RANGE" --repo "$repo" --selection selection.json --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY")
+        [ -n "${PR_NUMBER:-}" ] && args+=(--pr "$PR_NUMBER")
         [ -n "${FIGURE_URL:-}" ] && args+=(--figure-url "$FIGURE_URL")
         bun "$GITHUB_ACTION_PATH/src/cli.ts" "${args[@]}" > blastline-comment.md
 

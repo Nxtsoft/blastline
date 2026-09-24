@@ -123,6 +123,8 @@ describe("renderComment: fail-open", () => {
     expect(md.split("\n")[0]).toBe(COMMENT_MARKER);
     expect(md).toContain("### Test impact: run the full suite");
     expect(md).toContain("> [!WARNING]");
+    // ci.yml's action-selftest greps this exact phrase in blastline-comment.md
+    expect(md).toContain("Run the full suite");
     expect(md).toContain("| Why | What you can do |");
     expect(md).toContain("| Graph looks under-extracted: 1.9 edges per file (floor 3) |");
     expect(md).toContain("x.json");
