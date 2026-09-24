@@ -1,6 +1,6 @@
 export { COMMENT_MARKER, renderComment } from "./comment.js";
 export type { CommentContext } from "./comment.js";
-export { layout, renderFigure, renderMermaid } from "./figure.js";
+export { renderFigure, renderMermaid } from "./figure.js";
 export type { FigureOptions, FigureTheme } from "./figure.js";
 export { isTestPath, testFiles } from "./detect.js";
 export { parseUnifiedDiff } from "./diff.js";

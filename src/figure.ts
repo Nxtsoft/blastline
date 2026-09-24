@@ -272,9 +272,14 @@ export function renderFigure(selection: Selection, opts: FigureOptions): string 
   return out.join("\n");
 }
 
-/** Mermaid node text: quoted, so paths with brackets and parentheses survive; a quote becomes its entity. */
+/**
+ * Mermaid node text: quoted, so paths with brackets and parentheses survive.
+ * Inside quotes mermaid still reads `#…;` as an entity and a backtick as
+ * markdown, so those two are entities themselves (`#` first, or it would
+ * re-escape the others).
+ */
 function mermaidLabel(s: string): string {
-  return `"${s.replace(/"/g, "#quot;")}"`;
+  return `"${s.replace(/#/g, "#35;").replace(/"/g, "#quot;").replace(/`/g, "#96;")}"`;
 }
 
 /**

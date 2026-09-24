@@ -144,7 +144,7 @@ function renderSubset(selection: Extract<Selection, { kind: "subset" }>, ctx: Co
             ctx.figure.source,
             "```",
             "",
-            "<sub>Changed files are double-bordered, tests are rounded; an arrow points from a change to what depends on it.</sub>",
+            "<sub>Changed files are double-bordered, tests are rounded; an arrow points from a file to what depends on it.</sub>",
           ].join("\n");
 
   const prefix = sharedDir(mapped.map((f) => f.path));
