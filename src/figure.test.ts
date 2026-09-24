@@ -149,11 +149,13 @@ describe("renderMermaid", () => {
     expect(src).not.toContain("/r/src/");
   });
 
-  it("quotes labels so brackets and parentheses in paths cannot break the graph, and escapes quotes", () => {
+  it("quotes labels so brackets and parentheses in paths cannot break the graph, and escapes quotes, hashes and backticks", () => {
     const sel = selection(1, 1, 1);
     sel.files[0]!.path = 'src/app/(protected)/[uuid]/x".ts';
-    const src = renderMermaid(sel, { repo: REPO }) as string;
-    expect(src).toContain('[["app/(protected)/[uuid]/x#quot;.ts  (2 symbols)"]]');
+    expect(renderMermaid(sel, { repo: REPO })).toContain('[["app/(protected)/[uuid]/x#quot;.ts  (2 symbols)"]]');
+    // a bare # would start an entity, and a backtick markdown; mmdc rejects both unescaped
+    sel.files[0]!.path = "src/a#amp;b`c.ts";
+    expect(renderMermaid(sel, { repo: REPO })).toContain('[["a#35;amp;b#96;c.ts  (2 symbols)"]]');
   });
 
   it("folds rows past the cap into a dashed +N more node", () => {
