@@ -91,4 +91,31 @@ index 1..2 100644
     expect(svg).toContain("CHANGED  1 file");
     expect((svg.match(/>lib\.ts</g) ?? []).length).toBe(1);
   });
+
+  // A pure rename has no hunk and so no seed, but it is still a changed file;
+  // when another change reaches it, it must not be drawn in both columns.
+  it("keeps a hunk-less changed file (a rename) in the changed column when another change reaches it", async () => {
+    const { fileURLToPath } = await import("node:url");
+    const { loadGraph } = await import("./graph.js");
+    const { select } = await import("./select.js");
+    const g = loadGraph(fileURLToPath(new URL("./testdata/mini-graph.json", import.meta.url)));
+    const diff = `diff --git a/src/lib.ts b/src/lib.ts
+index 1..2 100644
+--- a/src/lib.ts
++++ b/src/lib.ts
+@@ -9,0 +10,1 @@
++  x();
+diff --git a/src/old-consumer.ts b/src/consumer.ts
+similarity index 100%
+rename from src/old-consumer.ts
+rename to src/consumer.ts
+`;
+    const sel = select(diff, { graph: g, minDensity: 0 });
+    if (sel.kind !== "subset") throw new Error("expected subset");
+    expect(sel.files.map((f) => f.path)).toEqual(["src/lib.ts", "src/consumer.ts"]);
+    expect(sel.files[0]!.reaches.map((r) => r.file)).not.toContain("/repo/src/consumer.ts");
+    const svg = renderFigure(sel, { theme: "dark", repo: "/repo" }) as string;
+    expect((svg.match(/<rect x="36" y="[^"]+" width="306"/g) ?? []).length).toBe(2);
+    expect((svg.match(/>consumer\.ts</g) ?? []).length).toBe(1);
+  });
 });

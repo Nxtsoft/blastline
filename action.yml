@@ -265,7 +265,12 @@ runs:
         set -euo pipefail
         repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
         out="$RUNNER_TEMP/blastline-figure"
-        bun "$GITHUB_ACTION_PATH/src/cli.ts" figure "$RANGE" --repo "$repo" --selection selection.json --pr "$PR_NUMBER" --out-dir "$out"
+        # The figure is an illustration of the comment, never a gate on it: if
+        # drawing fails, the comment still goes out without the image.
+        if ! bun "$GITHUB_ACTION_PATH/src/cli.ts" figure "$RANGE" --repo "$repo" --selection selection.json --pr "$PR_NUMBER" --head-sha "$HEAD_SHA" --out-dir "$out"; then
+          echo "::warning::blastline: drawing the reach figure failed; posting the comment without it"
+          exit 0
+        fi
         # The figure lives on its own branch, one directory per head sha, so
         # every past comment keeps its image. The branch is appended to, never
         # rewritten; a concurrent PR racing the push is retried on a fresh
@@ -341,8 +346,10 @@ runs:
         # in place. (`gh pr comment --edit-last` needs the viewer query, which
         # the Actions token cannot make, so it posted a new comment on every
         # push.)
-        # --paginate emits one JSON array per page, so the pages are merged
-        # before picking the comment; a --jq on the api call runs per page.
+        # --paginate emits one JSON array per page and jq runs once per page,
+        # so a match may print once per page; comments come oldest first, and
+        # the newest marker comment sits on the last page that has one, which
+        # is the line tail keeps.
         existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
           | jq -r '[.[] | select(.body | startswith("<!-- blastline:test-impact -->"))] | last | .id // empty' \
           | tail -n 1)
