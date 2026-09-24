@@ -185,6 +185,23 @@ export function select(diffText: string, opts: SelectOptions): Selection {
   const budget = opts.maxTraversalNodes ?? 2_000_000;
   const headFiles = new Set(opts.graph.byFile.keys());
   const testSet = knownTests;
+  // The graph files the diff actually touched, from the seeds themselves (a
+  // base-graph seed is translated to its head path). A changed file is never
+  // its own dependent in the report: its own file node is walked, but it is
+  // what changed, not what the change reaches.
+  const changedAbs = new Set<string>();
+  for (const id of mapping.seeds) {
+    const node = opts.graph.byId.get(id);
+    if (node?.source_file) {
+      changedAbs.add(node.source_file);
+      continue;
+    }
+    const base = opts.baseGraph?.byId.get(id);
+    if (base?.source_file) {
+      const headFile = translatePath(base.source_file, headFiles);
+      if (headFile !== undefined) changedAbs.add(headFile);
+    }
+  }
 
   /** Walk one seed set (head ids, or base ids translated to head paths). */
   const walk = (
@@ -205,6 +222,7 @@ export function select(diffText: string, opts: SelectOptions): Selection {
         tests.add(file);
         return;
       }
+      if (changedAbs.has(file)) return;
       const symbols = reached.get(file) ?? new Set<string>();
       if (type !== "file") symbols.add(label);
       reached.set(file, symbols);
@@ -306,7 +324,7 @@ export function select(diffText: string, opts: SelectOptions): Selection {
     blast: [...new Set(whole.blast)].sort(),
     testsTotal: testSet.size,
     files,
-    edges: fileEdges(opts.graph, files, tests),
+    edges: fileEdges(opts.graph, files, changedAbs, tests),
     ...(opts.graph.contentRoot !== undefined && { contentRoot: opts.graph.contentRoot.sha256 }),
   };
 }
@@ -317,14 +335,9 @@ export function select(diffText: string, opts: SelectOptions): Selection {
  * dependent). This is what the reach figure draws; it carries no node the
  * per-file walk did not already reach.
  */
-function fileEdges(graph: CodeGraph, files: ChangedFileImpact[], tests: Set<string>): FileEdge[] {
-  const involved = new Set<string>(tests);
-  for (const f of files) {
-    for (const r of f.reaches) involved.add(r.file);
-    for (const abs of graph.byFile.keys()) {
-      if (abs.endsWith(`/${f.path}`) || abs === f.path) involved.add(abs);
-    }
-  }
+function fileEdges(graph: CodeGraph, files: ChangedFileImpact[], changedAbs: Set<string>, tests: Set<string>): FileEdge[] {
+  const involved = new Set<string>([...tests, ...changedAbs]);
+  for (const f of files) for (const r of f.reaches) involved.add(r.file);
   const seen = new Set<string>();
   const edges: FileEdge[] = [];
   for (const link of graph.links) {

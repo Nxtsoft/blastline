@@ -284,6 +284,12 @@ runs:
           mkdir -p "$work/$HEAD_SHA"
           cp "$out"/reach-dark.svg "$out"/reach-light.svg "$work/$HEAD_SHA/"
           git -C "$work" add "$HEAD_SHA"
+          # A re-run of the same commit produces byte-identical SVGs that are
+          # already on the branch; that is success, not an empty commit.
+          if git -C "$work" diff --cached --quiet; then
+            echo "url=https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$FIGURE_BRANCH/$HEAD_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git -C "$work" -c user.name=blastline -c user.email=blastline@users.noreply.github.com \
             commit -qm "figure for $HEAD_SHA (PR #$PR_NUMBER)"
           if git -C "$work" -c "http.extraheader=$auth" push -q "$remote" "HEAD:refs/heads/$FIGURE_BRANCH" 2> "$RUNNER_TEMP/blastline-push.err"; then
@@ -309,12 +315,17 @@ runs:
         RANGE: ${{ steps.range.outputs.range }}
         INPUT_REPO: ${{ inputs.repo-path }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         FIGURE_URL: ${{ steps.figure.outputs.url }}
       run: |
         set -euo pipefail
         repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
         args=(comment "$RANGE" --repo "$repo" --selection selection.json --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY")
         [ -n "${PR_NUMBER:-}" ] && args+=(--pr "$PR_NUMBER")
+        # On pull_request the range ends at GitHub's merge commit, which is the
+        # right thing to diff (base.sha is its first parent) but not the commit
+        # the reviewer knows. Links and captions name the PR head instead.
+        [ -n "${PR_HEAD_SHA:-}" ] && args+=(--head-sha "$PR_HEAD_SHA")
         [ -n "${FIGURE_URL:-}" ] && args+=(--figure-url "$FIGURE_URL")
         bun "$GITHUB_ACTION_PATH/src/cli.ts" "${args[@]}" > blastline-comment.md
 
@@ -330,8 +341,11 @@ runs:
         # in place. (`gh pr comment --edit-last` needs the viewer query, which
         # the Actions token cannot make, so it posted a new comment on every
         # push.)
+        # --paginate emits one JSON array per page, so the pages are merged
+        # before picking the comment; a --jq on the api call runs per page.
         existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-          --jq '[.[] | select(.body | startswith("<!-- blastline:test-impact -->"))] | last | .id // empty')
+          | jq -r '[.[] | select(.body | startswith("<!-- blastline:test-impact -->"))] | last | .id // empty' \
+          | tail -n 1)
         if [ -n "$existing" ]; then
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@blastline-comment.md > /dev/null
           echo "updated comment $existing"

@@ -50,6 +50,8 @@ comment and figure options:
   --repo-url <url>     https://github.com/<owner>/<repo>: paths become blob links, shas a compare link
   --pr <n>             pull request number, shown in the summary
   --figure-url <base>  embed the hosted figure: <base>/reach-dark.svg and <base>/reach-light.svg
+  --head-sha <sha>     name this commit as the head (links, captions) when the range ends elsewhere,
+                       e.g. a pull_request merge commit standing in for the PR head
   --out-dir <dir>      (figure) where to write the two SVGs
 
 Selection is a safe superset: "run at least these." Any file the graph cannot
@@ -173,7 +175,9 @@ if (command === "mcp") {
   if (command === "comment" || command === "figure") {
     const selection: Selection =
       saved !== undefined ? (JSON.parse(readFileSync(saved, "utf8")) as Selection) : computeSelection();
-    const shas = range !== undefined ? resolveRange(repo, range) : undefined;
+    const resolved = range !== undefined ? resolveRange(repo, range) : undefined;
+    const headOverride = opt("head-sha");
+    const shas = resolved !== undefined && headOverride !== undefined ? { base: resolved.base, head: headOverride } : resolved;
     const pr = opt("pr");
     if (command === "figure") {
       const outDir = opt("out-dir");

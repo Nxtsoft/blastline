@@ -135,6 +135,7 @@ export function renderFigure(selection: Selection, opts: FigureOptions): string 
     const total = n * NODE_H + (n - 1) * GAP;
     const y0 = TOP + (columnsHeight - total) / 2;
     keys.forEach((key, i) => {
+      if (nodes.has(key)) throw new Error(`figure: ${key} placed twice`);
       const noteText = note?.(key);
       const chars = Math.floor((NODE_W[column] - 24 - (noteText?.length ?? 0) * 6) / CHAR_W);
       nodes.set(key, {

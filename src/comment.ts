@@ -27,6 +27,11 @@ function code(s: string): string {
   return `\`${s}\``;
 }
 
+/** Table cells split at `|`, even inside a code span; GFM accepts `\|` as a literal pipe. */
+function cell(s: string): string {
+  return s.replace(/\|/g, "\\|");
+}
+
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
@@ -88,7 +93,7 @@ function ignoredRows(files: ChangedFileImpact[]): string[] {
     .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
     .map(([top, paths]) => {
       const what = paths.length === 1 ? code(paths[0] as string) : `${plural(paths.length, "file")} under ${code(top === "." ? "the repo root" : `${top}/`)}`;
-      return `| ${what} | ignored by policy | | 0 |`;
+      return `| ${cell(what)} | ignored by policy | | 0 |`;
     });
 }
 
@@ -139,7 +144,7 @@ function renderSubset(selection: Extract<Selection, { kind: "subset" }>, ctx: Co
       const name = links.path(f.path, short(f.path)) + (f.status === "added" ? " (new)" : f.status === "deleted" ? " (deleted)" : "");
       const what = isTestFile(f) ? "test code, selected directly" : symbolsCell(f.symbols);
       const reaches = f.reaches.length === 0 ? "" : plural(f.reaches.length, "file");
-      return `| ${name} | ${what} | ${reaches} | ${f.tests.length} |`;
+      return `| ${cell(name)} | ${cell(what)} | ${reaches} | ${f.tests.length} |`;
     }),
     ...ignoredRows(ignored),
   ].join("\n");
@@ -208,7 +213,7 @@ function footer(contentRoot: string | undefined, ctx: CommentContext): string {
 }
 
 /** Each fail-open reason, as the cause and the one thing the reader can do about it. */
-function explain(r: Exclude<FailOpenReason, { kind: "unmapped-file" }>): [why: string, action: string] {
+function explain(r: Exclude<FailOpenReason, { kind: "unmapped-file" }>, ctx: CommentContext): [why: string, action: string] {
   switch (r.kind) {
     case "stale-graph":
       return [`Graph is stale: expected ${r.expected}, got ${r.actual}`, "Rebuild the graph after the head commit. With `graph-root`, the Action rebuilds on the next run."];
@@ -227,7 +232,10 @@ function explain(r: Exclude<FailOpenReason, { kind: "unmapped-file" }>): [why: s
     case "extraction-warning":
       return [`cgraph warned while extracting ${code(r.path)}`, "Rebuild the graph and inspect that file; a warning means its edges may be incomplete."];
     case "graph-unavailable":
-      return [r.detail, "Build the graph with `graph-root`, or point `graph-path` at an existing graph.json."];
+      return [
+        r.detail.split(ctx.repo.endsWith("/") ? ctx.repo : `${ctx.repo}/`).join(""),
+        "Build the graph with `graph-root`, or point `graph-path` at an existing graph.json.",
+      ];
     case "invalid-ignore-pattern":
       return [`${code("--ignore")} pattern ${code(r.pattern)} is not a valid regex (${r.detail})`, "`--ignore` takes regexes, not globs. Fix the pattern."];
     default: {
@@ -290,7 +298,11 @@ function renderAll(selection: Extract<Selection, { kind: "all" }>, ctx: CommentC
   const where = at ? `Computed at ${at}${ctx.baseSha ? ` against base ${code(shortSha(ctx.baseSha))}` : ""}.` : `Range ${code(ctx.range)}.`;
   const table =
     others.length > 0
-      ? ["| Why | What you can do |", "|---|---|", ...others.map((r) => `| ${explain(r).join(" | ")} |`)].join("\n")
+      ? [
+          "| Why | What you can do |",
+          "|---|---|",
+          ...others.map((r) => `| ${explain(r, ctx).map(cell).join(" | ")} |`),
+        ].join("\n")
       : "";
   return [
     COMMENT_MARKER,
