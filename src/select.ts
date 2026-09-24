@@ -2,12 +2,12 @@ import { statSync } from "node:fs";
 import { testFiles, testReachability } from "./detect.js";
 import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
-import { translatePath } from "./graph.js";
+import { dependencyDirection, translatePath } from "./graph.js";
 import { TraversalExhausted, dependents } from "./impact.js";
 import { mapDiffToSeeds } from "./mapping.js";
 import { isDeliberatelyIgnored } from "./paths.js";
 import type { PathVerdicts } from "./paths.js";
-import type { FailOpenReason, Selection } from "./types.js";
+import type { ChangedFileImpact, FailOpenReason, FileEdge, Selection } from "./types.js";
 
 export interface SelectOptions {
   graph: CodeGraph;
@@ -182,17 +182,85 @@ export function select(diffText: string, opts: SelectOptions): Selection {
   // exist at head, and the base graph is built from a different checkout, so
   // its ids never resolve in the head graph. Walk each seed in the graph that
   // owns it, then translate base-side results to head files by path suffix.
-  const headSeeds = new Set<string>();
-  const baseSeeds = new Set<string>();
-  for (const id of mapping.seeds) {
-    if (opts.graph.byId.has(id)) headSeeds.add(id);
-    else baseSeeds.add(id);
-  }
-
   const budget = opts.maxTraversalNodes ?? 2_000_000;
-  let blastIds: Set<string>;
+  const headFiles = new Set(opts.graph.byFile.keys());
+  const testSet = knownTests;
+
+  /** Walk one seed set (head ids, or base ids translated to head paths). */
+  const walk = (
+    seeds: Set<string>,
+  ): { blast: string[]; tests: Set<string>; reached: Map<string, Set<string>> } => {
+    const headSeeds = new Set<string>();
+    const baseSeeds = new Set<string>();
+    for (const id of seeds) {
+      if (opts.graph.byId.has(id)) headSeeds.add(id);
+      else baseSeeds.add(id);
+    }
+    const blast: string[] = [];
+    const tests = new Set<string>();
+    const reached = new Map<string, Set<string>>();
+    const record = (file: string, type: string, label: string, loc: string): void => {
+      blast.push(`${type} ${label} (${file}${loc})`);
+      if (testSet.has(file)) {
+        tests.add(file);
+        return;
+      }
+      const symbols = reached.get(file) ?? new Set<string>();
+      if (type !== "file") symbols.add(label);
+      reached.set(file, symbols);
+    };
+    for (const id of dependents(opts.graph, headSeeds, budget)) {
+      const node = opts.graph.byId.get(id);
+      if (!node) continue;
+      const loc = node.source_location ? `:${node.source_location.start_line}` : "";
+      if (node.source_file) record(node.source_file, node.type, node.label, loc);
+      else blast.push(`${node.type} ${node.label}`);
+    }
+    // Seeds that are themselves inside test files select those tests too.
+    for (const id of headSeeds) {
+      const node = opts.graph.byId.get(id);
+      if (node?.source_file && testSet.has(node.source_file)) tests.add(node.source_file);
+    }
+    if (baseSeeds.size > 0 && opts.baseGraph) {
+      for (const id of dependents(opts.baseGraph, baseSeeds, budget)) {
+        const node = opts.baseGraph.byId.get(id);
+        if (!node?.source_file) continue;
+        const headFile = translatePath(node.source_file, headFiles);
+        if (headFile === undefined) continue; // dependent itself gone at head — nothing to run
+        const loc = node.source_location ? `:${node.source_location.start_line}` : "";
+        record(headFile, node.type, node.label, loc);
+      }
+    }
+    return { blast, tests, reached };
+  };
+
+  let whole: ReturnType<typeof walk>;
+  const files: ChangedFileImpact[] = [];
   try {
-    blastIds = dependents(opts.graph, headSeeds, budget);
+    whole = walk(mapping.seeds);
+    for (const file of changed) {
+      const seeds = mapping.seedsByFile.get(file.path);
+      if (seeds === undefined) {
+        files.push({ path: file.path, status: file.status, disposition: "ignored", symbols: [], reaches: [], tests: [] });
+        continue;
+      }
+      const own = walk(seeds);
+      const symbols = new Set<string>();
+      for (const id of seeds) {
+        const node = opts.graph.byId.get(id) ?? opts.baseGraph?.byId.get(id);
+        if (node && node.type !== "file") symbols.add(node.label);
+      }
+      files.push({
+        path: file.path,
+        status: file.status,
+        disposition: "mapped",
+        symbols: [...symbols].sort(),
+        reaches: [...own.reached.entries()]
+          .map(([f, syms]) => ({ file: f, symbols: [...syms].sort() }))
+          .sort((a, b) => a.file.localeCompare(b.file)),
+        tests: [...own.tests].sort(),
+      });
+    }
   } catch (e) {
     // A truncated walk cannot be told apart from a complete one, so the only
     // safe response is ALL -- never the partial set collected so far.
@@ -201,34 +269,15 @@ export function select(diffText: string, opts: SelectOptions): Selection {
     }
     throw e;
   }
-  const testSet = knownTests;
-  const blast: string[] = [];
-  const tests = new Set<string>();
-  for (const id of blastIds) {
-    const node = opts.graph.byId.get(id);
-    if (!node) continue;
-    const loc = node.source_location ? `:${node.source_location.start_line}` : "";
-    blast.push(`${node.type} ${node.label}${node.source_file ? ` (${node.source_file}${loc})` : ""}`);
-    if (node.source_file && testSet.has(node.source_file)) tests.add(node.source_file);
+  const tests = whole.tests;
+  // Files cgraph deliberately skipped were dropped from `changed` above; they
+  // still belong in the per-file report, as ignored, in diff order.
+  const ignoredByVerdict = parsed.filter((f) => !changed.includes(f));
+  for (const file of ignoredByVerdict) {
+    files.push({ path: file.path, status: file.status, disposition: "ignored", symbols: [], reaches: [], tests: [] });
   }
-  // Seeds that are themselves inside test files select those tests too.
-  for (const id of headSeeds) {
-    const node = opts.graph.byId.get(id);
-    if (node?.source_file && testSet.has(node.source_file)) tests.add(node.source_file);
-  }
+  files.sort((a, b) => parsed.findIndex((f) => f.path === a.path) - parsed.findIndex((f) => f.path === b.path));
 
-  if (baseSeeds.size > 0 && opts.baseGraph) {
-    const headFiles = new Set(opts.graph.byFile.keys());
-    for (const id of dependents(opts.baseGraph, baseSeeds, budget)) {
-      const node = opts.baseGraph.byId.get(id);
-      if (!node?.source_file) continue;
-      const headFile = translatePath(node.source_file, headFiles);
-      if (headFile === undefined) continue; // dependent itself gone at head — nothing to run
-      const loc = node.source_location ? `:${node.source_location.start_line}` : "";
-      blast.push(`${node.type} ${node.label} (${headFile}${loc})`);
-      if (testSet.has(headFile)) tests.add(headFile);
-    }
-  }
   // Selection that reaches almost the whole suite bought nothing. Saying so is
   // more honest than listing 95% of the tests as "impacted", and this can only
   // widen the result to ALL -- it never removes a test from the run.
@@ -254,9 +303,41 @@ export function select(diffText: string, opts: SelectOptions): Selection {
   return {
     kind: "subset",
     tests: [...tests].sort(),
-    blast: [...new Set(blast)].sort(),
+    blast: [...new Set(whole.blast)].sort(),
+    testsTotal: testSet.size,
+    files,
+    edges: fileEdges(opts.graph, files, tests),
     ...(opts.graph.contentRoot !== undefined && { contentRoot: opts.graph.contentRoot.sha256 }),
   };
+}
+
+/**
+ * File-level edges among the files the selection touched: every graph link
+ * whose two ends sit in different involved files, collapsed to (dependency ->
+ * dependent). This is what the reach figure draws; it carries no node the
+ * per-file walk did not already reach.
+ */
+function fileEdges(graph: CodeGraph, files: ChangedFileImpact[], tests: Set<string>): FileEdge[] {
+  const involved = new Set<string>(tests);
+  for (const f of files) {
+    for (const r of f.reaches) involved.add(r.file);
+    for (const abs of graph.byFile.keys()) {
+      if (abs.endsWith(`/${f.path}`) || abs === f.path) involved.add(abs);
+    }
+  }
+  const seen = new Set<string>();
+  const edges: FileEdge[] = [];
+  for (const link of graph.links) {
+    const [dependent, dependency] = dependencyDirection(link);
+    const from = graph.byId.get(dependency)?.source_file;
+    const to = graph.byId.get(dependent)?.source_file;
+    if (!from || !to || from === to || !involved.has(from) || !involved.has(to)) continue;
+    const key = `${from}\u0000${to}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    edges.push({ from, to });
+  }
+  return edges.sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
 }
 
 export function fileMtimeMs(path: string): number | undefined {

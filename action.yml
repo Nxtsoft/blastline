@@ -63,9 +63,20 @@ inputs:
     required: false
     default: "true"
   github-token:
-    description: token used to post the PR comment
+    description: >-
+      token used to post the PR comment (pull-requests: write) and to push the
+      reach figure to figure-branch (contents: write)
     required: false
     default: ""
+  figure-branch:
+    description: >-
+      branch in this repository that hosts the comment's reach figure, one
+      directory per PR head sha (created as an orphan branch on first use).
+      Needs contents: write on github-token. Empty disables the figure; a push
+      the token is not allowed to make also disables it, with a warning, and
+      the comment is posted without the image.
+    required: false
+    default: blastline-figures
 
 outputs:
   kind:
@@ -238,17 +249,73 @@ runs:
           bun -e 'const s=JSON.parse(require("fs").readFileSync("selection.json","utf8")); if(s.kind==="subset") console.log(s.tests.join("\n"))'
           echo "BLASTLINE_EOF"
         } >> "$GITHUB_OUTPUT"
-        # render the comment body from the same selection
-        cmdargs=(comment "$range" --repo "$repo")
-        [ -n "$INPUT_GRAPH" ] && cmdargs+=(--graph "$INPUT_GRAPH")
-        [ -n "$base_graph" ] && cmdargs+=(--base-graph "$base_graph")
-        [ -n "$INPUT_MIN_DENSITY" ] && cmdargs+=(--min-density "$INPUT_MIN_DENSITY")
-        while IFS= read -r pat; do
-          [ -n "$pat" ] && cmdargs+=(--ignore "$pat")
-        done <<< "$INPUT_IGNORE"
-        bun "$GITHUB_ACTION_PATH/src/cli.ts" "${cmdargs[@]}" > blastline-comment.md
 
-    - name: Post PR comment
+    - name: Publish the reach figure
+      id: figure
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' && inputs.github-token != '' && inputs.figure-branch != '' && steps.select.outputs.kind == 'subset' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        RANGE: ${{ steps.range.outputs.range }}
+        INPUT_REPO: ${{ inputs.repo-path }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        FIGURE_BRANCH: ${{ inputs.figure-branch }}
+      run: |
+        set -euo pipefail
+        repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
+        out="$RUNNER_TEMP/blastline-figure"
+        bun "$GITHUB_ACTION_PATH/src/cli.ts" figure "$RANGE" --repo "$repo" --selection selection.json --pr "$PR_NUMBER" --out-dir "$out"
+        # The figure lives on its own branch, one directory per head sha, so
+        # every past comment keeps its image. The branch is appended to, never
+        # rewritten; a concurrent PR racing the push is retried on a fresh
+        # clone. A token without contents: write cannot push, and the comment
+        # then goes out without the figure rather than not at all.
+        remote="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+        auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+        work="$RUNNER_TEMP/blastline-figure-branch"
+        for attempt in 1 2 3; do
+          rm -rf "$work"
+          if git -c "http.extraheader=$auth" ls-remote --exit-code --heads "$remote" "$FIGURE_BRANCH" >/dev/null 2>&1; then
+            git -c "http.extraheader=$auth" clone -q --depth 1 --branch "$FIGURE_BRANCH" "$remote" "$work"
+          else
+            git init -q --initial-branch="$FIGURE_BRANCH" "$work"
+          fi
+          mkdir -p "$work/$HEAD_SHA"
+          cp "$out"/reach-dark.svg "$out"/reach-light.svg "$work/$HEAD_SHA/"
+          git -C "$work" add "$HEAD_SHA"
+          git -C "$work" -c user.name=blastline -c user.email=blastline@users.noreply.github.com \
+            commit -qm "figure for $HEAD_SHA (PR #$PR_NUMBER)"
+          if git -C "$work" -c "http.extraheader=$auth" push -q "$remote" "HEAD:refs/heads/$FIGURE_BRANCH" 2> "$RUNNER_TEMP/blastline-push.err"; then
+            echo "url=https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$FIGURE_BRANCH/$HEAD_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -q -i -E '403|permission|not allowed' "$RUNNER_TEMP/blastline-push.err"; then
+            echo "::warning::blastline: github-token cannot push to $FIGURE_BRANCH (needs contents: write); posting the comment without the reach figure"
+            cat "$RUNNER_TEMP/blastline-push.err"
+            exit 0
+          fi
+          echo "push attempt $attempt failed, retrying" >&2
+          cat "$RUNNER_TEMP/blastline-push.err" >&2
+        done
+        echo "::warning::blastline: could not push the reach figure after 3 attempts; posting the comment without it"
+
+    - name: Render the PR comment
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' && inputs.github-token != '' }}
+      shell: bash
+      env:
+        RANGE: ${{ steps.range.outputs.range }}
+        INPUT_REPO: ${{ inputs.repo-path }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        FIGURE_URL: ${{ steps.figure.outputs.url }}
+      run: |
+        set -euo pipefail
+        repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
+        args=(comment "$RANGE" --repo "$repo" --selection selection.json --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --pr "$PR_NUMBER")
+        [ -n "${FIGURE_URL:-}" ] && args+=(--figure-url "$FIGURE_URL")
+        bun "$GITHUB_ACTION_PATH/src/cli.ts" "${args[@]}" > blastline-comment.md
+
+    - name: Post or update the PR comment
       if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' && inputs.github-token != '' }}
       shell: bash
       env:
@@ -256,5 +323,15 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         set -euo pipefail
-        gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --edit-last --body-file blastline-comment.md \
-          || gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file blastline-comment.md
+        # One comment per PR, found by the marker on its first line and edited
+        # in place. (`gh pr comment --edit-last` needs the viewer query, which
+        # the Actions token cannot make, so it posted a new comment on every
+        # push.)
+        existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+          --jq '[.[] | select(.body | startswith("<!-- blastline:test-impact -->"))] | last | .id // empty')
+        if [ -n "$existing" ]; then
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@blastline-comment.md > /dev/null
+          echo "updated comment $existing"
+        else
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@blastline-comment.md --jq '"posted comment " + (.id|tostring)'
+        fi

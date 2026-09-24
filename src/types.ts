@@ -41,12 +41,42 @@ export type FailOpenReason =
   | { kind: "graph-unavailable"; detail: string }
   | { kind: "invalid-ignore-pattern"; pattern: string; detail: string };
 
+/** What one changed file reached, so the comment can show the selection per file. */
+export interface ChangedFileImpact {
+  /** Repo-relative head path, or the base path when the file was deleted. */
+  path: string;
+  status: ChangedFile["status"];
+  /**
+   * `ignored`: declared irrelevant by `--ignore`, or skipped by cgraph itself
+   * (paths.json). Never walked, so `symbols`, `reaches` and `tests` are empty.
+   */
+  disposition: "mapped" | "ignored";
+  /** Labels of the changed symbols that seeded the walk; empty when only the file node did. */
+  symbols: string[];
+  /** Non-test files that transitively depend on the change, with the symbols reached in each. Absolute paths, like `blast`. */
+  reaches: { file: string; symbols: string[] }[];
+  /** Test files reached from this file's change. Absolute paths; a subset of `tests`. */
+  tests: string[];
+}
+
+/** A file-level dependency between two files the selection touched: `to` depends on `from`. */
+export interface FileEdge {
+  from: string;
+  to: string;
+}
+
 /** The outcome of a selection: either a concrete test set or ALL with reasons. */
 export type Selection =
   | {
       kind: "subset";
       tests: string[];
       blast: string[];
+      /** Test files the graph knows about, the denominator for `tests`. */
+      testsTotal: number;
+      /** One entry per changed file, in diff order. */
+      files: ChangedFileImpact[];
+      /** File-level edges among changed, reached and test files, for the reach figure. */
+      edges: FileEdge[];
       /** sha256-merkle-v1 root of the tree the selection was computed from, when the graph carries one */
       contentRoot?: string;
     }

@@ -293,3 +293,38 @@ index 1..0
     expect(sel.tests).not.toContain("/head/src/other.test.ts");
   });
 });
+
+describe("select: per-file impact for the comment", () => {
+  it("reports each changed file with its symbols, reach and tests, plus the file edges and the test total", () => {
+    const sel = select(DIFF_WITH_DOC, { graph: g, minDensity: 0, ignore: (p) => p.endsWith(".md") });
+    expect(sel.kind).toBe("subset");
+    if (sel.kind !== "subset") return;
+    expect(sel.testsTotal).toBe(1);
+    expect(sel.files.map((f) => [f.path, f.disposition])).toEqual([
+      ["src/lib.ts", "mapped"],
+      ["README.md", "ignored"],
+    ]);
+    const lib = sel.files[0]!;
+    expect(lib.symbols.length).toBeGreaterThan(0);
+    expect(lib.tests).toEqual(["/repo/src/lib.test.ts"]);
+    expect(lib.reaches.map((r) => r.file)).toContain("/repo/src/consumer.ts");
+    expect(lib.reaches.find((r) => r.file === "/repo/src/consumer.ts")!.symbols.length).toBeGreaterThan(0);
+    // the reach of one file never lists a test file: tests live in `tests`
+    expect(lib.reaches.some((r) => r.file.endsWith(".test.ts"))).toBe(false);
+    expect(sel.edges).toContainEqual({ from: "/repo/src/lib.ts", to: "/repo/src/consumer.ts" });
+    expect(sel.edges).toContainEqual({ from: "/repo/src/lib.ts", to: "/repo/src/lib.test.ts" });
+    // every edge end is a file the selection touched
+    const involved = new Set([...sel.tests, ...sel.files.flatMap((f) => f.reaches.map((r) => r.file)), "/repo/src/lib.ts"]);
+    for (const e of sel.edges) {
+      expect(involved.has(e.from)).toBe(true);
+      expect(involved.has(e.to)).toBe(true);
+    }
+  });
+
+  it("keeps the union of per-file walks equal to the whole-diff walk", () => {
+    const sel = select(DIFF_IN_PARSE, { graph: g, minDensity: 0 });
+    if (sel.kind !== "subset") throw new Error("expected subset");
+    const perFile = new Set(sel.files.flatMap((f) => f.tests));
+    expect([...perFile].sort()).toEqual(sel.tests);
+  });
+});
