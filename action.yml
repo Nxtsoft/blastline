@@ -271,6 +271,9 @@ runs:
           echo "::warning::blastline: drawing the reach figure failed; posting the comment without it"
           exit 0
         fi
+        # No SVG means nothing was mapped (a change ignored by policy, say);
+        # the comment says so in words and carries no image.
+        [ -f "$out/reach-dark.svg" ] || exit 0
         # The figure lives on its own branch, one directory per head sha, so
         # every past comment keeps its image. The branch is appended to, never
         # rewritten; a concurrent PR racing the push is retried on a fresh

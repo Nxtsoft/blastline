@@ -63,6 +63,14 @@ describe("renderFigure", () => {
   it("returns null for a fail-open selection", () => {
     expect(renderFigure({ kind: "all", reasons: [{ kind: "no-test-files" }] }, { theme: "dark", repo: REPO })).toBeNull();
   });
+
+  // Seen live on turing-webapp PR 592: a workflow-only change, ignored by
+  // policy, produced a 64px figure of three captions over nothing.
+  it("returns null when no changed file was mapped", () => {
+    const sel = selection(0, 0, 0);
+    sel.files = [{ path: ".github/workflows/x.yml", status: "modified", disposition: "ignored", symbols: [], reaches: [], tests: [] }];
+    expect(renderFigure(sel, { theme: "dark", repo: REPO })).toBeNull();
+  });
 });
 
 // The reviewer's reproduction: a real selection over the mini fixture drew no

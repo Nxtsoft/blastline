@@ -193,7 +193,7 @@ if (command === "mcp") {
         writeFileSync(join(outDir, `reach-${theme}.svg`), svg);
         wrote++;
       }
-      console.log(wrote === 0 ? "no figure: the selection fell open" : `wrote reach-dark.svg and reach-light.svg to ${outDir}`);
+      console.log(wrote === 0 ? "no figure: nothing to draw" : `wrote reach-dark.svg and reach-light.svg to ${outDir}`);
       process.exit(0);
     }
     const figureBase = opt("figure-url")?.replace(/\/$/, "");
