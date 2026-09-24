@@ -15,8 +15,12 @@ export interface CommentContext {
   /** `https://github.com/owner/repo`: turns paths into blob links and the shas into a compare link. */
   repoUrl?: string;
   prNumber?: number;
-  /** Hosted reach figure, one URL per theme. */
-  figure?: { dark: string; light: string };
+  /**
+   * The reach figure: a hosted image (one URL per theme), or a mermaid block
+   * GitHub draws itself, which is what a private repository needs since its
+   * images cannot be fetched anonymously.
+   */
+  figure?: { kind: "image"; dark: string; light: string } | { kind: "mermaid"; source: string };
   /** blastline version, for the footer. */
   version: string;
 }
@@ -130,9 +134,18 @@ function renderSubset(selection: Extract<Selection, { kind: "subset" }>, ctx: Co
     .filter(Boolean)
     .join("\n");
 
-  const figure = ctx.figure
-    ? `<picture><source media="(prefers-color-scheme: dark)" srcset="${ctx.figure.dark}"><img alt="Reach graph: ${mapped.length} changed files reach ${reachedFiles.size} files and ${n} of ${selection.testsTotal} tests" src="${ctx.figure.light}" width="940"></picture>`
-    : "";
+  const figure =
+    ctx.figure === undefined
+      ? ""
+      : ctx.figure.kind === "image"
+        ? `<picture><source media="(prefers-color-scheme: dark)" srcset="${ctx.figure.dark}"><img alt="Reach graph: ${mapped.length} changed files reach ${reachedFiles.size} files and ${n} of ${selection.testsTotal} tests" src="${ctx.figure.light}" width="940"></picture>`
+        : [
+            "```mermaid",
+            ctx.figure.source,
+            "```",
+            "",
+            "<sub>Changed files are double-bordered, tests are rounded; an arrow points from a change to what depends on it.</sub>",
+          ].join("\n");
 
   const prefix = sharedDir(mapped.map((f) => f.path));
   const short = (rel: string): string => (prefix && rel.startsWith(prefix) ? rel.slice(prefix.length) : rel);

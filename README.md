@@ -168,11 +168,11 @@ Outputs: `kind` (`subset` or `all`) and `tests` (newline-separated files), so a 
 
 The comment leads with the verdict and its denominator ("6 of 195 test files reach this diff"), a summary table, and a reach figure: the changed files, the files they reach, and the tests at the end, drawn by blastline and hosted on `figure-branch` in your repository (default `blastline-figures`, one directory per PR head sha). Below it, one table row per changed file with the symbols touched, how many files it reaches and how many tests, the tests to run as links to the head blob, and the blast radius grouped by changed file behind a fold. On fail-open it says "run the full suite" and pairs every reason with what you can do about it. One comment per PR, updated in place on every push.
 
-The figure needs `contents: write` on the token so the Action can push the SVG; `pull-requests: write` posts the comment. Without `contents: write` the comment is posted without the figure, with a warning in the job log:
+On a public repository the figure is an SVG image the Action pushes to `figure-branch`, which needs `contents: write` on the token; without it the comment is posted without the figure, with a warning in the job log. On a private repository GitHub cannot fetch that image (comment images are proxied anonymously), so the Action embeds the same figure as a mermaid block GitHub draws itself, and needs no extra permission. `figure: auto` (the default) picks by repository visibility; `image`, `mermaid` and `none` force it. `pull-requests: write` posts the comment:
 
 ```yaml
 permissions:
-  contents: write        # the reach figure, on figure-branch
+  contents: write        # the image form of the figure, on figure-branch (public repositories)
   pull-requests: write   # the comment
 ```
 
@@ -248,6 +248,7 @@ blastline mcp                                # MCP server over stdio
 | `--repo-url <url>` | `comment`: `https://github.com/<owner>/<repo>`, so paths link to the head blob and the shas to a compare view |
 | `--pr <n>` | `comment`/`figure`: the pull request number, shown in the summary |
 | `--figure-url <base>` | `comment`: embed the hosted figure at `<base>/reach-dark.svg` and `<base>/reach-light.svg` |
+| `--figure-mermaid` | `comment`: embed the figure as a mermaid block instead, which renders in private repositories |
 | `--head-sha <sha>` | `comment`/`figure`: name this commit in links and captions when the range ends elsewhere (the Action passes the PR head while diffing against GitHub's merge commit) |
 
 `tests`/`blast` print one item per line (empty = clean subset with nothing impacted); on fail-open they print `ALL` to stdout and one JSON reason per line to stderr, exit code 0 — consumers branch on the output, not the exit code. A `--json` subset also carries `testsTotal`, one `files` entry per changed file (symbols touched, files reached, tests reached), and the file-level `edges` among them: everything the comment and the figure show.

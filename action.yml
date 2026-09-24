@@ -68,11 +68,20 @@ inputs:
       reach figure to figure-branch (contents: write)
     required: false
     default: ""
+  figure:
+    description: >-
+      how the comment carries the reach figure: "auto" (default) embeds an
+      image on a public repository and a mermaid block on a private one, since
+      GitHub fetches comment images anonymously and cannot read a private
+      repository's files; "image" and "mermaid" force one; "none" leaves the
+      figure out.
+    required: false
+    default: auto
   figure-branch:
     description: >-
-      branch in this repository that hosts the comment's reach figure, one
+      branch in this repository that hosts the image form of the figure, one
       directory per PR head sha (created as an orphan branch on first use).
-      Needs contents: write on github-token. Empty disables the figure; a push
+      Needs contents: write on github-token. Empty disables the image; a push
       the token is not allowed to make also disables it, with a warning, and
       the comment is posted without the image.
     required: false
@@ -252,7 +261,9 @@ runs:
 
     - name: Publish the reach figure
       id: figure
-      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' && inputs.github-token != '' && inputs.figure-branch != '' && steps.select.outputs.kind == 'subset' }}
+      # An image only where GitHub can fetch it: a public repository. A private
+      # repository gets the mermaid block instead (see the render step).
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' && inputs.github-token != '' && inputs.figure-branch != '' && steps.select.outputs.kind == 'subset' && (inputs.figure == 'image' || (inputs.figure == 'auto' && github.event.repository.private == false)) }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -325,6 +336,8 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         FIGURE_URL: ${{ steps.figure.outputs.url }}
+        FIGURE_MODE: ${{ inputs.figure }}
+        REPO_PRIVATE: ${{ github.event.repository.private }}
       run: |
         set -euo pipefail
         repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
@@ -334,7 +347,13 @@ runs:
         # right thing to diff (base.sha is its first parent) but not the commit
         # the reviewer knows. Links and captions name the PR head instead.
         [ -n "${PR_HEAD_SHA:-}" ] && args+=(--head-sha "$PR_HEAD_SHA")
-        [ -n "${FIGURE_URL:-}" ] && args+=(--figure-url "$FIGURE_URL")
+        # GitHub fetches comment images anonymously, so a private repository's
+        # raw file is a broken image there; it gets a mermaid block instead.
+        if [ "$FIGURE_MODE" = "mermaid" ] || { [ "$FIGURE_MODE" = "auto" ] && [ "${REPO_PRIVATE:-false}" = "true" ]; }; then
+          args+=(--figure-mermaid)
+        elif [ -n "${FIGURE_URL:-}" ]; then
+          args+=(--figure-url "$FIGURE_URL")
+        fi
         bun "$GITHUB_ACTION_PATH/src/cli.ts" "${args[@]}" > blastline-comment.md
 
     - name: Post or update the PR comment
