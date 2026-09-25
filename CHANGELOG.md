@@ -7,6 +7,13 @@ The narrative is a claim the brief checks: the PR body and each commit message a
 - `blastline brief --narrative <file>` (the Action passes the PR body; `narrative` over MCP): a name set in code font that no changed symbol bears, no changed path matches and no changed line contains is `refuted` as a phantom change; an empty body, a template line, `TODO`/`TBD`/`WIP`, or a `wip`/`fixup!` subject is `refuted` as placeholder text; a file with symbol changes that neither the body nor any message names is a `partial` "the narrative names the changed code" (understated scope). Fenced code, HTML comments and links are skipped; shas, versions, flags and ranges in code font are not names. `narrativeClaims` in `src/brief.ts`.
 - A changed declaration (its declaring line removed and added, differently) with base-graph callers in files the diff does not touch is `partial`, never refuted. `changedDeclarationClaims` in `src/brief.ts`; the caller lookup is shared with the removed-symbol claim.
 - Without `--narrative` the footer says only commit messages were read.
+## 0.14.1
+
+The per-file table says what to read first, and the Downstream row says how much reviewing the change asks for.
+
+- A **Read** column leads the "What each changed file reaches" table: files in reach order (tests reached, then dependents), a changed file that another changed file reaches placed right after it as `with <file>`, test files last. Reviewers comment less on each file the further down a list it sits (Rahman, Codabux, Roy 2026), so the order carries the reach, not the alphabet. `readingOrder` in `src/comment.ts`.
+- `| Downstream code | 4 files, 11 dependents · review effort medium |`: a coarse tier from what the graph measured (`high` from 20 dependents or 10 mapped files, `low` under 5 dependents and 4 files), fixed thresholds stated in the README. `reviewEffort` in `src/comment.ts`.
+- Ignored rows gain an empty Read cell; nothing else in the comment or brief moves.
 
 ## 0.14.0
 
