@@ -518,8 +518,12 @@ export function narrativeClaims(narratives: Narrative[], files: ChangedFile[], s
   const labels = new Set((symbols ?? []).map((s) => s.label));
   const lines = files.flatMap((f) => [...(f.added ?? []), ...(f.removed ?? [])]);
   const basenames = new Set([...changedPaths].map((p) => p.slice(p.lastIndexOf("/") + 1)));
+  const wholePath = (name: string): RegExp => new RegExp(`(?<![\\w$.-])${name.replace(/[.*+?^${}()|[\]\\$]/g, "\\$&")}(?![\\w$.-])`);
   const inDiff = (name: string): boolean => {
-    if (isPath(name)) return changedPaths.has(name) || [...changedPaths].some((p) => p.endsWith(`/${name}`)) || basenames.has(name) || lines.some((line) => line.includes(name));
+    if (isPath(name)) {
+      const whole = wholePath(name);
+      return changedPaths.has(name) || [...changedPaths].some((p) => p.endsWith(`/${name}`)) || basenames.has(name) || lines.some((line) => whole.test(line));
+    }
     const tokens = name.match(/[A-Za-z_$][\w$]*/g) ?? [];
     return tokens.some((t) => labels.has(t) || basenames.has(t) || lines.some((line) => new RegExp(`(?<![\\w$])${t.replace(/\$/g, "\\$")}(?![\\w$])`).test(line)));
   };
