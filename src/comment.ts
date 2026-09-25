@@ -1,3 +1,4 @@
+import type { SymbolReason } from "./checkpoint.js";
 import type { Brief, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
 import { SNAPSHOT_MARKER } from "./brief.js";
 import { relativeTo, sharedDir } from "./paths.js";
@@ -152,7 +153,7 @@ function symbolsCell(symbols: string[], limit = 3): string {
 }
 
 /** Rows for ignored files, grouped by top-level directory so ten spec files are one line. */
-function ignoredRows(files: ChangedFileImpact[]): string[] {
+function ignoredRows(files: ChangedFileImpact[], why = false): string[] {
   const topOf = (path: string): string => (path.includes("/") ? (path.split("/")[0] as string) : ".");
   const byTop = new Map<string, string[]>();
   for (const f of files) byTop.set(topOf(f.path), [...(byTop.get(topOf(f.path)) ?? []), f.path]);
@@ -160,7 +161,7 @@ function ignoredRows(files: ChangedFileImpact[]): string[] {
     .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
     .map(([top, paths]) => {
       const what = paths.length === 1 ? code(paths[0] as string) : `${plural(paths.length, "file")} under ${code(top === "." ? "the repo root" : `${top}/`)}`;
-      return `| | ${cell(what)} | ignored by policy | | 0 |`;
+      return `| | ${cell(what)} | ignored by policy |${why ? " |" : ""} | 0 |`;
     });
 }
 
@@ -194,7 +195,16 @@ function changeCell(path: string, symbols: SymbolChange[], fallback: string[]): 
   return own.length > 3 ? `${shown.join(", ")}, +${own.length - 3}` : shown.join(", ");
 }
 
-function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolChange[]): SubsetParts {
+/** The per-file Why cell: the distinct reasons behind that file's changed symbols, at most two, each with its turn. */
+function whyCell(path: string, reasons: SymbolReason[]): string {
+  const own = reasons.filter((r) => r.path === path && r.why !== "");
+  const seen = new Map<string, number>();
+  for (const r of own) if (!seen.has(r.why)) seen.set(r.why, r.turn);
+  const shown = [...seen.entries()].slice(0, 2).map(([why, turn]) => `turn ${turn}: ${cell(why.length > 100 ? `${why.slice(0, 99)}…` : why)}`);
+  return seen.size > 2 ? `${shown.join("; ")}; +${seen.size - 2}` : shown.join("; ");
+}
+
+function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolChange[], reasons: SymbolReason[] = []): SubsetParts {
   const links = new Links(ctx);
   const mapped = selection.files.filter((f) => f.disposition === "mapped");
   const ignored = selection.files.filter((f) => f.disposition === "ignored");
@@ -238,17 +248,18 @@ function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolCha
   const prefix = sharedDir(mapped.map((f) => f.path));
   const short = (rel: string): string => (prefix && rel.startsWith(prefix) ? rel.slice(prefix.length) : rel);
   let position = 0;
+  const why = reasons.length > 0;
   const perFile = [
-    `| Read | Changed file | ${symbols ? "Change" : "Symbols touched"} | Reaches | Tests |`,
-    "|---|---|---|---:|---:|",
+    `| Read | Changed file | ${symbols ? "Change" : "Symbols touched"} |${why ? " Why |" : ""} Reaches | Tests |`,
+    `|---|---|---|${why ? "---|" : ""}---:|---:|`,
     ...readingOrder(mapped, selection.edges, ctx.repo).map(({ file: f, after }) => {
       const read = after ? `with ${code(short(after.path))}` : String(++position);
       const name = links.path(f.path, short(f.path)) + (f.status === "added" ? " (new)" : f.status === "deleted" ? " (deleted)" : "");
       const what = isTestFile(f) ? "test code, selected directly" : symbols ? changeCell(f.path, symbols, f.symbols) : symbolsCell(f.symbols);
       const reaches = f.reaches.length === 0 ? "" : plural(f.reaches.length, "file");
-      return `| ${read} | ${cell(name)} | ${cell(what)} | ${reaches} | ${f.tests.length} |`;
+      return `| ${read} | ${cell(name)} | ${cell(what)} |${why ? ` ${whyCell(f.path, reasons)} |` : ""} ${reaches} | ${f.tests.length} |`;
     }),
-    ...ignoredRows(ignored),
+    ...ignoredRows(ignored, why),
   ].join("\n");
   const prefixNote = prefix ? `Paths above are under ${code(prefix)} unless shown in full.` : "";
 
@@ -626,7 +637,7 @@ export function renderBrief(brief: Brief, ctx: CommentContext): string {
       .filter((line): line is string => line !== undefined)
       .join("\n");
   }
-  const p = subsetParts(brief.selection, ctx, brief.changeContext?.symbols);
+  const p = subsetParts(brief.selection, ctx, brief.changeContext?.symbols, brief.commits.flatMap((c) => c.checkpoint?.reasons ?? []));
   const n = brief.selection.tests.length;
   const summary = [
     `| Summary | ${p.summaryTitle} |`,

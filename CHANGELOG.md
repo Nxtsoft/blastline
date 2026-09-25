@@ -7,6 +7,13 @@ The brief names the other open PRs it meets, before merge time does.
 - A **Concurrent PRs** Summary row: each open PR whose brief meets this one, with what it changes that this PR's code reaches (the changed symbols named), files both change, and what this PR changes that its code reaches. `concurrentPrs` in `src/brief.ts` intersects the snapshots; `brief.concurrent` in `--json`.
 - The snapshot every brief embeds now carries `changed` (the mapped changed files) and `symbols` (`path:label` from change-context), so the next brief on any PR can meet it. A brief older than 0.14.5 has no changed set and is skipped.
 - `blastline brief --others <file>` (`[{number, body}]`, the other PRs' brief comments); `others` on `blastline_brief` over MCP; the Action collects the newest 30 open PRs' briefs with the token it has. Without it the footer says so; with it and no meeting point, the footer says how many briefs were read.
+## 0.14.4
+
+The per-file table says why each changed symbol changed, in the agent's own words.
+
+- A **Why** column in "What each changed file reaches", present when a checkpoint carries a reason: for each changed symbol the brief knows from change-context, the first line of the agent's last text before the edit that touched it, with the turn (`turn 7: Map the labels back before matching`), at most two distinct lines per file. Reviewers of agent code reconstruct intent rather than check against it (Agarwal, Miller, Kastner, Vasilescu 2026); this puts the intent at the granularity they read.
+- `src/checkpoint.ts` gains one allowlisted field, `reasons`: `symbolReasonsIn` matches the compact transcript's `Edit`, `Write` and `MultiEdit` calls to the symbols by file and by name (a `Write` touches every symbol in its file), and keeps only the capped first line of the preceding text. The edit's contents are searched and never shown; `checkpointFor(repo, commit, symbols)` takes the symbols to look for.
+- On the agent machine, `blastline brief --local` reads the same from the fleet index's `tool_calls`, with the narration step covering the edit as the reason.
 
 ## 0.14.3
 

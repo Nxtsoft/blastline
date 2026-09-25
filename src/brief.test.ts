@@ -187,8 +187,10 @@ describe("buildBrief", () => {
     db.prepare(`insert into sessions values (?,?,?,?,?,?,?,?,?,?)`).run("11111111-local", "codex", "gpt-6-astra", repo, iso(t - 3_600_000), iso(t + 3_600_000), "CGR-9", null, "cover emit with a test", null);
     db.prepare(`insert into session_timelines values (?,?)`).run("11111111-local", JSON.stringify({ version: 1, steps: [{ text: "Adding the emit test and running the lib suite.", at: iso(t - 60_000), endedAt: iso(t + 60_000), source: "narration", tools: 3, mix: { test: 1, edit: 1 } }] }));
     db.prepare(`insert into tool_calls values (?,?,?,?,?)`).run("l1", "11111111-local", iso(t - 30_000), "exec", JSON.stringify({ input: 'text(await tools.exec_command({cmd:"bunx vitest run src/lib.test.ts"}))' }));
+    db.prepare(`insert into tool_calls values (?,?,?,?,?)`).run("l2", "11111111-local", iso(t - 40_000), "Edit", JSON.stringify({ file_path: `${repo}/src/lib.test.ts`, old_string: "", new_string: "describe('emit', () => {})" }));
     db.close();
     const b = brief({ sessionsDb: dbPath });
+    expect(b.commits[1]?.checkpoint?.reasons).toEqual([]);
     const [lib, test] = b.commits;
     expect(lib?.checkpoint?.source).toBe("entire");
     expect(test?.checkpointId).toBeUndefined();
