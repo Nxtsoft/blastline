@@ -60,8 +60,20 @@ export function refFor(id: string): string {
   return `refs/entire/checkpoints/${id.slice(-2)}/${id}`;
 }
 
-function git(repo: string, args: string[], input?: string): string {
-  return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", ...(input === undefined ? {} : { input }) }).trim();
+function git(repo: string, args: string[], input?: string, env?: NodeJS.ProcessEnv): string {
+  return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", ...(input === undefined ? {} : { input }), ...(env === undefined ? {} : { env }) }).trim();
+}
+
+/**
+ * The identity the checkpoint commits carry. The repo's configured user when
+ * there is one; otherwise a fixed blastline identity, so a CI runner or a
+ * fresh agent machine without git config can still write the ref.
+ */
+function identity(repo: string): NodeJS.ProcessEnv {
+  const email = execFileSync("git", ["-C", repo, "config", "--get", "--default", "", "user.email"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  if (email !== "" || process.env["GIT_COMMITTER_EMAIL"]) return process.env;
+  const fixed = { GIT_AUTHOR_NAME: "blastline", GIT_AUTHOR_EMAIL: "blastline@checkpoint", GIT_COMMITTER_NAME: "blastline", GIT_COMMITTER_EMAIL: "blastline@checkpoint" };
+  return { ...process.env, ...fixed };
 }
 
 function blob(repo: string, content: string): string {
@@ -147,14 +159,15 @@ export function writeCheckpoint(repo: string, sha: string, intent: CommitIntent 
     { name: "0", kind: "tree", oid: inner },
     { name: "metadata.json", kind: "blob", oid: blob(repo, JSON.stringify(metadata, null, 2) + "\n") },
   ]);
-  const commit = git(repo, ["commit-tree", root, "-m", `checkpoint ${id} for ${sha.slice(0, 7)}`]);
+  const env = identity(repo);
+  const commit = git(repo, ["commit-tree", root, "-m", `checkpoint ${id} for ${sha.slice(0, 7)}`], undefined, env);
   git(repo, ["update-ref", ref, commit]);
 
   let trailerWritten = false;
   let target = git(repo, ["rev-parse", sha]);
   const head = git(repo, ["rev-parse", "HEAD"]);
   if (opts.trailer && target === head && !isPushed(repo, head)) {
-    git(repo, ["commit", "--amend", "--no-edit", "--no-verify", "--trailer", `Entire-Checkpoint: ${id}`]);
+    git(repo, ["commit", "--amend", "--no-edit", "--no-verify", "--trailer", `Entire-Checkpoint: ${id}`], undefined, env);
     target = git(repo, ["rev-parse", "HEAD"]);
     trailerWritten = true;
   }
