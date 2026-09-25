@@ -81,26 +81,35 @@ describe("renderComment: subset", () => {
       tests: ["/r/src/a.test.ts", "/r/src/b.test.ts", "/r/src/use.test.ts"],
       files: [
         { path: "src/use.test.ts", status: "modified", disposition: "mapped", symbols: ["check"], reaches: [], tests: ["/r/src/use.test.ts"] },
-        { path: "src/use.ts", status: "modified", disposition: "mapped", symbols: ["use"], reaches: [{ file: "/r/src/app.ts", symbols: ["main"] }], tests: ["/r/src/use.test.ts"] },
+        // As select.ts builds them: a per-file walk never lists another changed file among its reaches,
+        // so the changed-to-changed dependencies (lib -> use -> app, and lib -> app again) are only in `edges`.
+        { path: "src/app.ts", status: "modified", disposition: "mapped", symbols: ["main"], reaches: [], tests: ["/r/src/use.test.ts"] },
+        { path: "src/use.ts", status: "modified", disposition: "mapped", symbols: ["use"], reaches: [{ file: "/r/src/render.ts", symbols: ["draw"] }], tests: ["/r/src/use.test.ts"] },
         { path: "src/other.ts", status: "added", disposition: "mapped", symbols: ["other"], reaches: [], tests: ["/r/src/a.test.ts", "/r/src/b.test.ts"] },
         subset.files[0]!,
-        { path: "src/lib.ts", status: "modified", disposition: "mapped", symbols: ["parse"], reaches: [{ file: "/r/src/use.ts", symbols: ["use"] }, { file: "/r/src/c.ts", symbols: ["use"] }], tests: ["/r/src/a.test.ts", "/r/src/b.test.ts", "/r/src/use.test.ts"] },
+        { path: "src/lib.ts", status: "modified", disposition: "mapped", symbols: ["parse"], reaches: [{ file: "/r/src/c.ts", symbols: ["use"] }, { file: "/r/src/render.ts", symbols: ["draw"] }], tests: ["/r/src/a.test.ts", "/r/src/b.test.ts", "/r/src/use.test.ts"] },
       ].filter((f) => f.path !== "src/lib.ts" || f.symbols.length === 1),
       edges: [
         { from: "/r/src/lib.ts", to: "/r/src/use.ts" },
-        { from: "/r/src/lib.ts", to: "/r/src/c.ts" },
+        { from: "/r/src/lib.ts", to: "/r/src/app.ts" },
         { from: "/r/src/use.ts", to: "/r/src/app.ts" },
+        { from: "/r/src/app.ts", to: "/r/src/lib.ts" },
+        { from: "/r/src/lib.ts", to: "/r/src/c.ts" },
+        { from: "/r/src/use.ts", to: "/r/src/render.ts" },
         { from: "/r/src/lib.ts", to: "/r/src/use.test.ts" },
       ],
     };
     const rows = renderComment(chained, ctx).split("\n").filter((l) => /^\| (\d|with|\| \d+ files under)/.test(l));
+    // use.ts is placed under lib.ts and app.ts under use.ts (a chain, not under lib.ts, which also reaches it);
+    // the app -> lib back edge is a cycle the placed set ends; the test file is never grouped.
     expect(rows).toEqual([
       "| 1 | `lib.ts` | `parse` | 2 files | 3 |",
       "| with `lib.ts` | `use.ts` | `use` | 1 file | 1 |",
+      "| with `use.ts` | `app.ts` | `main` |  | 1 |",
       "| 2 | `other.ts` (new) | `other` |  | 2 |",
       "| 3 | `use.test.ts` | test code, selected directly |  | 1 |",
     ]);
-    expect(renderComment(chained, ctx)).toContain("| Downstream code | 3 files, 3 dependents · review effort medium |");
+    expect(renderComment(chained, ctx)).toContain("| Downstream code | 2 files, 3 dependents · review effort medium |");
   });
 
   it("embeds the hosted figure with a dark and a light source when given", () => {

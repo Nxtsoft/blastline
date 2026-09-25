@@ -108,7 +108,7 @@ function isTestFile(f: ChangedFileImpact): boolean {
  * order carries the reach, not the alphabet.
  */
 export function readingOrder(mapped: ChangedFileImpact[], edges: FileEdge[], repo: string): { file: ChangedFileImpact; after?: ChangedFileImpact }[] {
-  const code = [...mapped].filter((f) => !isTestFile(f)).sort(byImpact);
+  const changedCode = [...mapped].filter((f) => !isTestFile(f)).sort(byImpact);
   const tests = [...mapped].filter(isTestFile).sort(byImpact);
   // A per-file walk never lists another changed file among its reaches (the
   // diff already covers it), so the changed-to-changed dependencies come from
@@ -125,9 +125,9 @@ export function readingOrder(mapped: ChangedFileImpact[], edges: FileEdge[], rep
     placed.add(f);
     out.push(after ? { file: f, after } : { file: f });
     const reached = dependentsOf.get(f.path) ?? new Set<string>();
-    for (const dependent of code) if (!placed.has(dependent) && reached.has(dependent.path)) place(dependent, f);
+    for (const dependent of changedCode) if (!placed.has(dependent) && reached.has(dependent.path)) place(dependent, f);
   };
-  for (const f of code) place(f);
+  for (const f of changedCode) place(f);
   for (const f of tests) place(f);
   return out;
 }
