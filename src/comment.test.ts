@@ -227,6 +227,7 @@ const brief: Brief = {
         filesTouched: ["src/lib.ts"],
         testCommands: ["bunx vitest run src/a.test.ts"],
         source: "entire",
+        reasons: [],
       },
       files: ["src/lib.ts"],
       reach: { files: 1, tests: 2 },
@@ -425,6 +426,33 @@ describe("reviewEffort", () => {
   });
 });
 
+describe("renderBrief: why column", () => {
+  it("adds a Why column to the per-file table only when a checkpoint carries a reason, with the turn and up to two distinct lines", () => {
+    const withReasons: Brief = {
+      ...brief,
+      commits: [
+        {
+          ...brief.commits[0]!,
+          checkpoint: {
+            ...brief.commits[0]!.checkpoint!,
+            reasons: [
+              { path: "src/lib.ts", label: "parse", turn: 7, why: "Inline helper into parse so the walk has one entry point." },
+              { path: "src/lib.ts", label: "emit", turn: 7, why: "Inline helper into parse so the walk has one entry point." },
+              { path: "src/lib.ts", label: "walk", turn: 9, why: "Emit the count as a string for the comment." },
+            ],
+          },
+        },
+        ...brief.commits.slice(1),
+      ],
+    };
+    const md = renderBrief(withReasons, ctx);
+    expect(md).toContain("| Read | Changed file | Change | Why | Reaches | Tests |");
+    expect(md).toContain("| 1 | `src/lib.ts` | `parse` changed, `helper` removed, `emit` added | turn 7: Inline helper into parse so the walk has one entry point.; turn 9: Emit the count as a string for the comment. | 1 file | 2 |");
+    expect(md).toContain("| | 2 files under `docs/` | ignored by policy | | | 0 |");
+    expect(renderBrief(brief, ctx)).toContain("| Read | Changed file | Change | Reaches | Tests |");
+  });
+});
+
 describe("renderBrief: reviewed-by row", () => {
   const owners = { files: 4, commits: 15, agentCommits: 6, authors: [{ name: "Ada", commits: 12, files: 4 }, { name: "Bo", commits: 3, files: 1 }], perFile: [] };
   it("says when nobody but the author has looked, and names who last changed the reached code", () => {
@@ -453,5 +481,25 @@ describe("renderBrief: reviewed-by row", () => {
     const md = renderBrief({ ...brief, review: { author: "taylorg009", owners } }, ctx);
     expect(md).toContain("| Reviewed by | the 4 changed and reached files were last changed by Ada (12 commits in 4 files), Bo (3 commits in 1 file) |");
     expect(md).not.toContain("no reviewer other than the author");
+  });
+});
+
+describe("renderBrief: concurrent PRs row", () => {
+  it("names each meeting point, symbols first, and omits the row when there is none", () => {
+    const md = renderBrief(
+      {
+        ...brief,
+        concurrent: [
+          { number: 38, head: "3".repeat(40), changesReached: [{ path: "src/comment.ts", symbols: ["renderClaims", "intentRow", "third"] }], reachesChanged: [], bothChange: [] },
+          { number: 39, head: "4".repeat(40), changesReached: [], reachesChanged: ["src/lib.ts"], bothChange: ["src/lib.ts"] },
+          { number: 40, head: "5".repeat(40), changesReached: [{ path: "src/a.ts", symbols: [] }, { path: "src/b.ts", symbols: [] }, { path: "src/c.ts", symbols: [] }], reachesChanged: [], bothChange: [] },
+        ],
+      },
+      ctx,
+    );
+    expect(md).toContain(
+      "| Concurrent PRs | #38 changes `renderClaims`, `intentRow`, +1 (`src/comment.ts`), which this PR reaches · #39 also changes `src/lib.ts`; reaches `src/lib.ts`, which this PR changes · #40 changes `src/a.ts`, `src/b.ts`, +1 file, which this PR reaches |",
+    );
+    expect(renderBrief({ ...brief, concurrent: [] }, ctx)).not.toContain("| Concurrent PRs |");
   });
 });
