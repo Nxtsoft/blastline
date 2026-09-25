@@ -85,6 +85,32 @@ export interface BriefSnapshot {
   tests: number;
   /** Repo-relative downstream files the diff reached. */
   reached: string[];
+  /** Repo-relative changed files the graph mapped; absent in briefs before 0.14.5. */
+  changed?: string[];
+  /** Changed symbols as `path:label`, from change-context; absent in briefs before 0.14.5. */
+  symbols?: string[];
+}
+
+/** Another open PR's brief, as the Action collects it: its number and the comment body carrying its snapshot. */
+export interface OtherBrief {
+  number: number;
+  body: string;
+}
+
+/**
+ * Where another open PR and this one meet: what it changes that this PR's
+ * code reaches, what this PR changes that its code reaches, and files both
+ * change. Only PRs with a meeting point are listed.
+ */
+export interface ConcurrentPr {
+  number: number;
+  head: string;
+  /** Files it changes that this PR reaches, each with the changed symbols it names there. */
+  changesReached: { path: string; symbols: string[] }[];
+  /** Files this PR changes that it reaches. */
+  reachesChanged: string[];
+  /** Files both change. */
+  bothChange: string[];
 }
 
 export interface SincePrevious {
@@ -125,6 +151,8 @@ export interface Brief {
   claims: ClaimCheck[];
   /** Present when the range resolved: owners are read from the base's history. */
   review?: ReviewState;
+  /** Open PRs whose brief meets this one, when `others` was given. */
+  concurrent?: ConcurrentPr[];
   sincePrevious?: SincePrevious;
   annotations: Annotation[];
   /** What this brief could not check, one line each, printed verbatim. */
@@ -155,6 +183,10 @@ export interface BriefOptions extends RunOptions {
   changeContextFile?: string;
   /** The previously rendered comment, whose embedded snapshot gives the delta. */
   previousFile?: string;
+  /** This PR's number, so its own brief among `others` is never a concurrent PR. */
+  pr?: number;
+  /** The other open PRs' brief comments; each one's embedded snapshot is intersected with this brief's reach. */
+  others?: OtherBrief[];
   /** The PR author's login; with `reviews`, the Reviewed-by row says whether anyone else has looked. */
   author?: string;
   /** The PR's reviews (GitHub's reviews API: user.login and state), any order. */
@@ -169,6 +201,13 @@ export interface BriefOptions extends RunOptions {
   sessionsDb?: string;
 }
 
+/** `[{number, body}]`: the other open PRs' brief comments, as the Action collects them. */
+export function othersIn(json: string): OtherBrief[] {
+  const rows = JSON.parse(json) as { number?: unknown; body?: unknown }[];
+  if (!Array.isArray(rows)) throw new Error("others: expected a JSON array");
+  return rows.flatMap((r) => (typeof r.number === "number" && typeof r.body === "string" ? [{ number: r.number, body: r.body }] : []));
+}
+
 /** GitHub's reviews API body (`user.login`, `state`), or the brief's own `{login, state}` shape, to reviews. */
 export function reviewsIn(json: string): Review[] {
   const rows = JSON.parse(json) as { login?: unknown; state?: unknown; user?: { login?: unknown } }[];
@@ -179,7 +218,33 @@ export function reviewsIn(json: string): Review[] {
   });
 }
 
+/**
+ * The open PRs whose brief meets this one. Two agents on one repository learn
+ * of each other at merge time otherwise; one line naming the concurrent
+ * change recovered 82% of interfering runs on constructed tasks (Xia, Wu,
+ * Park 2026). A PR without a brief, or with one older than 0.14.5, has no
+ * changed set to compare and is skipped.
+ */
+export function concurrentPrs(mine: BriefSnapshot, others: OtherBrief[]): ConcurrentPr[] {
+  const out: ConcurrentPr[] = [];
+  const myChanged = new Set(mine.changed ?? []);
+  const myReached = new Set(mine.reached);
+  for (const o of others) {
+    const theirs = snapshotIn(o.body);
+    if (theirs === undefined || theirs.changed === undefined) continue;
+    const symbolsIn = (path: string): string[] => (theirs.symbols ?? []).filter((s) => s.startsWith(`${path}:`)).map((s) => s.slice(path.length + 1));
+    const changesReached = theirs.changed.filter((p) => myReached.has(p)).map((path) => ({ path, symbols: symbolsIn(path) }));
+    const reachesChanged = theirs.reached.filter((p) => myChanged.has(p));
+    const bothChange = theirs.changed.filter((p) => myChanged.has(p));
+    if (changesReached.length + reachesChanged.length + bothChange.length === 0) continue;
+    out.push({ number: o.number, head: theirs.head, changesReached, reachesChanged, bothChange });
+  }
+  return out.sort((a, b) => a.number - b.number);
+}
+
 export const MAX_ANNOTATIONS = 50;
+/** Changed symbols a snapshot embeds, so the marker line stays far from GitHub's comment ceiling on a large diff. */
+export const MAX_SNAPSHOT_SYMBOLS = 200;
 export const SNAPSHOT_MARKER = "<!-- blastline:brief ";
 
 /** Full shas of both ends of a range, or undefined when git cannot resolve them. */
@@ -534,7 +599,8 @@ export function buildBrief(o: BriefOptions): Brief {
   const git = (...args: string[]): string =>
     execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
 
-  const { range, selection: given, headSha: headOverride, changeContextFile, previousFile, annotations: annotationLimit, author, reviews, ...runOptions } = o;
+  const { range, selection: given, headSha: headOverride, changeContextFile, previousFile, annotations: annotationLimit, author, reviews, others: allOthers, pr, ...runOptions } = o;
+  const others = allOthers?.filter((x) => x.number !== pr);
   const selection = given ?? runSelection({ ...runOptions, range });
   const resolved = resolveRange(repo, range);
   const shas = resolved && headOverride !== undefined ? { base: resolved.base, head: headOverride } : resolved;
@@ -691,13 +757,25 @@ export function buildBrief(o: BriefOptions): Brief {
     };
     if (reviews === undefined) unchecked.push("reviewed by: no `--reviews` given, so the row names owners only");
   }
+  const changedMapped = selection.kind === "subset" ? selection.files.filter((f) => f.disposition === "mapped").map((f) => f.path).sort() : [];
   const snapshot: BriefSnapshot = {
     head: shas?.head ?? range,
     commits: commits.length,
     files: selection.kind === "subset" ? selection.files.length : 0,
     tests: selection.kind === "subset" ? selection.tests.length : 0,
     reached: [...reachedFiles].sort(),
+    changed: changedMapped,
+    symbols: (changeContext?.symbols ?? []).slice(0, MAX_SNAPSHOT_SYMBOLS).map((s) => `${s.path}:${s.label}`),
   };
+
+  let concurrent: ConcurrentPr[] | undefined;
+  if (others === undefined) {
+    unchecked.push("concurrent PRs: no `--others` given");
+  } else {
+    concurrent = concurrentPrs(snapshot, others);
+    const withBrief = others.filter((o) => snapshotIn(o.body) !== undefined).length;
+    if (concurrent.length === 0 && withBrief > 0) unchecked.push(`concurrent PRs: none of the ${plural(withBrief, "open PR")} with a brief touches what this PR changes or reaches`);
+  }
 
   let sincePrevious: SincePrevious | undefined;
   if (previousFile !== undefined) {
@@ -761,6 +839,7 @@ export function buildBrief(o: BriefOptions): Brief {
     commits,
     claims,
     ...(review !== undefined && { review }),
+    ...(concurrent !== undefined && { concurrent }),
     ...(sincePrevious !== undefined && { sincePrevious }),
     annotations,
     unchecked,

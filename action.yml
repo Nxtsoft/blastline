@@ -494,6 +494,26 @@ runs:
           printf '%s' "${PR_BODY:-}" > blastline-narrative.md
           args+=(--narrative blastline-narrative.md)
         fi
+        # The other open PRs' briefs, so the Concurrent PRs row can name the
+        # one whose changes this PR reaches before merge time does. Each
+        # brief's snapshot travels in its comment; the newest 30 PRs are read.
+        if [ -n "${GH_TOKEN:-}" ] && [ -n "${PR_NUMBER:-}" ] && others=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 30 --json number --jq '.[].number' 2>/dev/null); then
+          echo '[' > blastline-others.json
+          sep=""
+          for n in $others; do
+            [ "$n" = "$PR_NUMBER" ] && continue
+            # The body is the whole multi-line brief, taken verbatim: the pages
+            # are slurped into one array first (gh cannot slurp and filter in
+            # one call), then the newest marker comment is picked.
+            pages=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$n/comments" 2>/dev/null) || continue
+            body=$(printf '%s' "$pages" | jq -r '[.[][] | select(.body | startswith("<!-- blastline:test-impact -->"))] | last | .body // empty')
+            [ -z "$body" ] && continue
+            printf '%s{"number":%s,"body":%s}' "$sep" "$n" "$(printf '%s' "$body" | jq -Rs .)" >> blastline-others.json
+            sep=","
+          done
+          echo ']' >> blastline-others.json
+          args+=(--others blastline-others.json)
+        fi
         [ -n "${PR_NUMBER:-}" ] && args+=(--pr "$PR_NUMBER")
         # On pull_request the range ends at GitHub's merge commit, which is the
         # right thing to diff (base.sha is its first parent) but not the commit

@@ -538,6 +538,27 @@ function reviewedRow(brief: Brief): string | undefined {
   return parts.length === 0 ? undefined : `| Reviewed by | ${parts.join(" · ")} |`;
 }
 
+/** Open PRs whose brief meets this one, each with the meeting point that matters most first. */
+function concurrentRow(brief: Brief): string | undefined {
+  const prs = brief.concurrent;
+  if (!prs || prs.length === 0) return undefined;
+  const files = (paths: string[]): string => `${paths.slice(0, 2).map(code).join(", ")}${paths.length > 2 ? `, +${paths.length - 2}` : ""}`;
+  const parts = prs.slice(0, 3).map((p) => {
+    const bits: string[] = [];
+    if (p.changesReached.length > 0) {
+      const entries = p.changesReached
+        .slice(0, 2)
+        .map((c) => (c.symbols.length > 0 ? `${c.symbols.slice(0, 2).map(code).join(", ")}${c.symbols.length > 2 ? `, +${c.symbols.length - 2}` : ""} (${code(c.path)})` : code(c.path)));
+      const more = p.changesReached.length > 2 ? `, +${plural(p.changesReached.length - 2, "file")}` : "";
+      bits.push(`changes ${entries.join(", ")}${more}, which this PR reaches`);
+    }
+    if (p.bothChange.length > 0) bits.push(`also changes ${files(p.bothChange)}`);
+    if (p.reachesChanged.length > 0) bits.push(`reaches ${files(p.reachesChanged)}, which this PR changes`);
+    return `#${p.number} ${bits.join("; ")}`;
+  });
+  return `| Concurrent PRs | ${parts.join(" · ")}${prs.length > 3 ? `, +${prs.length - 3}` : ""} |`;
+}
+
 function symbolsRow(brief: Brief): string | undefined {
   const cc = brief.changeContext;
   if (!cc) return undefined;
@@ -608,6 +629,7 @@ export function renderBrief(brief: Brief, ctx: CommentContext): string {
       "|---|---|",
       intentRow(brief),
       reviewedRow(brief),
+      concurrentRow(brief),
       symbolsRow(brief),
       sinceRow(brief),
       "",
@@ -626,6 +648,7 @@ export function renderBrief(brief: Brief, ctx: CommentContext): string {
     ...p.summaryRows,
     intentRow(brief),
     reviewedRow(brief),
+    concurrentRow(brief),
     symbolsRow(brief),
     sinceRow(brief),
     ctx.baseSha ? `| Compared against | base ${code(shortSha(ctx.baseSha))} |` : undefined,
