@@ -232,6 +232,17 @@ describe("buildBrief", () => {
     // the fixture's commits are by the same git identity that wrote every file, so nothing is unfamiliar
     expect(b.review?.unfamiliar).toBeUndefined();
     expect(b.review?.owners.perFile.map((f) => f.path)).toEqual(["src/lib.test.ts", "src/lib.ts", "src/use.ts"]);
+    // a range whose human author never committed to the files it touches or reaches
+    write("src/use.ts", 'import { parse } from "./lib.js";\n\nexport function use(input: string): number {\n  return parse(input) + 2;\n}\n');
+    write("NOTES.md", "new, so never counted\n");
+    git("add", "-A");
+    git("commit", "-q", "--author=Zed <zed@example.com>", "-m", "feat(use): add two");
+    const zed = git("rev-parse", "HEAD");
+    const z = brief({ range: `${zed}~1..${zed}` });
+    expect(z.review?.unfamiliar?.names).toEqual(["Zed"]);
+    expect(z.review?.unfamiliar?.files).toContain("src/use.ts");
+    expect(z.review?.unfamiliar?.of).toBe(z.review?.unfamiliar?.files.length);
+    expect(z.review?.unfamiliar?.files).not.toContain("NOTES.md");
     expect(brief({ author: "taylorg009", reviews: [] }).review?.reviews).toEqual([]);
     expect(reviewsIn('[{"user":{"login":"a"},"state":"APPROVED"},{"login":"b","state":"COMMENTED"},{"state":"X"}]')).toEqual([{ login: "a", state: "APPROVED" }, { login: "b", state: "COMMENTED" }]);
   });

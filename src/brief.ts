@@ -688,13 +688,15 @@ export function buildBrief(o: BriefOptions): Brief {
         // A commit git cannot show names nobody.
       }
     }
-    const added = new Set(selection.kind === "subset" ? selection.files.filter((f) => f.status === "added").map((f) => f.path) : []);
-    const unfamiliar = unfamiliarTo(owners, names, scanned.filter((f) => !added.has(f)));
+    // Files the range adds have no history to know; the diff says which, whether or not the graph mapped them.
+    const added = new Set(parsed.filter((f) => f.status === "added").map((f) => f.path));
+    const existing = scanned.filter((f) => !added.has(f));
+    const unfamiliar = unfamiliarTo(owners, names, existing);
     review = {
       ...(author !== undefined && { author }),
       ...(reviews !== undefined && { reviews: [...latest.entries()].map(([login, state]) => ({ login, state })) }),
       owners,
-      ...(names.size > 0 && unfamiliar.length > 0 && { unfamiliar: { names: [...names].sort(), files: unfamiliar, of: scanned.length - added.size } }),
+      ...(names.size > 0 && unfamiliar.length > 0 && { unfamiliar: { names: [...names].sort(), files: unfamiliar, of: existing.length } }),
     };
     if (reviews === undefined) unchecked.push("reviewed by: no `--reviews` given, so the row names owners only");
   }

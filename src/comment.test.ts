@@ -444,6 +444,9 @@ describe("renderBrief: reviewed-by row", () => {
   it("names the files the change's humans have never committed to", () => {
     const md = renderBrief({ ...brief, review: { author: "taylorg009", reviews: [], owners, unfamiliar: { names: ["Taylor"], files: ["src/impact.ts", "src/mapping.ts", "src/graph.ts", "src/x.ts"], of: 6 } } }, ctx);
     expect(md).toContain("· Taylor has no prior commit in 4 of the 6 files this change touches or reaches: `src/impact.ts`, `src/mapping.ts`, `src/graph.ts`, +1 |");
+    // no human commit before the range at all: the row says that once, not twice
+    const none = renderBrief({ ...brief, review: { reviews: [], owners: { files: 2, commits: 0, agentCommits: 5, authors: [], perFile: [] }, unfamiliar: { names: ["Taylor"], files: ["src/a.ts", "src/b.ts"], of: 2 } } }, ctx);
+    expect(none).toContain("| Reviewed by | no review so far · no human commit in the 2 changed or reached files before this range (5 agent commits set aside) |");
   });
 
   it("never claims nobody has looked when reviews were not fetched: with the author alone the row names owners only", () => {
