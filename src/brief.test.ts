@@ -430,6 +430,14 @@ describe("narrative claims", () => {
     expect(stray.claims).toContainEqual({ claim: "PR body names `.agents/worktrees/x/Passless.app`", verdict: "refuted", evidence: "no such path in the diff (phantom change)" });
   });
 
+  it("matches a path in a changed line whole, not as a substring of a longer path", () => {
+    const files = parseUnifiedDiff('diff --git a/somelib/index.tsx b/somelib/index.tsx\n--- a/somelib/index.tsx\n+++ b/somelib/index.tsx\n@@ -1 +1 @@\n-a\n+import somelib from "somelib/index.tsx";\n');
+    const paths = new Set(files.map((f) => f.path));
+    const claims = (text: string) => narrativeClaims([{ source: "PR body", text }], files, [], paths);
+    expect(claims("Touches `lib/index.ts`.")).toContainEqual({ claim: "PR body names `lib/index.ts`", verdict: "refuted", evidence: "no such path in the diff (phantom change)" });
+    expect(claims("Touches `somelib/index.tsx`.").map((c) => c.verdict)).toEqual(["consistent"]);
+  });
+
   it("reads a commit's subject, not its body, for a throwaway marker", () => {
     const files = parseUnifiedDiff("diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n");
     const claims = narrativeClaims(

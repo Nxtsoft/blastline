@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.8
+
+A path in code font matches a changed line whole, not as a substring.
+
+- 0.14.7 let `lib/index.ts` count as carried by a line containing `somelib/index.tsx`, so a phantom path could read as consistent. The match now requires a boundary on both sides, the way a symbol token already did (a leading `/` is allowed, matching how a changed path is compared). Found in review of #45.
+
 ## 0.14.7
 
 The narrative check no longer calls a machine path or a file type a phantom change.
