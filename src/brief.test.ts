@@ -1,0 +1,265 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { buildBrief, commandRuns, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
+import { checkpointRef } from "./checkpoint.js";
+
+// src/testdata/brief/ is real cgraph bin-v0.4.0 output over the six-file repo
+// this test writes below: base-graph.json and head-graph.json are the two
+// snapshots' graphs with /repo for the root and `repo_` for the id prefix,
+// head.diff is the unified-0 diff between them, and change-context.json is
+// `cgraph change-context --budget 6000` over that diff. The head removes
+// `helper` from src/lib.ts while src/use.ts (untouched) still calls it, changes
+// `parse`, adds `emit`, and edits src/lib.test.ts.
+const FIXTURE = fileURLToPath(new URL("./testdata/brief/", import.meta.url));
+const CHECKPOINT_FIXTURE = fileURLToPath(new URL("./testdata/checkpoint-ref/", import.meta.url));
+const ID = "01M3AY9296319GSPWRKXGHXMH5";
+
+let repo: string;
+let base: string;
+let libCommit: string;
+let testCommit: string;
+let headGraph: string;
+let baseGraph: string;
+
+function git(...args: string[]): string {
+  return execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@blastline.invalid", "-c", "commit.gpgsign=false", ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+}
+
+function blob(content: string): string {
+  return execFileSync("git", ["-C", repo, "hash-object", "-w", "--stdin"], { input: content, encoding: "utf8" }).trim();
+}
+
+function write(path: string, content: string): void {
+  writeFileSync(join(repo, path), content);
+}
+
+function commitAll(message: string): string {
+  git("add", "-A");
+  git("commit", "-q", "-m", message);
+  return git("rev-parse", "HEAD");
+}
+
+beforeAll(() => {
+  repo = mkdtempSync(join(tmpdir(), "blastline-brief-"));
+  git("init", "-q");
+  mkdirSync(join(repo, "src"));
+  write("src/lib.ts", "export function helper(n: number): number {\n  return n + 1;\n}\n\nexport function parse(input: string): number {\n  return helper(input.length);\n}\n");
+  write("src/use.ts", 'import { helper, parse } from "./lib.js";\n\nexport function use(input: string): number {\n  return parse(input) + helper(1);\n}\n');
+  write("src/lib.test.ts", 'import { parse } from "./lib.js";\n\nexport const check = parse("ab") === 3;\n');
+  write("src/use.test.ts", 'import { use } from "./use.js";\n\nexport const check = use("ab") === 5;\n');
+  write("src/other.ts", "export function other(): number {\n  return 2;\n}\n");
+  write("src/other.test.ts", 'import { other } from "./other.js";\n\nexport const check = other() === 2;\n');
+  base = commitAll("fixture: base");
+
+  // Commit 1: the agent's commit, with a checkpoint whose session ran one of
+  // the two reaching tests and touched a file it never committed.
+  const fixture = (p: string): string => readFileSync(join(CHECKPOINT_FIXTURE, p), "utf8");
+  const meta = JSON.parse(fixture("metadata.json")) as { files_touched: string[] };
+  meta.files_touched = ["src/lib.ts", "src/scratch.ts"];
+  const ran = JSON.stringify({
+    v: 1,
+    type: "assistant",
+    content: [{ id: "t", input: { command: "bunx vitest run src/lib.test.ts" }, name: "Bash", type: "tool_use" }],
+  });
+  const entries: Record<string, string> = {
+    "metadata.json": JSON.stringify(meta),
+    "0/metadata.json": fixture("0/metadata.json"),
+    "0/prompt.txt": "Remove helper from src/lib.ts and inline it into parse; add emit.\nsecond line is never shown",
+    "0/transcript.jsonl": fixture("0/transcript.jsonl").trimEnd() + "\n" + ran + "\n",
+  };
+  const inner = Object.entries(entries)
+    .filter(([p]) => p.startsWith("0/"))
+    .map(([p, c]) => `100644 blob ${blob(c)}\t${p.slice(2)}`)
+    .join("\n");
+  const innerTree = execFileSync("git", ["-C", repo, "mktree"], { input: inner + "\n", encoding: "utf8" }).trim();
+  const rootTree = execFileSync("git", ["-C", repo, "mktree"], {
+    input: `100644 blob ${blob(entries["metadata.json"] as string)}\tmetadata.json\n040000 tree ${innerTree}\t0\n`,
+    encoding: "utf8",
+  }).trim();
+  git("update-ref", checkpointRef(ID), git("commit-tree", rootTree, "-m", `Finalize transcript for Checkpoint: ${ID}`));
+  write("src/lib.ts", "export function parse(input: string): number {\n  return input.length + 1;\n}\n\nexport function emit(n: number): string {\n  return String(n);\n}\n");
+  libCommit = commitAll(`refactor(lib): inline helper, add emit\n\nEntire-Checkpoint: ${ID}\n`);
+
+  // Commit 2: a human commit, no checkpoint.
+  write("src/lib.test.ts", 'import { emit, parse } from "./lib.js";\n\nexport const check = parse("ab") === 3 && emit(3) === "3";\n');
+  testCommit = commitAll("test(lib): cover emit");
+
+  // The fixture graphs were built at /repo; the selection relativizes graph
+  // paths against the repo it runs in, so point them at this checkout. Written
+  // after the commits: a graph older than the head commit is stale by rule.
+  for (const side of ["base", "head"]) {
+    const graph = readFileSync(join(FIXTURE, `${side}-graph.json`), "utf8").split("/repo").join(repo);
+    writeFileSync(join(repo, `${side}-graph.json`), graph);
+  }
+  headGraph = join(repo, "head-graph.json");
+  baseGraph = join(repo, "base-graph.json");
+});
+
+afterAll(() => {
+  rmSync(repo, { recursive: true, force: true });
+});
+
+function brief(extra: Record<string, unknown> = {}) {
+  return buildBrief({
+    repo,
+    range: `${base}..${testCommit}`,
+    graphPath: headGraph,
+    baseGraphPath: baseGraph,
+    changeContextFile: join(FIXTURE, "change-context.json"),
+    minDensity: 0,
+    ...extra,
+  });
+}
+
+describe("parseChangeContext", () => {
+  it("keeps every symbol change with cgraph's status word and the omitted counters verbatim", () => {
+    const cc = parseChangeContext(readFileSync(join(FIXTURE, "change-context.json"), "utf8"));
+    expect(cc.symbols).toEqual([
+      { path: "src/lib.ts", label: "helper", kind: "function", status: "deleted_or_renamed", line: 1 },
+      { path: "src/lib.ts", label: "parse", kind: "function", status: "changed", line: 1 },
+      { path: "src/lib.ts", label: "emit", kind: "function", status: "added_or_renamed", line: 5 },
+    ]);
+    expect(cc.omitted).toEqual({ impacts: 2, context: 0 });
+    expect(cc.budget).toBe(6000);
+    expect(cc.truncated).toBe(true);
+  });
+});
+
+describe("buildBrief", () => {
+  it("lists the commits oldest first with their checkpoint, files and reach", () => {
+    const b = brief();
+    expect(b.selection.kind).toBe("subset");
+    expect(b.baseSha).toBe(base);
+    expect(b.headSha).toBe(testCommit);
+    expect(b.commits.map((c) => c.sha)).toEqual([libCommit, testCommit]);
+    const [lib, test] = b.commits;
+    expect(lib).toMatchObject({
+      subject: "refactor(lib): inline helper, add emit",
+      checkpointId: ID,
+      files: ["src/lib.ts"],
+      reach: { files: 1, tests: 2 },
+      reachingTests: ["src/lib.test.ts", "src/use.test.ts"],
+      ranReachingTests: ["src/lib.test.ts"],
+    });
+    expect(lib?.checkpoint).toMatchObject({
+      id: ID,
+      agent: "Claude Code",
+      model: "claude-sonnet-5",
+      prompt: "Remove helper from src/lib.ts and inline it into parse; add emit.",
+      filesTouched: ["src/lib.ts", "src/scratch.ts"],
+      testCommands: ["bunx vitest run src/lib.test.ts"],
+    });
+    expect(test).toMatchObject({
+      subject: "test(lib): cover emit",
+      files: ["src/lib.test.ts"],
+      reach: { files: 0, tests: 1 },
+      reachingTests: ["src/lib.test.ts"],
+      ranReachingTests: [],
+    });
+    expect(test?.checkpointId).toBeUndefined();
+    expect(test?.checkpoint).toBeUndefined();
+  });
+
+  it("refutes a removal the base graph still sees callers for, in files the diff did not touch", () => {
+    const removed = brief().claims.find((c) => c.claim.startsWith("`helper` removed"));
+    expect(removed).toEqual({
+      claim: "`helper` removed from `src/lib.ts`",
+      verdict: "refuted",
+      evidence: "still referenced by `use` (src/use.ts:3), `src/use.ts` in files this diff does not touch",
+    });
+  });
+
+  it("checks the checkpoint's test run and files touched against the graph and the commit", () => {
+    const claims = brief().claims.filter((c) => c.claim.startsWith(`\`${libCommit.slice(0, 7)}\``));
+    expect(claims).toEqual([
+      {
+        claim: `\`${libCommit.slice(0, 7)}\` ran the tests it reaches`,
+        verdict: "partial",
+        evidence: "ran 1 of 2: src/lib.test.ts; not run: src/use.test.ts",
+      },
+      {
+        claim: `\`${libCommit.slice(0, 7)}\` commits what the agent touched`,
+        verdict: "refuted",
+        evidence: "touched but not in the commit: src/scratch.ts",
+      },
+    ]);
+    // the human commit makes no claims
+    expect(brief().claims.some((c) => c.claim.includes(testCommit.slice(0, 7)))).toBe(false);
+  });
+
+  it("never prints a certificate", () => {
+    const text = JSON.stringify(brief()).toLowerCase();
+    expect(text).not.toContain("verified");
+    expect(text).not.toContain("safe to");
+  });
+
+  it("names what it could not check instead of staying silent", () => {
+    const noContext = buildBrief({ repo, range: `${base}..${testCommit}`, graphPath: headGraph, minDensity: 0 });
+    expect(noContext.changeContext).toBeUndefined();
+    expect(noContext.unchecked).toContain("symbol changes: no `--change-context` given");
+    expect(noContext.claims.some((c) => c.claim.includes("removed"))).toBe(false);
+    const noBase = brief({ baseGraphPath: undefined });
+    expect(noBase.unchecked).toContain("removed-symbol callers: no `--base-graph` given");
+  });
+
+  it("annotates the changed ranges of the highest-reach files first, capped by --annotations", () => {
+    const b = brief();
+    // src/lib.ts (2 tests, 1 file) outranks src/lib.test.ts (1 test, 0 files)
+    expect(b.annotations.map((a) => `${a.path}:${a.start_line}-${a.end_line}`)).toEqual([
+      "src/lib.ts:1-2",
+      "src/lib.ts:5-6",
+      "src/lib.test.ts:1-1",
+      "src/lib.test.ts:3-3",
+    ]);
+    expect(b.annotations[0]).toMatchObject({
+      annotation_level: "notice",
+      title: "blastline: reach",
+      message: "Reaches 1 file and 2 test files through emit, parse.",
+    });
+    expect(brief({ annotations: 1 }).annotations).toHaveLength(1);
+    expect(brief({ annotations: 500 }).annotations.length).toBeLessThanOrEqual(50);
+  });
+
+  it("reports the delta since the snapshot embedded in the previous comment", () => {
+    const first = buildBrief({ repo, range: `${base}..${libCommit}`, graphPath: headGraph, minDensity: 0 });
+    expect(first.snapshot).toEqual({ head: libCommit, commits: 1, files: 1, tests: 2, reached: ["src/use.ts"] });
+    const previous = join(repo, "previous.md");
+    writeFileSync(previous, `<!-- blastline:test-impact -->\n${SNAPSHOT_MARKER}${JSON.stringify(first.snapshot)} -->\n### old brief\n`);
+    expect(snapshotIn(readFileSync(previous, "utf8"))).toEqual(first.snapshot);
+    const second = brief({ previousFile: previous });
+    expect(second.sincePrevious).toEqual({ head: libCommit, commits: 1, files: 1, tests: 0, newlyReached: [] });
+  });
+
+  it("still lists commits and checks checkpoint claims when the selection fails open", () => {
+    const b = buildBrief({ repo, range: `${base}..${testCommit}`, graphPath: "/nope/graph.json", changeContextFile: join(FIXTURE, "change-context.json") });
+    expect(b.selection.kind).toBe("all");
+    expect(b.commits.map((c) => c.sha)).toEqual([libCommit, testCommit]);
+    expect(b.commits[0]?.reach).toEqual({ files: 0, tests: 0 });
+    expect(b.claims.map((c) => c.verdict)).toEqual(["refuted"]); // files touched; nothing reach-based
+    expect(b.annotations).toEqual([]);
+    expect(b.snapshot).toMatchObject({ commits: 2, files: 0, tests: 0, reached: [] });
+  });
+});
+
+describe("commandRuns", () => {
+  it("treats a command with no path argument as the whole suite", () => {
+    expect(commandRuns("bunx vitest run", "src/a.test.ts")).toBe(true);
+    expect(commandRuns("go test ./...", "pkg/a_test.go")).toBe(true);
+    expect(commandRuns("bun run test 2>&1 | tail -20", "src/a.test.ts")).toBe(true);
+  });
+
+  it("matches named files and directories only", () => {
+    expect(commandRuns("bunx vitest run src/a.test.ts", "src/a.test.ts")).toBe(true);
+    expect(commandRuns("bunx vitest run src/a.test.ts", "src/b.test.ts")).toBe(false);
+    expect(commandRuns("pytest tests/unit", "tests/unit/test_x.py")).toBe(true);
+    expect(commandRuns("pytest tests/unit", "tests/e2e/test_x.py")).toBe(false);
+    expect(commandRuns("vitest run ./src/a.test.ts --reporter=dot", "src/a.test.ts")).toBe(true);
+  });
+});
