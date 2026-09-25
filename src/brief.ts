@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { checkCallers } from "./check.js";
-import type { Checkpoint } from "./checkpoint.js";
-import { checkpointFor, checkpointRef, checkpointTrailer } from "./checkpoint.js";
+import type { Checkpoint, Provenance } from "./checkpoint.js";
+import { checkpointFor, checkpointRef, checkpointTrailer, provenanceOf } from "./checkpoint.js";
 import { SessionsIndex, localCheckpoint } from "./sessions.js";
 import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
@@ -39,6 +39,8 @@ export interface CommitBrief {
   /** The id from the commit's trailer, present even when the ref itself is missing. */
   checkpointId?: string;
   checkpoint?: Checkpoint;
+  /** Who made the commit, from its own marks, when no checkpoint says. */
+  provenance?: Provenance;
   /** Repo-relative paths the commit touched. */
   files: string[];
   /** Reach of this commit's files, from the whole-range selection; zero when it failed open. */
@@ -390,6 +392,7 @@ export function buildBrief(o: BriefOptions): Brief {
       const checkpointId = checkpointTrailer(repo, sha);
       const checkpoint =
         checkpointId !== undefined ? checkpointFor(repo, sha) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files);
+      const provenance = checkpoint === undefined ? provenanceOf(repo, sha) : undefined;
       if (checkpointId !== undefined && checkpoint === undefined) {
         const present = (() => {
           try {
@@ -419,6 +422,7 @@ export function buildBrief(o: BriefOptions): Brief {
         subject,
         ...(checkpointId !== undefined && { checkpointId }),
         ...(checkpoint !== undefined && { checkpoint }),
+        ...(provenance !== undefined && { provenance }),
         files,
         reach: { files: reached.size, tests: reachingTests.length },
         reachingTests,
@@ -427,6 +431,12 @@ export function buildBrief(o: BriefOptions): Brief {
     });
   } finally {
     sessions?.close();
+  }
+  const unattributed = commits.filter((c) => c.checkpointId === undefined && c.checkpoint === undefined && c.provenance === undefined).length;
+  if (unattributed > 0) {
+    unchecked.push(
+      `intent for ${plural(unattributed, "commit")}: no \`Entire-Checkpoint\` or \`Agent-Logs-Url\` trailer, no vendor address as author or co-author${sessions === undefined ? ", and no session index (\`--local\`) on this machine" : ", and no session was working here at commit time"}`,
+    );
   }
 
   const claims: ClaimCheck[] = [];

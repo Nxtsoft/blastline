@@ -236,7 +236,7 @@ describe("renderBrief: subset", () => {
 
   it("adds the intent, symbols and since-push rows to the summary", () => {
     const md = renderBrief(brief, ctx);
-    expect(md).toContain("| Intent | 1 of 3 commits carry a checkpoint · `claude-sonnet-5` · 1 not fetched |");
+    expect(md).toContain("| Intent | 1 of 3 commits carry a checkpoint · `claude-sonnet-5` · 1 not fetched · 1 unattributed |");
     expect(md).toContain("| Symbols | 1 changed, 1 added, 1 removed within the diff |");
     expect(md).toContain("| Since push `9999999` | 1 new commit, +1 changed file, 0 tests reached, newly reaches `src/c.ts` |");
     expect(md).toContain("| Tests reached | **2** of 40");
@@ -305,7 +305,7 @@ describe("renderBrief: no checkpoints, fail-open", () => {
     expect(md.split("\n")[0]).toBe(COMMENT_MARKER);
     expect(md).toContain("### PR brief: 0 agent commits · run the full suite");
     expect(md).toContain("Run the full suite");
-    expect(md).toContain("| Intent | no checkpoints on this branch (1 commit) |");
+    expect(md).toContain("| Intent | no checkpoints on this branch (1 commit): no `Entire-Checkpoint` or `Agent-Logs-Url` trailer, no vendor address |");
     expect(md).not.toContain("| Symbols |");
     expect(md).toContain("| `4444444` feat: x | _no checkpoint_ | 1 file |  |  |");
     expect(md).toContain("_no checkpoint on this branch makes a claim the graph can check_");
@@ -325,5 +325,40 @@ describe("renderCheckRun", () => {
     expect(run.output.summary).not.toContain("<!-- ");
     expect(run.output.text).toContain("#### What each commit did");
     expect(run.output.annotations).toEqual(brief.annotations);
+  });
+});
+
+describe("renderBrief: a commit attributed by trailer", () => {
+  const attributed: Brief = {
+    range: "main..HEAD",
+    selection: { kind: "all", reasons: [{ kind: "graph-unavailable", detail: "no graph" }] },
+    commits: [
+      {
+        sha: "5".repeat(40),
+        subject: "feat: retry fetch",
+        provenance: { agent: "copilot", via: "Agent-Logs-Url", logsUrl: "https://github.com/o/r/sessions/01ABC" },
+        files: ["src/x.ts"],
+        reach: { files: 0, tests: 0 },
+        reachingTests: [],
+        ranReachingTests: [],
+      },
+      { sha: "6".repeat(40), subject: "fix: typo", provenance: { agent: "claude-code", via: "author" }, files: ["src/y.ts"], reach: { files: 0, tests: 0 }, reachingTests: [], ranReachingTests: [] },
+      { sha: "7".repeat(40), subject: "docs: by hand", files: ["README.md"], reach: { files: 0, tests: 0 }, reachingTests: [], ranReachingTests: [] },
+    ],
+    claims: [],
+    annotations: [],
+    unchecked: [],
+    snapshot: { head: "main..HEAD", commits: 3, files: 0, tests: 0, reached: [] },
+  };
+
+  it("counts trailer-attributed commits as agent commits, links the session log, and says who is unattributed", () => {
+    const md = renderBrief(attributed, ctx);
+    expect(md).toContain("### PR brief: 2 agent commits · run the full suite");
+    expect(md).toContain("| Intent | 2 of 3 commits attributed by trailer (copilot, claude-code) · 1 unattributed |");
+    expect(md).toContain("| `5555555` feat: retry fetch | _copilot by Agent-Logs-Url_ · [session log](https://github.com/o/r/sessions/01ABC) | 1 file |  |  |");
+    expect(md).toContain("| `6666666` fix: typo | _claude-code by author_ | 1 file |  |  |");
+    expect(md).toContain("| `7777777` docs: by hand | _no checkpoint_ | 1 file |  |  |");
+    expect(md).toContain("Intent: 0 of 3 commits, 2 attributed by trailer.");
+    expect(md).not.toContain("undefined");
   });
 });

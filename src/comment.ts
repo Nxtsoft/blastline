@@ -396,7 +396,9 @@ function commitTable(commits: CommitBrief[], links: Links): string {
       ? `${cell(truncate(cp.prompt, 120))}${cp.model ? ` <sub>${cp.agent ? `${cp.agent} · ` : ""}${cp.model}</sub>` : ""}`
       : c.checkpointId !== undefined
         ? `_checkpoint ${code(c.checkpointId)} not fetched_`
-        : "_no checkpoint_";
+        : c.provenance
+          ? `_${c.provenance.agent} by ${c.provenance.via}_${c.provenance.logsUrl ? ` · [session log](${c.provenance.logsUrl})` : ""}`
+          : "_no checkpoint_";
     const files = c.files.length === 0 ? "" : plural(c.files.length, "file");
     const reach = c.reach.files === 0 && c.reach.tests === 0 ? "" : `${plural(c.reach.files, "file")}, ${plural(c.reach.tests, "test")}`;
     const ran = !cp
@@ -425,12 +427,21 @@ function claimsList(claims: ClaimCheck[]): string {
 function intentRow(brief: Brief): string {
   const withCheckpoint = brief.commits.filter((c) => c.checkpoint).length;
   const unfetched = brief.commits.filter((c) => c.checkpointId !== undefined && !c.checkpoint).length;
+  const attributed = brief.commits.filter((c) => c.provenance).map((c) => c.provenance!.agent);
   const models = [...new Set(brief.commits.map((c) => c.checkpoint?.model).filter((m): m is string => !!m))];
   const total = plural(brief.commits.length, "commit");
   if (brief.commits.length === 0) return `| Intent | no commits in ${code(brief.range)} |`;
-  if (withCheckpoint === 0 && unfetched === 0) return `| Intent | no checkpoints on this branch (${total}) |`;
+  if (withCheckpoint === 0 && unfetched === 0 && attributed.length === 0) {
+    return `| Intent | no checkpoints on this branch (${total}): no ${code("Entire-Checkpoint")} or ${code("Agent-Logs-Url")} trailer, no vendor address |`;
+  }
   const carry = brief.commits.length === 1 ? "carries" : "carry";
-  const parts = [`${withCheckpoint} of ${total} ${carry} a checkpoint`, models.length > 0 ? models.map(code).join(", ") : "", unfetched > 0 ? `${unfetched} not fetched` : ""];
+  const byTrailer = attributed.length === 0 ? "" : `${attributed.length} attributed by trailer (${[...new Set(attributed)].join(", ")})`;
+  const none = brief.commits.length - withCheckpoint - unfetched - attributed.length;
+  const parts =
+    withCheckpoint > 0
+      ? [`${withCheckpoint} of ${total} ${carry} a checkpoint`, models.length > 0 ? models.map(code).join(", ") : "", byTrailer]
+      : [`${attributed.length > 0 ? `${attributed.length} of ${total} attributed by trailer (${[...new Set(attributed)].join(", ")})` : `0 of ${total} ${carry} a checkpoint`}`];
+  parts.push(unfetched > 0 ? `${unfetched} not fetched` : "", none > 0 && (withCheckpoint > 0 || attributed.length > 0) ? `${none} unattributed` : "");
   return `| Intent | ${parts.filter(Boolean).join(" · ")} |`;
 }
 
@@ -464,7 +475,8 @@ function briefFooter(brief: Brief, ctx: CommentContext): string {
   const cc = brief.changeContext;
   if (cc) extra.push(`change-context budget ${cc.budget}: omitted ${cc.omitted.impacts} impacts, ${cc.omitted.context} context entries${cc.truncated ? " (truncated)" : ""}; symbols are classified within the diff only.`);
   const withCheckpoint = brief.commits.filter((c) => c.checkpoint).length;
-  extra.push(`Intent: ${withCheckpoint} of ${plural(brief.commits.length, "commit")}.`);
+  const byTrailer = brief.commits.filter((c) => c.provenance).length;
+  extra.push(`Intent: ${withCheckpoint} of ${plural(brief.commits.length, "commit")}${byTrailer > 0 ? `, ${byTrailer} attributed by trailer` : ""}.`);
   for (const u of brief.unchecked) extra.push(`Not checked: ${u}.`);
   const contentRoot = brief.selection.kind === "subset" ? brief.selection.contentRoot : undefined;
   return footer(contentRoot, ctx, extra, BRIEF_README);
@@ -477,7 +489,7 @@ function briefFooter(brief: Brief, ctx: CommentContext): string {
  */
 export function renderBrief(brief: Brief, ctx: CommentContext): string {
   const links = new Links(ctx);
-  const agentCommits = brief.commits.filter((c) => c.checkpoint).length;
+  const agentCommits = brief.commits.filter((c) => c.checkpoint || c.provenance).length;
   const title = `### PR brief: ${plural(agentCommits, "agent commit")} · `;
   const snapshot = `${SNAPSHOT_MARKER}${JSON.stringify(brief.snapshot)} -->`;
   const sections = (verdictParts: (string | undefined)[]): (string | undefined)[] => [
