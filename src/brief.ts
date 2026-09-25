@@ -226,9 +226,25 @@ function listOf(items: string[], limit = 4): string {
   return items.length > limit ? `${shown}, +${items.length - limit}` : shown;
 }
 
-/** The repo-relative label of the file node that owns an absolute graph path. */
+/** The file node's label: relative to the graph root (bin-v0.5.0), which is the repository root only when the graph was built there. */
 function fileLabel(graph: CodeGraph, abs: string): string {
   return graph.byFile.get(abs)?.find((n) => n.type === "file")?.label ?? abs;
+}
+
+/**
+ * Where the graph root sits in the repository, as a path prefix ("src/", or
+ * "" when the graph was built at the root): the part a diff path carries that
+ * the same file's label lacks. Learned from any changed file the graph knows.
+ */
+function labelPrefix(graph: CodeGraph, changedPaths: Set<string>): string {
+  for (const p of changedPaths) {
+    for (const [abs, nodes] of graph.byFile) {
+      const label = nodes.find((n) => n.type === "file")?.label;
+      if (label === undefined || !abs.endsWith(`/${p}`) || !p.endsWith(label)) continue;
+      return p.slice(0, p.length - label.length);
+    }
+  }
+  return "";
 }
 
 /**
@@ -239,6 +255,7 @@ function fileLabel(graph: CodeGraph, abs: string): string {
  */
 function removedSymbolClaims(symbols: SymbolChange[], baseGraph: CodeGraph, changedPaths: Set<string>): ClaimCheck[] {
   const claims: ClaimCheck[] = [];
+  const prefix = labelPrefix(baseGraph, changedPaths);
   for (const s of symbols) {
     if (!s.status.startsWith("deleted")) continue;
     const claim = `\`${s.label}\` removed from \`${s.path}\``;
@@ -248,15 +265,13 @@ function removedSymbolClaims(symbols: SymbolChange[], baseGraph: CodeGraph, chan
       claims.push({ claim, verdict: "partial", evidence: `could not resolve it in the base graph (${why})` });
       continue;
     }
+    const repoPath = (c: { file?: string }): string => (c.file ? prefix + fileLabel(baseGraph, c.file) : "");
     const describe = (c: { label: string; kind: string; file?: string; line?: number }): string => {
-      const file = c.file ? fileLabel(baseGraph, c.file) : "";
+      const file = repoPath(c);
       const at = file ? ` (${file}${c.line !== undefined && c.kind !== "file" ? `:${c.line}` : ""})` : "";
       return c.kind === "file" ? `\`${file}\`` : `\`${c.label}\`${at}`;
     };
-    const inChanged = (c: { file?: string }): boolean => {
-      const file = c.file ? fileLabel(baseGraph, c.file) : "";
-      return [...changedPaths].some((p) => file === p);
-    };
+    const inChanged = (c: { file?: string }): boolean => changedPaths.has(repoPath(c));
     // Symbols before their files: `use (src/use.ts:3)` says more than `src/use.ts`.
     const callers = [...result.callers].sort((a, b) => Number(a.kind === "file") - Number(b.kind === "file") || a.label.localeCompare(b.label));
     const remaining = callers.filter((c) => !inChanged(c));
