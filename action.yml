@@ -193,6 +193,19 @@ runs:
         path: ${{ runner.temp }}/blastline-turnkey-graph
         key: blastline-graph-v1-${{ inputs.cgraph-version }}-${{ steps.turnkeykey.outputs.hash }}
 
+    - name: Mark the cached graph current
+      if: ${{ inputs.graph-path == '' && inputs.graph-root != '' && steps.turnkeycache.outputs.cache-hit == 'true' }}
+      shell: bash
+      env:
+        OUT_DIR: ${{ runner.temp }}/blastline-turnkey-graph
+      run: |
+        # The cache key is the tree hash of graph-root at HEAD, so a hit is a
+        # graph of exactly this source tree, however old the restored mtime
+        # is. Without this a commit that touches nothing under graph-root
+        # (docs, the workflow) restores a graph older than itself and the
+        # mtime guard fails open on a graph that is, by construction, fresh.
+        touch "$OUT_DIR/graph.json"
+
     - name: Install cgraph (prebuilt release binaries)
       # Installed on every turnkey run, cache hit or not: the graph is cached,
       # change-context over the range's diff is not.
