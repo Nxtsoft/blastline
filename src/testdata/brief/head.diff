@@ -1,0 +1,24 @@
+diff --git a/src/lib.test.ts b/src/lib.test.ts
+index 8aead21..690c059 100644
+--- a/src/lib.test.ts
++++ b/src/lib.test.ts
+@@ -1 +1 @@
+-import { parse } from "./lib.js";
++import { emit, parse } from "./lib.js";
+@@ -3 +3 @@ import { parse } from "./lib.js";
+-export const check = parse("ab") === 3;
++export const check = parse("ab") === 3 && emit(3) === "3";
+diff --git a/src/lib.ts b/src/lib.ts
+index 35a6aa2..8b1421f 100644
+--- a/src/lib.ts
++++ b/src/lib.ts
+@@ -1,2 +1,2 @@
+-export function helper(n: number): number {
+-  return n + 1;
++export function parse(input: string): number {
++  return input.length + 1;
+@@ -5,2 +5,2 @@ export function helper(n: number): number {
+-export function parse(input: string): number {
+-  return helper(input.length);
++export function emit(n: number): string {
++  return String(n);

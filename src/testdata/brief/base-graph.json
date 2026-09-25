@@ -1,0 +1,347 @@
+{
+  "directed": true,
+  "graph": {
+    "build_state": 1,
+    "cache_hit_rate": 0.0,
+    "content_root": {
+      "algorithm": "sha256-merkle-v1",
+      "leaf_count": 6,
+      "sha256": "98be66250bd1df807be9f81e25d2237627e2bf40a3ed1fa2f2cd19502aab26bd"
+    }
+  },
+  "links": [
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports_from",
+      "source": "repo_base_src_lib_test_ts",
+      "target": "repo_base_src_lib_ts"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports",
+      "source": "repo_base_src_lib_test_ts",
+      "target": "repo_base_src_lib_ts_parse"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "contains",
+      "source": "repo_base_src_lib_ts",
+      "target": "repo_base_src_lib_ts_helper"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "contains",
+      "source": "repo_base_src_lib_ts",
+      "target": "repo_base_src_lib_ts_parse"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports_from",
+      "source": "repo_base_src_other_test_ts",
+      "target": "repo_base_src_other_ts"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports",
+      "source": "repo_base_src_other_test_ts",
+      "target": "repo_base_src_other_ts_other"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "contains",
+      "source": "repo_base_src_other_ts",
+      "target": "repo_base_src_other_ts_other"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports_from",
+      "source": "repo_base_src_use_test_ts",
+      "target": "repo_base_src_use_ts"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports",
+      "source": "repo_base_src_use_test_ts",
+      "target": "repo_base_src_use_ts_use"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {
+        "cross_community": "true",
+        "surprise": "cross-community"
+      },
+      "relation": "imports_from",
+      "source": "repo_base_src_use_ts",
+      "target": "repo_base_src_lib_ts"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {
+        "cross_community": "true",
+        "surprise": "cross-community"
+      },
+      "relation": "imports",
+      "source": "repo_base_src_use_ts",
+      "target": "repo_base_src_lib_ts_helper"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {
+        "cross_community": "true",
+        "surprise": "cross-community"
+      },
+      "relation": "imports",
+      "source": "repo_base_src_use_ts",
+      "target": "repo_base_src_lib_ts_parse"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "contains",
+      "source": "repo_base_src_use_ts",
+      "target": "repo_base_src_use_ts_use"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "CALLS",
+      "source": "repo_base_src_lib_ts_parse",
+      "target": "repo_base_src_lib_ts_helper"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {
+        "cross_community": "true",
+        "surprise": "cross-community"
+      },
+      "relation": "CALLS",
+      "source": "repo_base_src_use_ts_use",
+      "target": "repo_base_src_lib_ts_parse"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {
+        "cross_community": "true",
+        "surprise": "cross-community"
+      },
+      "relation": "CALLS",
+      "source": "repo_base_src_use_ts_use",
+      "target": "repo_base_src_lib_ts_helper"
+    }
+  ],
+  "multigraph": false,
+  "nodes": [
+    {
+      "confidence": "EXTRACTED",
+      "id": "repo_base_src_lib_test_ts",
+      "label": "src/lib.test.ts",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "0.400000",
+        "god_node_rank": "6",
+        "x": "-188.02",
+        "y": "-300.78"
+      },
+      "source_file": "/repo/src/lib.test.ts",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "repo_base_src_lib_ts",
+      "label": "src/lib.ts",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "0.800000",
+        "god_node": "true",
+        "god_node_rank": "3",
+        "x": "-306.01",
+        "y": "-151.12"
+      },
+      "source_file": "/repo/src/lib.ts",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "repo_base_src_lib_ts_helper",
+      "label": "helper",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "0.800000",
+        "god_node_rank": "4",
+        "x": "-360.00",
+        "y": "26.46"
+      },
+      "source_file": "/repo/src/lib.ts",
+      "source_location": {
+        "end_column": 1,
+        "end_line": 3,
+        "start_column": 7,
+        "start_line": 1
+      },
+      "type": "function"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "repo_base_src_lib_ts_parse",
+      "label": "parse",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "1.000000",
+        "god_node": "true",
+        "god_node_rank": "1",
+        "x": "-201.32",
+        "y": "-69.10"
+      },
+      "source_file": "/repo/src/lib.ts",
+      "source_location": {
+        "end_column": 1,
+        "end_line": 7,
+        "start_column": 7,
+        "start_line": 5
+      },
+      "type": "function"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "repo_base_src_other_test_ts",
+      "label": "src/other.test.ts",
+      "properties": {
+        "community": "1",
+        "degree_centrality": "0.400000",
+        "god_node_rank": "7",
+        "x": "360.00",
+        "y": "59.09"
+      },
+      "source_file": "/repo/src/other.test.ts",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "repo_base_src_other_ts",
+      "label": "src/other.ts",
+      "properties": {
+        "community": "1",
+        "degree_centrality": "0.400000",
+        "god_node_rank": "8",
+        "x": "354.08",
+        "y": "-135.75"
+      },
+      "source_file": "/repo/src/other.ts",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "repo_base_src_other_ts_other",
+      "label": "other",
+      "properties": {
+        "community": "1",
+        "degree_centrality": "0.400000",
+        "god_node_rank": "9",
+        "x": "239.86",
+        "y": "-40.16"
+      },
+      "source_file": "/repo/src/other.ts",
+      "source_location": {
+        "end_column": 1,
+        "end_line": 3,
+        "start_column": 7,
+        "start_line": 1
+      },
+      "type": "function"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "repo_base_src_use_test_ts",
+      "label": "src/use.test.ts",
+      "properties": {
+        "community": "2",
+        "degree_centrality": "0.400000",
+        "god_node_rank": "10",
+        "x": "-116.03",
+        "y": "300.78"
+      },
+      "source_file": "/repo/src/use.test.ts",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "repo_base_src_use_ts",
+      "label": "src/use.ts",
+      "properties": {
+        "community": "2",
+        "degree_centrality": "1.000000",
+        "god_node": "true",
+        "god_node_rank": "2",
+        "x": "-185.95",
+        "y": "76.59"
+      },
+      "source_file": "/repo/src/use.ts",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "repo_base_src_use_ts_use",
+      "label": "use",
+      "properties": {
+        "community": "2",
+        "degree_centrality": "0.800000",
+        "god_node_rank": "5",
+        "x": "-261.14",
+        "y": "184.24"
+      },
+      "source_file": "/repo/src/use.ts",
+      "source_location": {
+        "end_column": 1,
+        "end_line": 5,
+        "start_column": 7,
+        "start_line": 3
+      },
+      "type": "function"
+    }
+  ]
+}
