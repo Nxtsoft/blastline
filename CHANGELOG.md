@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.7
+
+The narrative check no longer calls a machine path or a file type a phantom change.
+
+- A name in code font that starts with `/` or `~` (`/Applications`, `~/Applications/Passless.app`) or is a bare extension (`.pkg`) is not a claim about the diff: it names a place on a machine or a kind of file. `codeNames` in `src/brief.ts` skips them.
+- A repo-relative path in code font is carried by the diff when any changed line contains it, so `./lib.js` in an added import is consistent, not refuted. Before, a path was matched only against the changed files.
+- On a packaging-script PR whose body described the install location and the built artifact, six refuted claims become two: the path the installer wrote to outside the repo, and the file inside the built package the body compared.
+
 ## 0.14.6
 
 The Reviewed-by row names what the change reaches that its own humans have never touched.

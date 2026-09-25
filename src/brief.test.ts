@@ -420,6 +420,16 @@ describe("narrative claims", () => {
     expect(prose.claims.some((c) => c.claim === "PR body describes the change")).toBe(false);
   });
 
+  it("skips absolute and home paths and bare extensions, and finds a path inside a changed line", () => {
+    // a place on a machine, a kind of file, and a module path an added import line carries: none is a phantom change
+    const clean = brief({ narrative: "The `.pkg` installs to `/Applications/Passless.app`, never `~/Applications/Passless.app` or `/Applications`; imports `./lib.js`." });
+    expect(clean.claims.filter((c) => c.claim.startsWith("PR body names") && c.verdict === "refuted")).toEqual([]);
+    expect(clean.claims).toContainEqual({ claim: "PR body names 1 thing in code font", verdict: "consistent", evidence: "every one is a changed symbol, a changed path, or in a changed line" });
+    // a repo-relative path the diff neither touches nor mentions is still one
+    const stray = brief({ narrative: "Wrote into `.agents/worktrees/x/Passless.app`." });
+    expect(stray.claims).toContainEqual({ claim: "PR body names `.agents/worktrees/x/Passless.app`", verdict: "refuted", evidence: "no such path in the diff (phantom change)" });
+  });
+
   it("reads a commit's subject, not its body, for a throwaway marker", () => {
     const files = parseUnifiedDiff("diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n");
     const claims = narrativeClaims(
