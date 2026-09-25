@@ -429,7 +429,8 @@ function intentRow(brief: Brief): string {
   const total = plural(brief.commits.length, "commit");
   if (brief.commits.length === 0) return `| Intent | no commits in ${code(brief.range)} |`;
   if (withCheckpoint === 0 && unfetched === 0) return `| Intent | no checkpoints on this branch (${total}) |`;
-  const parts = [`${withCheckpoint} of ${total} carry a checkpoint`, models.length > 0 ? models.map(code).join(", ") : "", unfetched > 0 ? `${unfetched} not fetched` : ""];
+  const carry = brief.commits.length === 1 ? "carries" : "carry";
+  const parts = [`${withCheckpoint} of ${total} ${carry} a checkpoint`, models.length > 0 ? models.map(code).join(", ") : "", unfetched > 0 ? `${unfetched} not fetched` : ""];
   return `| Intent | ${parts.filter(Boolean).join(" · ")} |`;
 }
 

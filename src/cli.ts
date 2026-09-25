@@ -62,6 +62,7 @@ comment and figure options:
 brief options:
   --change-context <file>  cgraph change-context JSON: the Symbols row, the Change column, removed-symbol claims
   --previous <file>    the previously posted comment; its embedded snapshot gives the "since push" row
+  --selection <file>   reuse a saved --json selection for the reach instead of computing one
   --annotations <n>    check-run annotations on the highest-reach changed lines (default and ceiling 50)
   --json               {brief, markdown, check_run}: check_run is the Checks API POST body for the head sha
   brief reads each commit's Entire-Checkpoint trailer (refs/entire/checkpoints/*) and shows only the
@@ -176,6 +177,7 @@ if (command === "mcp") {
       ? buildBrief({
           ...runOptions(),
           range,
+          ...(saved !== undefined && { selection: JSON.parse(readFileSync(saved, "utf8")) as Selection }),
           ...(opt("change-context") !== undefined && { changeContextFile: opt("change-context") as string }),
           ...(opt("previous") !== undefined && { previousFile: opt("previous") as string }),
           ...(opt("annotations") !== undefined && { annotations: Number(opt("annotations")) }),

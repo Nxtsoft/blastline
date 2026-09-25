@@ -107,6 +107,8 @@ export interface Brief {
 
 export interface BriefOptions extends RunOptions {
   range: string;
+  /** A selection already computed for this range (the Action's `--json` output), instead of running one. */
+  selection?: Selection;
   /** `cgraph change-context` JSON. */
   changeContextFile?: string;
   /** The previously rendered comment, whose embedded snapshot gives the delta. */
@@ -318,8 +320,8 @@ export function buildBrief(o: BriefOptions): Brief {
   const git = (...args: string[]): string =>
     execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
 
-  const { range, changeContextFile, previousFile, annotations: annotationLimit, ...runOptions } = o;
-  const selection = runSelection({ ...runOptions, range });
+  const { range, selection: given, changeContextFile, previousFile, annotations: annotationLimit, ...runOptions } = o;
+  const selection = given ?? runSelection({ ...runOptions, range });
   const shas = resolveRange(repo, range);
   const unchecked: string[] = [];
 
