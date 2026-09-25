@@ -33,10 +33,12 @@ inputs:
   cgraph-version:
     description: >-
       CGraph release tag installed from Nxtsoft/CGraph (gh release download,
-      asset cgraph-linux-x64.tar.gz) when graph-root triggers the turnkey
-      build. Ignored when graph-root is unset.
+      asset cgraph-linux-x64.tar.gz) when graph-root is set: it builds the
+      graph and runs `cgraph change-context` for the brief's symbol changes.
+      bin-v0.4.0 is the first release that ships change-context. Ignored when
+      graph-root is unset.
     required: false
-    default: bin-v0.2.0
+    default: bin-v0.4.0
   base-graph-path:
     description: optional graph.json for the base commit (improves deletion mapping)
     required: false
@@ -64,10 +66,19 @@ inputs:
     default: "true"
   github-token:
     description: >-
-      token used to post the PR comment (pull-requests: write) and to push the
-      reach figure to figure-branch (contents: write)
+      token used to post the PR comment (pull-requests: write), the check run
+      (checks: write) and to push the reach figure to figure-branch
+      (contents: write)
     required: false
     default: ""
+  check-run:
+    description: >-
+      also post a `blastline` check run on the PR head sha, with annotations
+      on the changed lines with the highest reach (needs checks: write on
+      github-token; posted only when the comment is). A fork's read-only token
+      cannot post it, and the run warns instead of failing.
+    required: false
+    default: "true"
   figure:
     description: >-
       how the comment carries the reach figure: "auto" (default) embeds an
@@ -120,6 +131,19 @@ runs:
         fi
         echo "range=$range" >> "$GITHUB_OUTPUT"
 
+    - name: Fetch checkpoint refs
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo-path }}
+      run: |
+        repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
+        # An Entire checkpoint (what the agent was asked, which tests it ran)
+        # lives on its own ref, pushed separately from the branch. The brief
+        # reads it through each commit's Entire-Checkpoint trailer; a repo
+        # without them gets "no checkpoints on this branch", not a failure.
+        git -C "$repo" fetch -q origin '+refs/entire/checkpoints/*:refs/entire/checkpoints/*' 2>/dev/null \
+          || echo "blastline: no checkpoint refs fetched"
+
     - name: Resolve graph path
       id: graphpath
       shell: bash
@@ -170,7 +194,9 @@ runs:
         key: blastline-graph-v1-${{ inputs.cgraph-version }}-${{ steps.turnkeykey.outputs.hash }}
 
     - name: Install cgraph (prebuilt release binaries)
-      if: ${{ inputs.graph-path == '' && inputs.graph-root != '' && steps.turnkeycache.outputs.cache-hit != 'true' }}
+      # Installed on every turnkey run, cache hit or not: the graph is cached,
+      # change-context over the range's diff is not.
+      if: ${{ inputs.graph-path == '' && inputs.graph-root != '' }}
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -225,6 +251,37 @@ runs:
         }
         echo "path=$BLASTLINE_BASE_OUT/graph.json" >> "$GITHUB_OUTPUT"
 
+    - name: Classify symbol changes (cgraph change-context)
+      id: changecontext
+      if: ${{ inputs.graph-path == '' && inputs.graph-root != '' }}
+      shell: bash
+      env:
+        RANGE: ${{ steps.range.outputs.range }}
+        INPUT_REPO: ${{ inputs.repo-path }}
+      run: |
+        set -euo pipefail
+        repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
+        # Symbol changes are context for the brief, never a gate on it: any
+        # failure here costs the Symbols row and the removed-symbol claims,
+        # and the brief says so in its footer.
+        base_src="$RUNNER_TEMP/blastline-base-src"
+        if [ ! -d "$base_src" ]; then
+          if ! base_sha=$(git -C "$repo" rev-parse "${RANGE%%..*}^{commit}") \
+            || ! git -C "$repo" worktree add -q --detach "$base_src" "$base_sha"; then
+            echo "::warning::blastline: cannot check out the range's base for change-context (needs fetch-depth: 0)"
+            exit 0
+          fi
+        fi
+        diff="$RUNNER_TEMP/blastline-range.diff"
+        git -C "$repo" diff --unified=0 "$RANGE" > "$diff"
+        out="$RUNNER_TEMP/blastline-change-context.json"
+        if cgraph change-context --base-root "$base_src" --target-root "$repo" --diff "$diff" --budget 20000 > "$out"; then
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::blastline: cgraph change-context failed; the brief carries no symbol changes"
+          cat "$out" >&2 || true
+        fi
+
     - name: Select impacted tests
       id: select
       shell: bash
@@ -253,6 +310,7 @@ runs:
         cat selection.json
         kind=$(bun -e 'console.log(JSON.parse(require("fs").readFileSync("selection.json","utf8")).kind)')
         echo "kind=$kind" >> "$GITHUB_OUTPUT"
+        echo "base_graph=$base_graph" >> "$GITHUB_OUTPUT"
         {
           echo "tests<<BLASTLINE_EOF"
           bun -e 'const s=JSON.parse(require("fs").readFileSync("selection.json","utf8")); if(s.kind==="subset") console.log(s.tests.join("\n"))'
@@ -325,38 +383,8 @@ runs:
         done
         echo "::warning::blastline: could not push the reach figure after 3 attempts; posting the comment without it"
 
-    - name: Render the PR comment
-      # Always rendered, even when nothing posts it: blastline-comment.md is
-      # part of the Action's output on disk (ci.yml's self-test reads it on
-      # push events too).
-      shell: bash
-      env:
-        RANGE: ${{ steps.range.outputs.range }}
-        INPUT_REPO: ${{ inputs.repo-path }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        FIGURE_URL: ${{ steps.figure.outputs.url }}
-        FIGURE_MODE: ${{ inputs.figure }}
-        REPO_PRIVATE: ${{ github.event.repository.private }}
-      run: |
-        set -euo pipefail
-        repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
-        args=(comment "$RANGE" --repo "$repo" --selection selection.json --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY")
-        [ -n "${PR_NUMBER:-}" ] && args+=(--pr "$PR_NUMBER")
-        # On pull_request the range ends at GitHub's merge commit, which is the
-        # right thing to diff (base.sha is its first parent) but not the commit
-        # the reviewer knows. Links and captions name the PR head instead.
-        [ -n "${PR_HEAD_SHA:-}" ] && args+=(--head-sha "$PR_HEAD_SHA")
-        # GitHub fetches comment images anonymously, so a private repository's
-        # raw file is a broken image there; it gets a mermaid block instead.
-        if [ "$FIGURE_MODE" = "mermaid" ] || { [ "$FIGURE_MODE" = "auto" ] && [ "${REPO_PRIVATE:-false}" = "true" ]; }; then
-          args+=(--figure-mermaid)
-        elif [ -n "${FIGURE_URL:-}" ]; then
-          args+=(--figure-url "$FIGURE_URL")
-        fi
-        bun "$GITHUB_ACTION_PATH/src/cli.ts" "${args[@]}" > blastline-comment.md
-
-    - name: Post or update the PR comment
+    - name: Find the existing comment
+      id: existing
       if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' && inputs.github-token != '' }}
       shell: bash
       env:
@@ -375,9 +403,80 @@ runs:
         existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
           | jq -r '[.[] | select(.body | startswith("<!-- blastline:test-impact -->"))] | last | .id // empty' \
           | tail -n 1)
+        echo "id=$existing" >> "$GITHUB_OUTPUT"
+        # The previous brief's embedded snapshot is what "since push" is
+        # measured against.
         if [ -n "$existing" ]; then
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@blastline-comment.md > /dev/null
-          echo "updated comment $existing"
+          gh api "repos/$GITHUB_REPOSITORY/issues/comments/$existing" --jq .body > blastline-previous.md
+          echo "previous=blastline-previous.md" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Render the PR brief
+      # Always rendered, even when nothing posts it: blastline-comment.md and
+      # blastline-brief.json are part of the Action's output on disk (ci.yml's
+      # self-test reads them on push events too).
+      shell: bash
+      env:
+        RANGE: ${{ steps.range.outputs.range }}
+        INPUT_REPO: ${{ inputs.repo-path }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        FIGURE_URL: ${{ steps.figure.outputs.url }}
+        FIGURE_MODE: ${{ inputs.figure }}
+        REPO_PRIVATE: ${{ github.event.repository.private }}
+        BASE_GRAPH: ${{ steps.select.outputs.base_graph }}
+        CHANGE_CONTEXT: ${{ steps.changecontext.outputs.path }}
+        PREVIOUS: ${{ steps.existing.outputs.previous }}
+      run: |
+        set -euo pipefail
+        repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
+        args=(brief "$RANGE" --repo "$repo" --selection selection.json --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --annotations 50 --json)
+        [ -n "${BASE_GRAPH:-}" ] && args+=(--base-graph "$BASE_GRAPH")
+        [ -n "${CHANGE_CONTEXT:-}" ] && args+=(--change-context "$CHANGE_CONTEXT")
+        [ -n "${PREVIOUS:-}" ] && args+=(--previous "$PREVIOUS")
+        [ -n "${PR_NUMBER:-}" ] && args+=(--pr "$PR_NUMBER")
+        # On pull_request the range ends at GitHub's merge commit, which is the
+        # right thing to diff (base.sha is its first parent) but not the commit
+        # the reviewer knows. Links and captions name the PR head instead.
+        [ -n "${PR_HEAD_SHA:-}" ] && args+=(--head-sha "$PR_HEAD_SHA")
+        # GitHub fetches comment images anonymously, so a private repository's
+        # raw file is a broken image there; it gets a mermaid block instead.
+        if [ "$FIGURE_MODE" = "mermaid" ] || { [ "$FIGURE_MODE" = "auto" ] && [ "${REPO_PRIVATE:-false}" = "true" ]; }; then
+          args+=(--figure-mermaid)
+        elif [ -n "${FIGURE_URL:-}" ]; then
+          args+=(--figure-url "$FIGURE_URL")
+        fi
+        bun "$GITHUB_ACTION_PATH/src/cli.ts" "${args[@]}" > blastline-brief.json
+        bun -e 'const b = JSON.parse(require("fs").readFileSync("blastline-brief.json", "utf8")); require("fs").writeFileSync("blastline-comment.md", b.markdown); require("fs").writeFileSync("blastline-check-run.json", JSON.stringify(b.check_run))'
+        cat blastline-comment.md
+
+    - name: Post or update the PR comment
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' && inputs.github-token != '' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        EXISTING: ${{ steps.existing.outputs.id }}
+      run: |
+        set -euo pipefail
+        if [ -n "${EXISTING:-}" ]; then
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$EXISTING" -F body=@blastline-comment.md > /dev/null
+          echo "updated comment $EXISTING"
         else
           gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@blastline-comment.md --jq '"posted comment " + (.id|tostring)'
+        fi
+
+    - name: Post the check run
+      # Same guard as the comment: a fork PR's token is read-only, so the
+      # check run is attempted only where the comment is, and a refusal is
+      # a warning, since the brief is already in the comment.
+      if: ${{ inputs.check-run == 'true' && inputs.comment == 'true' && github.event_name == 'pull_request' && inputs.github-token != '' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        if ! gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" --input blastline-check-run.json \
+          --jq '"check run " + (.id|tostring) + " on " + .head_sha[0:7] + ": " + (.output.annotations_count|tostring) + " annotations"'; then
+          echo "::warning::blastline: could not post the check run (github-token needs checks: write)"
         fi
