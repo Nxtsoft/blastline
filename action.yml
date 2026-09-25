@@ -502,8 +502,11 @@ runs:
           sep=""
           for n in $others; do
             [ "$n" = "$PR_NUMBER" ] && continue
-            body=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments" \
-              --jq '[.[] | select(.body | startswith("<!-- blastline:test-impact -->"))] | last | .body // empty' 2>/dev/null | tail -n 1)
+            # The body is the whole multi-line brief, taken verbatim: the pages
+            # are slurped into one array first (gh cannot slurp and filter in
+            # one call), then the newest marker comment is picked.
+            pages=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$n/comments" 2>/dev/null) || continue
+            body=$(printf '%s' "$pages" | jq -r '[.[][] | select(.body | startswith("<!-- blastline:test-impact -->"))] | last | .body // empty')
             [ -z "$body" ] && continue
             printf '%s{"number":%s,"body":%s}' "$sep" "$n" "$(printf '%s' "$body" | jq -Rs .)" >> blastline-others.json
             sep=","

@@ -183,6 +183,8 @@ export interface BriefOptions extends RunOptions {
   changeContextFile?: string;
   /** The previously rendered comment, whose embedded snapshot gives the delta. */
   previousFile?: string;
+  /** This PR's number, so its own brief among `others` is never a concurrent PR. */
+  pr?: number;
   /** The other open PRs' brief comments; each one's embedded snapshot is intersected with this brief's reach. */
   others?: OtherBrief[];
   /** The PR author's login; with `reviews`, the Reviewed-by row says whether anyone else has looked. */
@@ -241,6 +243,8 @@ export function concurrentPrs(mine: BriefSnapshot, others: OtherBrief[]): Concur
 }
 
 export const MAX_ANNOTATIONS = 50;
+/** Changed symbols a snapshot embeds, so the marker line stays far from GitHub's comment ceiling on a large diff. */
+export const MAX_SNAPSHOT_SYMBOLS = 200;
 export const SNAPSHOT_MARKER = "<!-- blastline:brief ";
 
 /** Full shas of both ends of a range, or undefined when git cannot resolve them. */
@@ -595,7 +599,8 @@ export function buildBrief(o: BriefOptions): Brief {
   const git = (...args: string[]): string =>
     execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
 
-  const { range, selection: given, headSha: headOverride, changeContextFile, previousFile, annotations: annotationLimit, author, reviews, others, ...runOptions } = o;
+  const { range, selection: given, headSha: headOverride, changeContextFile, previousFile, annotations: annotationLimit, author, reviews, others: allOthers, pr, ...runOptions } = o;
+  const others = allOthers?.filter((x) => x.number !== pr);
   const selection = given ?? runSelection({ ...runOptions, range });
   const resolved = resolveRange(repo, range);
   const shas = resolved && headOverride !== undefined ? { base: resolved.base, head: headOverride } : resolved;
@@ -760,7 +765,7 @@ export function buildBrief(o: BriefOptions): Brief {
     tests: selection.kind === "subset" ? selection.tests.length : 0,
     reached: [...reachedFiles].sort(),
     changed: changedMapped,
-    symbols: (changeContext?.symbols ?? []).map((s) => `${s.path}:${s.label}`),
+    symbols: (changeContext?.symbols ?? []).slice(0, MAX_SNAPSHOT_SYMBOLS).map((s) => `${s.path}:${s.label}`),
   };
 
   let concurrent: ConcurrentPr[] | undefined;

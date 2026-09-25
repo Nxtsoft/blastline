@@ -253,6 +253,8 @@ describe("buildBrief", () => {
       { number: 7, head: "7".repeat(40), changesReached: [{ path: "src/use.ts", symbols: ["use"] }], reachesChanged: ["src/lib.ts"], bothChange: [] },
       { number: 8, head: "8".repeat(40), changesReached: [], reachesChanged: [], bothChange: ["src/lib.ts"] },
     ]);
+    // a PR's own brief among the others is never a concurrent PR
+    expect(brief({ others, pr: 7 }).concurrent?.map((c) => c.number)).toEqual([8]);
     const none = brief({ others: [others[2]!, others[4]!] });
     expect(none.concurrent).toEqual([]);
     expect(none.unchecked).toContain("concurrent PRs: none of the 1 open PR with a brief touches what this PR changes or reaches");

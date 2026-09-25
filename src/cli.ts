@@ -236,6 +236,7 @@ if (command === "mcp") {
           ...(opt("change-context") !== undefined && { changeContextFile: opt("change-context") as string }),
           ...(opt("previous") !== undefined && { previousFile: opt("previous") as string }),
           ...(opt("others") !== undefined && { others: othersIn(readFileSync(opt("others") as string, "utf8")) }),
+          ...(opt("pr") !== undefined && { pr: Number(opt("pr")) }),
           ...(opt("author") !== undefined && { author: opt("author") as string }),
           ...(opt("reviews") !== undefined && { reviews: reviewsIn(readFileSync(opt("reviews") as string, "utf8")) }),
           ...(opt("narrative") !== undefined && { narrative: readFileSync(opt("narrative") as string, "utf8") }),

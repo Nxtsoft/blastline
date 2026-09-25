@@ -490,7 +490,7 @@ describe("renderBrief: concurrent PRs row", () => {
       ctx,
     );
     expect(md).toContain(
-      "| Concurrent PRs | #38 changes `renderClaims` (`src/comment.ts`), `intentRow` (`src/comment.ts`), which this PR reaches · #39 also changes `src/lib.ts`; reaches `src/lib.ts`, which this PR changes · #40 changes `src/a.ts`, `src/b.ts`, +1, which this PR reaches |",
+      "| Concurrent PRs | #38 changes `renderClaims`, `intentRow`, +1 (`src/comment.ts`), which this PR reaches · #39 also changes `src/lib.ts`; reaches `src/lib.ts`, which this PR changes · #40 changes `src/a.ts`, `src/b.ts`, +1 file, which this PR reaches |",
     );
     expect(renderBrief({ ...brief, concurrent: [] }, ctx)).not.toContain("| Concurrent PRs |");
   });

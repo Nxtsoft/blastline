@@ -546,8 +546,11 @@ function concurrentRow(brief: Brief): string | undefined {
   const parts = prs.slice(0, 3).map((p) => {
     const bits: string[] = [];
     if (p.changesReached.length > 0) {
-      const named = p.changesReached.flatMap((c) => c.symbols.slice(0, 2).map((s) => `${code(s)} (${code(c.path)})`));
-      bits.push(`changes ${named.length > 0 ? named.slice(0, 2).join(", ") : files(p.changesReached.map((c) => c.path))}, which this PR reaches`);
+      const entries = p.changesReached
+        .slice(0, 2)
+        .map((c) => (c.symbols.length > 0 ? `${c.symbols.slice(0, 2).map(code).join(", ")}${c.symbols.length > 2 ? `, +${c.symbols.length - 2}` : ""} (${code(c.path)})` : code(c.path)));
+      const more = p.changesReached.length > 2 ? `, +${plural(p.changesReached.length - 2, "file")}` : "";
+      bits.push(`changes ${entries.join(", ")}${more}, which this PR reaches`);
     }
     if (p.bothChange.length > 0) bits.push(`also changes ${files(p.bothChange)}`);
     if (p.reachesChanged.length > 0) bits.push(`reaches ${files(p.reachesChanged)}, which this PR changes`);

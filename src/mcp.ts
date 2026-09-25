@@ -151,6 +151,7 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       ...(typeof args["change_context"] === "string" && { changeContextFile: args["change_context"] }),
       ...(typeof args["previous"] === "string" && { previousFile: args["previous"] }),
       ...(Array.isArray(args["others"]) && { others: othersIn(JSON.stringify(args["others"])) }),
+      ...(typeof args["pr"] === "number" && { pr: args["pr"] }),
       ...(typeof args["author"] === "string" && { author: args["author"] }),
       ...(Array.isArray(args["reviews"]) && { reviews: reviewsIn(JSON.stringify(args["reviews"])) }),
       ...(typeof args["narrative"] === "string" && { narrative: args["narrative"] }),
