@@ -1,0 +1,60 @@
+{
+  "cli_version": "0.11.2",
+  "checkpoint_id": "01M3B86DFC5B4DZQNQN67NW5A8",
+  "session_id": "3d708bec-3f87-4a6d-964d-859b0b558ac0",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-25T03:01:59.951612795Z",
+  "branch": "pr-brief",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CHANGELOG.md",
+    "package.json"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5-1",
+  "turn_id": "90b7e89d9bcc",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 98,
+    "cache_creation_tokens": 54562,
+    "cache_read_tokens": 215577,
+    "output_tokens": 992,
+    "api_call_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-25T03:01:59.922321669Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 12,
+    "human_modified": 1,
+    "human_removed": 0,
+    "total_committed": 12,
+    "total_lines_changed": 13,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 784,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".agents/scratch/changelog-0.13.0.md": 12,
+        ".agents/scratch/evidence/brief-probe.html": 93,
+        ".agents/scratch/evidence/brief-probe.json": 149,
+        ".agents/scratch/evidence/brief-probe.md": 46,
+        ".agents/scratch/make-brief-fixture.mjs": 44,
+        ".agents/scratch/pr-body.md": 104,
+        ".agents/scratch/probe-brief.json": 149,
+        ".agents/scratch/probe-cc.json": 1,
+        ".agents/scratch/probe-selection.json": 48,
+        ".agents/scratch/probe.diff": 7,
+        ".agents/scratch/readme-pr-brief.md": 38,
+        ".agents/scratch/whoami-second.sh": 3,
+        ".claude/settings.json": 90
+      }
+    }
+  ]
+}
