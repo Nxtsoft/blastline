@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -79,7 +80,9 @@ function toSession(r: SessionRow): FleetSession {
 export class SessionsIndex {
   private readonly db: DatabaseSync;
 
+  /** Opens the index read-only. Throws a plain Error naming the path when there is no such file. */
   constructor(path: string = DEFAULT_SESSIONS_DB) {
+    if (!existsSync(path)) throw new Error(`no fleet session index at ${path} (agents-cli writes it; pass --sessions-db to point elsewhere)`);
     this.db = new DatabaseSync(path, { readOnly: true });
   }
 
@@ -103,7 +106,7 @@ export class SessionsIndex {
             and timestamp <= ? and last_activity >= ?
           order by last_activity desc`,
       )
-      .all(dir, `${dir}/%`, JSON.stringify(dir), `"${dir}/`, at, at) as unknown as SessionRow[];
+      .all(dir, `${dir}/%`, JSON.stringify(dir), `${JSON.stringify(dir).slice(0, -1)}/`, at, at) as unknown as SessionRow[];
     return rows.map(toSession);
   }
 

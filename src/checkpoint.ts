@@ -40,15 +40,17 @@ function git(repo: string, args: string[]): string {
 }
 
 /**
- * The line of a prompt that states the intent, capped at 200 characters. A
- * session launched through `agents run` starts with the harness preamble
- * ("You are in a git worktree of <repo> on branch <b>…"); that paragraph is
- * skipped, so the reviewer sees the first line the human wrote.
+ * The line of a prompt that states the intent, capped at 200 characters: the
+ * first non-blank line that is not the harness preamble a session launched
+ * through `agents run` starts with ("You are in a git worktree of <repo> on
+ * branch <b>…", one line), so the reviewer sees the first line the human wrote.
  */
 export function promptLine(prompt: string): string {
-  const paragraphs = prompt.split(/\n\s*\n/);
-  const first = paragraphs.find((p) => p.trim() !== "" && !/^You are in a git worktree of /.test(p.trimStart())) ?? "";
-  return (first.split("\n").find((l) => l.trim() !== "") ?? "").trim().slice(0, 200);
+  const line = prompt
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l !== "" && !l.startsWith("You are in a git worktree of "));
+  return (line ?? "").slice(0, 200);
 }
 
 /** The checkpoint id a commit's trailer names, or undefined when it carries none. */

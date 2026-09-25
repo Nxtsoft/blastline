@@ -55,6 +55,7 @@ const BRIEF_INPUT_SCHEMA = {
     annotations: { type: "number", description: "check-run annotations on the highest-reach changed lines (default and ceiling 50)" },
     head_sha: { type: "string", description: "commit to name as the head in links and the check run when the range ends elsewhere" },
     local: { type: "boolean", description: "on the agent machine: commits without a checkpoint ref take their intent from the fleet session index (~/.agents/.history/sessions/sessions.db); nothing leaves the machine" },
+    sessions_db: { type: "string", description: "with local: the index to read instead of the default path" },
     repo_url: { type: "string", description: "https://github.com/<owner>/<repo>: paths become blob links" },
     pr: { type: "number", description: "pull request number, shown in the summary" },
   },
@@ -146,7 +147,7 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       ...(typeof args["previous"] === "string" && { previousFile: args["previous"] }),
       ...(typeof args["annotations"] === "number" && { annotations: args["annotations"] }),
       ...(typeof args["head_sha"] === "string" && { headSha: args["head_sha"] }),
-      ...(args["local"] === true && { sessionsDb: DEFAULT_SESSIONS_DB }),
+      ...(args["local"] === true && { sessionsDb: typeof args["sessions_db"] === "string" ? args["sessions_db"] : DEFAULT_SESSIONS_DB }),
     });
     const headSha = brief.headSha;
     const markdown = renderBrief(brief, {
