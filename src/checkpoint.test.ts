@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agentForAddress, checkpointFor, checkpointRef, checkpointTrailer, promptLine, provenanceOf, testCommandsIn } from "./checkpoint.js";
+import { agentForAddress, checkpointFor, checkpointRef, checkpointTrailer, editNames, promptLine, provenanceOf, symbolReasonsIn, testCommandsIn } from "./checkpoint.js";
 
 // src/testdata/checkpoint-ref/ is the tree of a real Entire 0.11.2 checkpoint
 // (ref refs/entire/checkpoints/H5/01M3AY9296319GSPWRKXGHXMH5, written for
@@ -44,7 +44,24 @@ const VITEST_RECORD = JSON.stringify({
   ],
 });
 
+// An assistant turn that explains itself and then edits src/comment.ts.
+const EDIT_RECORDS = [
+  JSON.stringify({ v: 1, type: "assistant", ts: "2026-09-25T00:09:00.000Z", id: "msg_a", content: [{ type: "text", text: "The marker comment should say what the Action does with it.\nSecond line, never shown." }] }),
+  JSON.stringify({ v: 1, type: "user", ts: "2026-09-25T00:09:01.000Z", content: [{ type: "text", text: "ok" }] }),
+  JSON.stringify({
+    v: 1,
+    type: "assistant",
+    ts: "2026-09-25T00:09:02.000Z",
+    id: "msg_b",
+    content: [
+      { id: "toolu_edit", type: "tool_use", name: "Edit", input: { file_path: "/home/x/blastline/src/comment.ts", old_string: "/** old */\nexport const COMMENT_MARKER = 1;", new_string: "/** First line of every comment. */\nexport const COMMENT_MARKER = 2;" }, result: { output: "SECRET-EDIT-RESULT", status: "success" } },
+    ],
+  }),
+].join("\n");
+const ID_EDITED = "01M3AY9296319GSPWRKXGHXMN3";
+
 let repo: string;
+let commitEdited: string;
 let commitWithRef: string;
 let commitTested: string;
 let commitNoTrailer: string;
@@ -106,7 +123,10 @@ beforeAll(() => {
     "0/transcript.jsonl": files["0/transcript.jsonl"].trimEnd() + "\n" + VITEST_RECORD + "\n",
   });
 
+  writeCheckpointRef(ID_EDITED, { ...files, "0/transcript.jsonl": files["0/transcript.jsonl"].trimEnd() + "\n" + EDIT_RECORDS + "\n" });
+
   commitNoTrailer = commitFile("src/comment.ts", "export const COMMENT_MARKER = 1;\n", "feat: base");
+  commitEdited = commitFile("src/comment.ts", "export const COMMENT_MARKER = 3;\n", `docs(comment): marker\n\nEntire-Checkpoint: ${ID_EDITED}\n`);
   commitWithRef = commitFile("src/comment.ts", "export const COMMENT_MARKER = 2;\n", `docs(comment): clarify the marker comment\n\nEntire-Checkpoint: ${ID}\n`);
   commitTested = commitFile("src/comment.ts", "export const COMMENT_MARKER = 3;\n", `test: run it\n\nEntire-Checkpoint: ${ID_TESTED}\n`);
   commitDanglingTrailer = commitFile("src/comment.ts", "export const COMMENT_MARKER = 4;\n", "chore: unpushed ref\n\nEntire-Checkpoint: 01M3AY9296319GSPWRKXGHXZZZ\n");
@@ -147,6 +167,7 @@ describe("checkpointFor", () => {
       filesTouched: ["src/comment.ts"],
       testCommands: [],
       source: "entire",
+      reasons: [],
     });
   });
 
@@ -271,5 +292,49 @@ describe("provenanceOf", () => {
     expect(agentForAddress("12+copilot@users.noreply.github.com")).toBe("copilot");
     expect(agentForAddress("copilot@example.com")).toBeUndefined();
     expect(agentForAddress("t@blastline.invalid")).toBeUndefined();
+  });
+});
+
+describe("symbolReasonsIn", () => {
+  const symbols = [
+    { path: "src/comment.ts", label: "COMMENT_MARKER" },
+    { path: "src/comment.ts", label: "renderBrief" },
+    { path: "src/other.ts", label: "COMMENT_MARKER" },
+  ];
+
+  it("attributes a symbol to the last edit on its file that names it, with the agent's last line before that edit", () => {
+    expect(symbolReasonsIn(EDIT_RECORDS, symbols)).toEqual([
+      { path: "src/comment.ts", label: "COMMENT_MARKER", turn: 2, why: "The marker comment should say what the Action does with it." },
+    ]);
+  });
+
+  it("treats a Write as touching every symbol of the file, and lets a later edit win", () => {
+    const write = JSON.stringify({ type: "assistant", content: [{ type: "text", text: "Rewrite the whole module." }, { type: "tool_use", name: "Write", input: { file_path: "src/comment.ts", content: "nothing named here" } }] });
+    const later = JSON.stringify({ type: "assistant", content: [{ type: "text", text: "Rename the marker constant." }, { type: "tool_use", name: "MultiEdit", input: { file_path: "src/comment.ts", edits: [{ old_string: "COMMENT_MARKER", new_string: "MARKER" }] } }] });
+    expect(symbolReasonsIn([write, later].join("\n"), symbols)).toEqual([
+      { path: "src/comment.ts", label: "COMMENT_MARKER", turn: 2, why: "Rename the marker constant." },
+      { path: "src/comment.ts", label: "renderBrief", turn: 1, why: "Rewrite the whole module." },
+    ]);
+  });
+
+  it("matches names as whole words, skips non-edit tools and unparseable lines, and gives an empty reason when no text preceded the edit", () => {
+    const only = JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Edit", input: { file_path: "src/comment.ts", old_string: "COMMENT_MARKERS", new_string: "COMMENT_MARKERS2" } }] });
+    expect(symbolReasonsIn(only, symbols)).toEqual([]);
+    const bash = JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Bash", input: { command: "sed -i s/COMMENT_MARKER/x/ src/comment.ts" } }] });
+    expect(symbolReasonsIn(["not json", bash, JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Edit", input: { file_path: "src/comment.ts", new_string: "COMMENT_MARKER" } }] })].join("\n"), symbols)).toEqual([
+      { path: "src/comment.ts", label: "COMMENT_MARKER", turn: 2, why: "" },
+    ]);
+    expect(editNames("$state", "const $state = 1;")).toBe(true);
+    expect(editNames("parse", "parseAll(x)")).toBe(false);
+  });
+});
+
+describe("checkpointFor with symbols", () => {
+  it("returns the reasons for the symbols asked about and nothing from the edit's contents or result", () => {
+    const cp = checkpointFor(repo, commitEdited, [{ path: "src/comment.ts", label: "COMMENT_MARKER" }, { path: "src/comment.ts", label: "nope" }]);
+    expect(cp?.reasons).toEqual([{ path: "src/comment.ts", label: "COMMENT_MARKER", turn: expect.any(Number), why: "The marker comment should say what the Action does with it." }]);
+    expect(JSON.stringify(cp)).not.toContain("SECRET-EDIT-RESULT");
+    expect(JSON.stringify(cp)).not.toContain("Second line");
+    expect(checkpointFor(repo, commitEdited)?.reasons).toEqual([]);
   });
 });

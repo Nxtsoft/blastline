@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { Checkpoint } from "./checkpoint.js";
+import type { Checkpoint, SymbolReason } from "./checkpoint.js";
+import { editNames } from "./checkpoint.js";
 
 /**
  * The fleet's session index (agents-cli), read-only. One row per agent session
@@ -171,6 +172,43 @@ export class SessionsIndex {
     return pick && { ...pick, covering: covering.length > 0 };
   }
 
+  /**
+   * The edits the session made in [from, to] with Claude Code's `Edit`,
+   * `Write` and `MultiEdit` tools, in order: the file, and the narration step
+   * covering the call as the reason. The edit's text is searched for a
+   * symbol's name and never returned.
+   */
+  edits(sessionId: string, from: string, to: string): { path: string; text?: string; at: string; why: string }[] {
+    let rows: { input: string; timestamp: string; tool: string }[];
+    try {
+      rows = this.db
+        .prepare(
+          `select input, timestamp, tool from tool_calls
+            where session_id = ? and tool in ('Edit', 'Write', 'MultiEdit') and timestamp between ? and ?
+            order by timestamp`,
+        )
+        .all(sessionId, from, to) as unknown as { input: string; timestamp: string; tool: string }[];
+    } catch {
+      return [];
+    }
+    const out: { path: string; text?: string; at: string; why: string }[] = [];
+    for (const r of rows) {
+      let input: { file_path?: unknown; old_string?: unknown; new_string?: unknown; content?: unknown; edits?: unknown };
+      try {
+        input = JSON.parse(r.input) as typeof input;
+      } catch {
+        continue;
+      }
+      if (typeof input.file_path !== "string") continue;
+      const parts: string[] = [];
+      for (const v of [input.old_string, input.new_string, input.content]) if (typeof v === "string") parts.push(v);
+      if (Array.isArray(input.edits)) for (const e of input.edits as { old_string?: unknown; new_string?: unknown }[]) for (const v of [e?.old_string, e?.new_string]) if (typeof v === "string") parts.push(v);
+      const why = (this.stepCovering(sessionId, r.timestamp)?.text ?? "").split("\n")[0]!.slice(0, 200);
+      out.push({ path: input.file_path, ...(r.tool !== "Write" && { text: parts.join("\n") }), at: r.timestamp, why });
+    }
+    return out;
+  }
+
   /** Test-runner commands the session ran in [from, to], in order. */
   testCommands(sessionId: string, from: string, to: string): string[] {
     const rows = this.db
@@ -260,10 +298,21 @@ export const LOCAL_SOURCE = "sessions.db";
  * is written and nothing leaves the machine; `id` is empty because there is
  * no trailer. `filesTouched` is what the commit changed.
  */
-export function localCheckpoint(index: SessionsIndex, repo: string, sha: string, files: string[]): Checkpoint | undefined {
+export function localCheckpoint(index: SessionsIndex, repo: string, sha: string, files: string[], symbols: { path: string; label: string }[] = []): Checkpoint | undefined {
   const intent = fleetIntent(index, repo, sha);
   if (!intent) return undefined;
+  const from = intent.step?.at ?? intent.session.startedAt;
+  const to = intent.step?.endedAt ?? intent.committedAt;
+  const reasons = new Map<string, SymbolReason>();
+  index.edits(intent.session.id, from, to).forEach((e, i) => {
+    for (const s of symbols) {
+      if (e.path !== s.path && !e.path.endsWith(`/${s.path}`)) continue;
+      if (e.text !== undefined && !editNames(s.label, e.text)) continue;
+      reasons.set(`${s.path}\0${s.label}`, { path: s.path, label: s.label, turn: i + 1, why: e.why });
+    }
+  });
   return {
+    reasons: [...reasons.values()],
     id: "",
     commit: git(repo, ["rev-parse", `${sha}^{commit}`]),
     agent: intent.session.agent,

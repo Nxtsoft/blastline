@@ -540,8 +540,9 @@ export function buildBrief(o: BriefOptions): Brief {
       const subject = git("log", "-1", "--format=%s", sha).trim();
       const files = git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", sha).split("\n").filter(Boolean);
       const checkpointId = checkpointTrailer(repo, sha);
+      const own = (changeContext?.symbols ?? []).filter((s) => files.includes(s.path)).map((s) => ({ path: s.path, label: s.label }));
       const checkpoint =
-        checkpointId !== undefined ? checkpointFor(repo, sha) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files);
+        checkpointId !== undefined ? checkpointFor(repo, sha, own) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files, own);
       // Only for a commit with no trailer at all: a dangling trailer stays "not fetched", which names the fix (push the refs).
       const provenance = checkpointId === undefined && checkpoint === undefined ? provenanceOf(repo, sha) : undefined;
       if (checkpointId !== undefined && checkpoint === undefined) {

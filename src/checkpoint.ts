@@ -23,6 +23,22 @@ export interface Checkpoint {
   testCommands: string[];
   /** `metadata.json.source` when a writer sets one; Entire's own hooks do not, so "entire". */
   source: string;
+  /** Why each changed symbol the caller asked about changed, when an edit in the transcript touched it. */
+  reasons: SymbolReason[];
+}
+
+/**
+ * Why one changed symbol changed: the agent's own line of text before the
+ * edit that touched it. The edit's path is compared and its contents are
+ * searched for the symbol's name; neither is shown.
+ */
+export interface SymbolReason {
+  path: string;
+  label: string;
+  /** 1-based assistant turn of the edit in the compact transcript. */
+  turn: number;
+  /** First line of the agent's last text before the edit, at most 200 characters. */
+  why: string;
 }
 
 const TRAILER = /^Entire-Checkpoint:\s*([0-9A-Z]{26})\s*$/m;
@@ -131,7 +147,70 @@ interface SessionMetadata {
 
 /** One record of the compact transcript: a turn with its content blocks. */
 interface TranscriptRecord {
-  content?: { type?: string; name?: string; input?: { command?: unknown } }[];
+  type?: string;
+  content?: {
+    type?: string;
+    name?: string;
+    text?: string;
+    input?: { command?: unknown; file_path?: unknown; old_string?: unknown; new_string?: unknown; content?: unknown; edits?: unknown };
+  }[];
+}
+
+const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
+
+/** Whether an edit's text names the symbol as a whole word. */
+export function editNames(label: string, text: string): boolean {
+  return new RegExp(`(?<![\\w$])${label.replace(/[.*+?^${}()|[\]\\$]/g, "\\$&")}(?![\\w$])`).test(text);
+}
+
+/** The strings an edit tool call carries, joined, for the name search; never returned. */
+function editText(input: NonNullable<TranscriptRecord["content"]>[number]["input"]): string {
+  const parts: string[] = [];
+  for (const v of [input?.old_string, input?.new_string, input?.content]) if (typeof v === "string") parts.push(v);
+  if (Array.isArray(input?.edits)) {
+    for (const e of input.edits as { old_string?: unknown; new_string?: unknown }[]) {
+      for (const v of [e?.old_string, e?.new_string]) if (typeof v === "string") parts.push(v);
+    }
+  }
+  return parts.join("\n");
+}
+
+/**
+ * For each symbol asked about, the last edit in the compact transcript that
+ * touched it: an `Edit`, `Write` or `MultiEdit` on its file (a `Write`
+ * rewrites the whole file, so it touches every symbol there; an edit touches
+ * the symbols its text names as whole words). The reason is the first line
+ * of the agent's last text block before that edit, in that turn or an earlier
+ * one. A line that is not JSON is skipped.
+ */
+export function symbolReasonsIn(transcript: string, symbols: { path: string; label: string }[]): SymbolReason[] {
+  const reasons = new Map<string, SymbolReason>();
+  let turn = 0;
+  let lastText = "";
+  for (const line of transcript.split("\n")) {
+    if (line.trim() === "") continue;
+    let record: TranscriptRecord;
+    try {
+      record = JSON.parse(line) as TranscriptRecord;
+    } catch {
+      continue;
+    }
+    if (record.type !== "assistant") continue;
+    turn++;
+    for (const block of record.content ?? []) {
+      if (block.type === "text" && typeof block.text === "string" && block.text.trim() !== "") lastText = block.text;
+      if (block.type !== "tool_use" || block.name === undefined || !EDIT_TOOLS.has(block.name)) continue;
+      const path = block.input?.file_path;
+      if (typeof path !== "string") continue;
+      const text = block.name === "Write" ? undefined : editText(block.input);
+      for (const s of symbols) {
+        if (path !== s.path && !path.endsWith(`/${s.path}`)) continue;
+        if (text !== undefined && !editNames(s.label, text)) continue;
+        reasons.set(`${s.path}\0${s.label}`, { path: s.path, label: s.label, turn, why: promptLine(lastText) });
+      }
+    }
+  }
+  return [...reasons.values()];
 }
 
 /** The Bash commands in a compact transcript that run a test runner, in order, deduplicated. A line that is not JSON is skipped. */
@@ -162,12 +241,15 @@ export function testCommandsIn(transcript: string): string[] {
  * brief can say the ref is missing rather than that there was no checkpoint),
  * or names one whose files cannot be read or parsed. Never throws.
  *
+ * `symbols` are the changed symbols the brief already knows; the transcript's
+ * edits are matched to them and their text is searched, never shown.
+ *
  * The paths read are Entire's layout, spelled out here: `<i>/metadata.json`,
  * `<i>/prompt.txt` and `<i>/transcript.jsonl` per session, `metadata.json` at
  * the root. `metadata.json` also lists per-session paths; those are not
  * followed, so no checkpoint can point this reader at `<i>/full.jsonl`.
  */
-export function checkpointFor(repo: string, commit: string): Checkpoint | undefined {
+export function checkpointFor(repo: string, commit: string, symbols: { path: string; label: string }[] = []): Checkpoint | undefined {
   const id = checkpointTrailer(repo, commit);
   if (id === undefined) return undefined;
   const ref = checkpointRef(id);
@@ -178,8 +260,11 @@ export function checkpointFor(repo: string, commit: string): Checkpoint | undefi
     const session = JSON.parse(show("0/metadata.json")) as SessionMetadata;
     const prompt = promptLine(show("0/prompt.txt"));
     const testCommands = new Set<string>();
+    const reasons = new Map<string, SymbolReason>();
     for (let i = 0; i < sessionCount; i++) {
-      for (const c of testCommandsIn(show(`${i}/transcript.jsonl`))) testCommands.add(c);
+      const transcript = show(`${i}/transcript.jsonl`);
+      for (const c of testCommandsIn(transcript)) testCommands.add(c);
+      for (const r of symbolReasonsIn(transcript, symbols)) reasons.set(`${r.path}\0${r.label}`, r);
     }
     return {
       id,
@@ -190,6 +275,7 @@ export function checkpointFor(repo: string, commit: string): Checkpoint | undefi
       filesTouched: meta.files_touched ?? [],
       testCommands: [...testCommands],
       source: meta.source ?? "entire",
+      reasons: [...reasons.values()],
     };
   } catch {
     return undefined;

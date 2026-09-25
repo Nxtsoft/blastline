@@ -166,6 +166,7 @@ describe("localCheckpoint", () => {
       filesTouched: ["a.ts"],
       testCommands: ["NODE_DISABLE_COMPILE_CACHE=1 bunx vitest run src/figure.test.ts"],
       source: "sessions.db",
+      reasons: [],
     });
     idx.close();
   });

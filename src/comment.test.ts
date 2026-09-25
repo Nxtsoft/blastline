@@ -227,6 +227,7 @@ const brief: Brief = {
         filesTouched: ["src/lib.ts"],
         testCommands: ["bunx vitest run src/a.test.ts"],
         source: "entire",
+        reasons: [],
       },
       files: ["src/lib.ts"],
       reach: { files: 1, tests: 2 },
@@ -422,5 +423,32 @@ describe("reviewEffort", () => {
     expect(reviewEffort(19, 9)).toBe("medium");
     expect(reviewEffort(20, 1)).toBe("high");
     expect(reviewEffort(0, 10)).toBe("high");
+  });
+});
+
+describe("renderBrief: why column", () => {
+  it("adds a Why column to the per-file table only when a checkpoint carries a reason, with the turn and up to two distinct lines", () => {
+    const withReasons: Brief = {
+      ...brief,
+      commits: [
+        {
+          ...brief.commits[0]!,
+          checkpoint: {
+            ...brief.commits[0]!.checkpoint!,
+            reasons: [
+              { path: "src/lib.ts", label: "parse", turn: 7, why: "Inline helper into parse so the walk has one entry point." },
+              { path: "src/lib.ts", label: "emit", turn: 7, why: "Inline helper into parse so the walk has one entry point." },
+              { path: "src/lib.ts", label: "walk", turn: 9, why: "Emit the count as a string for the comment." },
+            ],
+          },
+        },
+        ...brief.commits.slice(1),
+      ],
+    };
+    const md = renderBrief(withReasons, ctx);
+    expect(md).toContain("| Read | Changed file | Change | Why | Reaches | Tests |");
+    expect(md).toContain("| 1 | `src/lib.ts` | `parse` changed, `helper` removed, `emit` added | turn 7: Inline helper into parse so the walk has one entry point.; turn 9: Emit the count as a string for the comment. | 1 file | 2 |");
+    expect(md).toContain("| | 2 files under `docs/` | ignored by policy | | | 0 |");
+    expect(renderBrief(brief, ctx)).toContain("| Read | Changed file | Change | Reaches | Tests |");
   });
 });
