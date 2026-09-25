@@ -4,7 +4,10 @@ import { join, resolve } from "node:path";
 import { buildBrief, resolveRange } from "./brief.js";
 import { runCheck } from "./check.js";
 import { renderBrief, renderCheckRun, renderComment } from "./comment.js";
+import { checkpointTrailer } from "./checkpoint.js";
+import { writeCheckpoint } from "./checkpoint-write.js";
 import { renderFigure, renderMermaid } from "./figure.js";
+import { DEFAULT_SESSIONS_DB, SessionsIndex, fleetIntent } from "./sessions.js";
 import { serveStdio } from "./mcp.js";
 import type { RunOptions } from "./run.js";
 import { runSelection } from "./run.js";
@@ -23,6 +26,9 @@ usage:
   blastline brief <base>..<head> [options]     the PR brief: the comment plus what each commit did (from its Entire
                                                checkpoint), symbol changes, claims checked, and the delta since the last push
   blastline check callers <symbol> [options]   list what references a symbol (pre-edit check)
+  blastline checkpoint write [--commit <sha>] [--no-trailer] [--sessions-db <path>] [--json]
+                                               write an Entire-layout checkpoint ref for a commit from this machine's
+                                               fleet session index (agents-cli), and the Entire-Checkpoint trailer on HEAD
   blastline mcp                                serve the MCP tools (blastline_tests, blastline_blast, blastline_check,
                                                blastline_brief) over stdio
 
@@ -65,6 +71,9 @@ brief options:
   --selection <file>   reuse a saved --json selection for the reach instead of computing one
   --annotations <n>    check-run annotations on the highest-reach changed lines (default and ceiling 50)
   --json               {brief, markdown, check_run}: check_run is the Checks API POST body for the head sha
+  --local              on the agent machine: a commit without a checkpoint ref takes its intent from the fleet
+                       session index (~/.agents/.history/sessions/sessions.db); nothing leaves the machine
+  --sessions-db <path> that index, when it is not at the default path
   brief reads each commit's Entire-Checkpoint trailer (refs/entire/checkpoints/*) and shows only the
   first prompt line, agent, model, files touched and the test commands run; never the transcript.
 
@@ -98,6 +107,27 @@ const optAll = (name: string): string[] => {
 
 if (command === "mcp") {
   serveStdio();
+} else if (command === "checkpoint") {
+  if (argv[1] !== "write") fail(`blastline: unknown checkpoint action "${argv[1] ?? ""}" (only "write")\n\n${USAGE}`);
+  const repo = resolve(opt("repo") ?? process.cwd());
+  const commit = opt("commit") ?? "HEAD";
+  const existing = checkpointTrailer(repo, commit);
+  if (existing !== undefined) {
+    console.error(`blastline checkpoint: ${commit} already carries Entire-Checkpoint: ${existing}; nothing written`);
+    process.exit(0);
+  }
+  const index = new SessionsIndex(opt("sessions-db") ?? DEFAULT_SESSIONS_DB);
+  const intent = fleetIntent(index, repo, commit);
+  index.close();
+  const written = writeCheckpoint(repo, commit, intent, { version: VERSION, trailer: !argv.includes("--no-trailer") });
+  if (argv.includes("--json")) {
+    console.log(JSON.stringify({ ...written, intent: intent ?? null }, null, 2));
+    process.exit(0);
+  }
+  console.log(`wrote ${written.ref}`);
+  console.log(intent === undefined ? "intent: no session was working here at commit time" : `intent: ${intent.session.agent} ${intent.session.id.slice(0, 8)} · ${intent.step?.text.slice(0, 120) ?? "(no timeline step)"}`);
+  console.log(written.trailerWritten ? `trailer: Entire-Checkpoint: ${written.id} on ${written.commit.slice(0, 7)}` : "trailer: not written (commit is not HEAD, or is already pushed)");
+  process.exit(0);
 } else if (command === "check") {
   const claim = argv[1];
   if (claim !== "callers") fail(`blastline: unknown check claim "${claim ?? ""}" (only "callers")\n\n${USAGE}`);
@@ -182,6 +212,7 @@ if (command === "mcp") {
           ...(opt("change-context") !== undefined && { changeContextFile: opt("change-context") as string }),
           ...(opt("previous") !== undefined && { previousFile: opt("previous") as string }),
           ...(opt("annotations") !== undefined && { annotations: Number(opt("annotations")) }),
+          ...(argv.includes("--local") && { sessionsDb: opt("sessions-db") ?? DEFAULT_SESSIONS_DB }),
         })
       : undefined;
     const selection: Selection =

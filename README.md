@@ -215,6 +215,16 @@ git push origin 'refs/entire/checkpoints/*'      # or leave Entire's push_sessio
 
 **Privacy allowlist.** `src/checkpoint.ts` reads exactly these fields and nothing else: the checkpoint id, the commit, the agent and model, the **first line** of `0/prompt.txt` capped at 200 characters, `files_touched`, the `Bash` commands in the compact transcript that name a test runner (`vitest`, `jest`, `pytest`, `go test`, `cargo test`, `ctest`, `gradle test`, `mvn test`, `npm test` and kin), and the writer's `source`. The raw transcript (`0/full.jsonl`), tool results, file contents and any later prompt line never leave the ref. The allowlist is code, not a flag.
 
+**On the agent machine, without Entire.** The fleet's own session index (agents-cli's `~/.agents/.history/sessions/sessions.db`) already knows which session was working in a repository when a commit was made, the narration step covering that moment, and the test commands it ran. Two commands read it:
+
+```sh
+blastline checkpoint write [--commit HEAD] [--no-trailer]   # write that intent as an Entire-layout checkpoint ref (source: blastline)
+                                                             # and the Entire-Checkpoint trailer on an unpushed HEAD; push refs/entire/checkpoints/*
+blastline brief main..HEAD --local                           # commits without a ref take their intent from the index; nothing leaves the machine
+```
+
+The written ref has the same six paths as Entire's, so the Action reads both writers with one reader. A commit made while no session was working in the repository gets a ref with `files_touched` and no intent, and the brief says so. The prompt line skips the `agents run` worktree preamble ("You are in a git worktree of …"), so an orchestrated agent's commit shows the first line the human wrote, not the dispatch script.
+
 Locally, `blastline brief main..HEAD --change-context <file> [--previous <old-comment.md>] [--json]` renders the same brief before you push, and `blastline_brief` over MCP gives an agent its own brief (`{brief, markdown, check_run}`). `--json` carries the Checks API body the Action POSTs; annotations are capped at 50 per request, GitHub's ceiling.
 
 **In the Action**, the brief is on by default: `cgraph-version` now defaults to `bin-v0.4.0`, the first release with `change-context`, which runs over the range's diff against a detached worktree of the base (`fetch-depth: 0`); the checkpoint refs are fetched if present; `check-run: "false"` turns the check run off. The token needs one more permission for it:
@@ -297,6 +307,8 @@ blastline mcp                                # MCP server over stdio
 | `--change-context <file>` | `brief`: `cgraph change-context` JSON, for the Symbols row, the Change column and the removed-symbol claims |
 | `--previous <file>` | `brief`: the previously posted comment, whose embedded snapshot gives the "since push" row |
 | `--annotations <n>` | `brief`: check-run annotations on the highest-reach changed lines (default and ceiling 50) |
+| `--local` | `brief`: on the agent machine, a commit without a checkpoint ref takes its intent from the fleet session index (`--sessions-db <path>` overrides `~/.agents/.history/sessions/sessions.db`) |
+| `checkpoint write [--commit <sha>] [--no-trailer] [--sessions-db <path>] [--json]` | write an Entire-layout checkpoint ref for a commit from the fleet session index, and the `Entire-Checkpoint` trailer on an unpushed HEAD |
 
 `tests`/`blast` print one item per line (empty = clean subset with nothing impacted); on fail-open they print `ALL` to stdout and one JSON reason per line to stderr, exit code 0 — consumers branch on the output, not the exit code. A `--json` subset also carries `testsTotal`, one `files` entry per changed file (symbols touched, files reached, tests reached), and the file-level `edges` among them: everything the comment and the figure show. `brief --json` prints `{brief, markdown, check_run}`: the brief's data, the comment markdown, and the Checks API `check-runs` body for the head sha.
 

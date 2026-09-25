@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { DEFAULT_SESSIONS_DB } from "./sessions.js";
 import { buildBrief } from "./brief.js";
 import { runCheck } from "./check.js";
 import { renderBrief, renderCheckRun } from "./comment.js";
@@ -53,6 +54,7 @@ const BRIEF_INPUT_SCHEMA = {
     previous: { type: "string", description: "path to the previously posted comment; its embedded snapshot gives the since-push delta" },
     annotations: { type: "number", description: "check-run annotations on the highest-reach changed lines (default and ceiling 50)" },
     head_sha: { type: "string", description: "commit to name as the head in links and the check run when the range ends elsewhere" },
+    local: { type: "boolean", description: "on the agent machine: commits without a checkpoint ref take their intent from the fleet session index (~/.agents/.history/sessions/sessions.db); nothing leaves the machine" },
     repo_url: { type: "string", description: "https://github.com/<owner>/<repo>: paths become blob links" },
     pr: { type: "number", description: "pull request number, shown in the summary" },
   },
@@ -144,6 +146,7 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       ...(typeof args["previous"] === "string" && { previousFile: args["previous"] }),
       ...(typeof args["annotations"] === "number" && { annotations: args["annotations"] }),
       ...(typeof args["head_sha"] === "string" && { headSha: args["head_sha"] }),
+      ...(args["local"] === true && { sessionsDb: DEFAULT_SESSIONS_DB }),
     });
     const headSha = brief.headSha;
     const markdown = renderBrief(brief, {

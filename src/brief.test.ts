@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildBrief, commandRuns, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
 import { checkpointRef } from "./checkpoint.js";
+import { DatabaseSync } from "node:sqlite";
 
 // src/testdata/brief/ is real cgraph bin-v0.4.0 output over the six-file repo
 // this test writes below: base-graph.json and head-graph.json are the two
@@ -165,6 +166,33 @@ describe("buildBrief", () => {
     });
     expect(test?.checkpointId).toBeUndefined();
     expect(test?.checkpoint).toBeUndefined();
+  });
+
+  it("takes a checkpoint-less commit's intent from the fleet session index when sessionsDb is given", () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), "blastline-brief-local-")), "sessions.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      create table sessions (id text primary key, agent text, model text, cwd text, timestamp text, last_activity text,
+                             ticket_id text, pr_number integer, first_user_message text, recent_directories_touched text);
+      create table session_timelines (session_id text primary key, state_json text);
+      create table tool_calls (call_key text primary key, session_id text, timestamp text, tool text, input text);
+      create virtual table tool_call_text using fts5(call_key, tool, input, output, error);
+      create virtual table session_text using fts5(session_id, label, topic, project, content, assistant);
+    `);
+    const at = execFileSync("git", ["-C", repo, "log", "-1", "--format=%cI", testCommit], { encoding: "utf8" }).trim();
+    const t = new Date(at).getTime();
+    const iso = (ms: number) => new Date(ms).toISOString();
+    db.prepare(`insert into sessions values (?,?,?,?,?,?,?,?,?,?)`).run("11111111-local", "codex", "gpt-6-astra", repo, iso(t - 3_600_000), iso(t + 3_600_000), "CGR-9", null, "cover emit with a test", null);
+    db.prepare(`insert into session_timelines values (?,?)`).run("11111111-local", JSON.stringify({ version: 1, steps: [{ text: "Adding the emit test and running the lib suite.", at: iso(t - 60_000), endedAt: iso(t + 60_000), source: "narration", tools: 3, mix: { test: 1, edit: 1 } }] }));
+    db.prepare(`insert into tool_calls values (?,?,?,?,?)`).run("l1", "11111111-local", iso(t - 30_000), "exec", JSON.stringify({ input: 'text(await tools.exec_command({cmd:"bunx vitest run src/lib.test.ts"}))' }));
+    db.close();
+    const b = brief({ sessionsDb: dbPath });
+    const [lib, test] = b.commits;
+    expect(lib?.checkpoint?.source).toBe("entire");
+    expect(test?.checkpointId).toBeUndefined();
+    expect(test?.checkpoint).toMatchObject({ id: "", agent: "codex", model: "gpt-6-astra", source: "sessions.db", prompt: "Adding the emit test and running the lib suite.", filesTouched: ["src/lib.test.ts"], testCommands: ["bunx vitest run src/lib.test.ts"] });
+    expect(test?.ranReachingTests).toEqual(["src/lib.test.ts"]);
+    expect(brief().commits[1]?.checkpoint).toBeUndefined();
   });
 
   it("refutes a removal the base graph still sees callers for, in files the diff did not touch", () => {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { checkpointFor, checkpointRef, checkpointTrailer, testCommandsIn } from "./checkpoint.js";
+import { checkpointFor, checkpointRef, checkpointTrailer, promptLine, testCommandsIn } from "./checkpoint.js";
 
 // src/testdata/checkpoint-ref/ is the tree of a real Entire 0.11.2 checkpoint
 // (ref refs/entire/checkpoints/H5/01M3AY9296319GSPWRKXGHXMH5, written for
@@ -114,6 +114,17 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(repo, { recursive: true, force: true });
+});
+
+describe("promptLine", () => {
+  it("skips the agents-cli worktree preamble and returns the first line the human wrote, capped at 200", () => {
+    const preamble = "You are in a git worktree of Nxtsoft/blastline on branch pr-brief (base main).\nCommit with a pathspec.\n\n";
+    expect(promptLine(preamble + "Ship the PR brief.\nThen open the PR.")).toBe("Ship the PR brief.");
+    expect(promptLine("Plain prompt first line\nsecond")).toBe("Plain prompt first line");
+    expect(promptLine("\n\n  indented after blanks\n")).toBe("indented after blanks");
+    expect(promptLine(preamble)).toBe("");
+    expect(promptLine("x".repeat(300))).toHaveLength(200);
+  });
 });
 
 describe("checkpointRef", () => {

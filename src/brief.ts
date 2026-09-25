@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { checkCallers } from "./check.js";
 import type { Checkpoint } from "./checkpoint.js";
 import { checkpointFor, checkpointRef, checkpointTrailer } from "./checkpoint.js";
+import { SessionsIndex, localCheckpoint } from "./sessions.js";
 import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
 import { loadGraph } from "./graph.js";
@@ -117,6 +118,12 @@ export interface BriefOptions extends RunOptions {
   previousFile?: string;
   /** Annotation count, at most 50 (the Checks API ceiling per request). Default 50. */
   annotations?: number;
+  /**
+   * On the agent machine: a commit without a checkpoint ref takes its intent
+   * from the fleet session index (agents-cli's sessions.db) instead. The path
+   * of that database; nothing is written and nothing leaves the machine.
+   */
+  sessionsDb?: string;
 }
 
 export const MAX_ANNOTATIONS = 50;
@@ -359,11 +366,13 @@ export function buildBrief(o: BriefOptions): Brief {
     unchecked.push(`commits: git could not list \`${range}\``);
   }
   const byPath = new Map<string, ChangedFileImpact>(selection.kind === "subset" ? selection.files.map((f) => [f.path, f]) : []);
+  const sessions = o.sessionsDb === undefined ? undefined : new SessionsIndex(o.sessionsDb);
   const commits: CommitBrief[] = shaList.map((sha) => {
     const subject = git("log", "-1", "--format=%s", sha).trim();
     const files = git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", sha).split("\n").filter(Boolean);
     const checkpointId = checkpointTrailer(repo, sha);
-    const checkpoint = checkpointId === undefined ? undefined : checkpointFor(repo, sha);
+    const checkpoint =
+      checkpointId !== undefined ? checkpointFor(repo, sha) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files);
     if (checkpointId !== undefined && checkpoint === undefined) {
       const present = (() => {
         try {
@@ -399,6 +408,7 @@ export function buildBrief(o: BriefOptions): Brief {
       ranReachingTests,
     };
   });
+  sessions?.close();
 
   const claims: ClaimCheck[] = [];
   if (changeContext !== undefined && changeContext.symbols.some((s) => s.status.startsWith("deleted"))) {
