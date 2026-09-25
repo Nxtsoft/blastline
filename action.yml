@@ -35,10 +35,11 @@ inputs:
       CGraph release tag installed from Nxtsoft/CGraph (gh release download,
       asset cgraph-linux-x64.tar.gz) when graph-root is set: it builds the
       graph and runs `cgraph change-context` for the brief's symbol changes.
-      bin-v0.4.0 is the first release that ships change-context. Ignored when
+      bin-v0.5.0 is the first release whose node ids are repo-relative, so a base
+      and a head graph share ids; bin-v0.4.0 is the first with change-context. Ignored when
       graph-root is unset.
     required: false
-    default: bin-v0.4.0
+    default: bin-v0.5.0
   base-graph-path:
     description: optional graph.json for the base commit (improves deletion mapping)
     required: false

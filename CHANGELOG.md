@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.2
+
+- Action: `cgraph-version` defaults to `bin-v0.5.0`. Node ids are repo-relative in that release (Nxtsoft/CGraph #113), so a base graph and a head graph of the same tree share ids: verified on this repository's `src/` extracted from two roots of different depth, 545 of 545 ids identical, none carrying a root segment.
+
 ## 0.13.1
 
 The fleet session index becomes a second checkpoint writer, and the brief can read it directly on the agent machine.
