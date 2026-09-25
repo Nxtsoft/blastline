@@ -170,6 +170,28 @@ describe("localCheckpoint", () => {
     });
     idx.close();
   });
+
+  it("reads the session's edits for the symbols asked about, by line range as committed or by name, with the covering narration as the reason", () => {
+    const dir = mkdtempSync(join(tmpdir(), "blastline-sessions-"));
+    const { repo, sha } = repoWithCommit(dir);
+    const path = fixtureDb(dir, repo);
+    const db = new DatabaseSync(path);
+    db.prepare(`insert into tool_calls values (?,?,?,?,?)`).run("e1", "7182303c-7ae6-4e9a-a0f3-fb7230b71749", "2026-09-24T16:23:55.000Z", "Edit", JSON.stringify({ file_path: `${repo}/a.ts`, old_string: "export const a = 0;", new_string: "export const a = 1;" }));
+    db.prepare(`insert into tool_calls values (?,?,?,?,?)`).run("e2", "7182303c-7ae6-4e9a-a0f3-fb7230b71749", "2026-09-24T16:24:20.000Z", "Edit", JSON.stringify({ file_path: `${repo}/b.ts`, old_string: "", new_string: "export const zed = 2;" }));
+    db.close();
+    const idx = new SessionsIndex(path);
+    const symbols = [
+      { path: "a.ts", label: "a", from: 1, to: 1 },
+      { path: "a.ts", label: "nothere", from: 9, to: 9 },
+      { path: "b.ts", label: "zed" },
+    ];
+    expect(localCheckpoint(idx, repo, sha, ["a.ts"], symbols)?.reasons).toEqual([
+      { path: "a.ts", label: "a", turn: 1, why: "Three things in parallel now: confirm the follow-up commit state, produce run evidence for its PR." },
+      { path: "b.ts", label: "zed", turn: 2, why: "Three things in parallel now: confirm the follow-up commit state, produce run evidence for its PR." },
+    ]);
+    expect(idx.edits("7182303c-7ae6-4e9a-a0f3-fb7230b71749", "2026-09-24T16:23:42.000Z", "2026-09-24T16:24:41.000Z").map((e) => e.path)).toEqual([`${repo}/a.ts`, `${repo}/b.ts`]);
+    idx.close();
+  });
 });
 
 describe("commandsOf", () => {

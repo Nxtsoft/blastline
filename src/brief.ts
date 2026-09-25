@@ -573,10 +573,11 @@ export function buildBrief(o: BriefOptions): Brief {
   const byPath = new Map<string, ChangedFileImpact>(selection.kind === "subset" ? selection.files.map((f) => [f.path, f]) : []);
   // Where each changed symbol sits at head, from the graph, so an edit inside its body is attributed to it.
   let headGraph: CodeGraph | undefined;
+  const graphAt = runOptions.graphPath ?? resolve(repo, "cgraph-out/graph.json");
   try {
-    headGraph = loadGraph(runOptions.graphPath ?? resolve(repo, "cgraph-out/graph.json"));
+    headGraph = loadGraph(graphAt);
   } catch {
-    headGraph = undefined;
+    if (changeContext !== undefined && changeContext.symbols.length > 0) unchecked.push(`symbol ranges: cannot load the graph at ${graphAt}, so edits are matched to symbols by name only`);
   }
   const rangeOf = (s: SymbolChange): { from?: number; to?: number } => {
     const nodes = headGraph?.byFile.get(resolve(repo, s.path)) ?? [];

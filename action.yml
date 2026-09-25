@@ -465,12 +465,16 @@ runs:
         PREVIOUS: ${{ steps.existing.outputs.previous }}
         PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_GRAPH: ${{ steps.graphpath.outputs.path }}
         PR_BODY: ${{ github.event.pull_request.body }}
         PR_EVENT: ${{ github.event_name == 'pull_request' }}
       run: |
         set -euo pipefail
         repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
         args=(brief "$RANGE" --repo "$repo" --selection selection.json --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --annotations 50 --json)
+        # The head graph gives each changed symbol its line range, so an edit
+        # inside a function body is attributed to that function.
+        [ -n "${INPUT_GRAPH:-}" ] && args+=(--graph "$INPUT_GRAPH")
         [ -n "${BASE_GRAPH:-}" ] && args+=(--base-graph "$BASE_GRAPH")
         [ -n "${CHANGE_CONTEXT:-}" ] && args+=(--change-context "$CHANGE_CONTEXT")
         [ -n "${PREVIOUS:-}" ] && args+=(--previous "$PREVIOUS")

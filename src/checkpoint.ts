@@ -199,12 +199,19 @@ function editWrites(input: NonNullable<TranscriptRecord["content"]>[number]["inp
   return out;
 }
 
-/** The line range `written` occupies in `content`, when it is found there verbatim. */
-function linesOf(content: string, written: string): { from: number; to: number } | undefined {
-  const at = written === "" ? -1 : content.indexOf(written);
-  if (at === -1) return undefined;
-  const from = content.slice(0, at).split("\n").length;
-  return { from, to: from + written.split("\n").length - 1 };
+/**
+ * Whether `written` sits, verbatim, on a line inside `from..to` of `content`.
+ * Every occurrence counts: text an edit wrote that appears in several places
+ * is attributed to each symbol holding one, rather than to none.
+ */
+export function writtenWithin(content: string, written: string, from: number, to: number): boolean {
+  if (written === "") return false;
+  const height = written.split("\n").length - 1;
+  for (let at = content.indexOf(written); at !== -1; at = content.indexOf(written, at + 1)) {
+    const start = content.slice(0, at).split("\n").length;
+    if (start <= to && from <= start + height) return true;
+  }
+  return false;
 }
 
 /**
@@ -216,10 +223,7 @@ function linesOf(content: string, written: string): { from: number; to: number }
 function touches(tool: string, input: NonNullable<TranscriptRecord["content"]>[number]["input"], s: SymbolAt, content: string | undefined): boolean {
   if (tool === "Write") return true;
   if (content !== undefined && s.from !== undefined && s.to !== undefined) {
-    for (const written of editWrites(input)) {
-      const range = linesOf(content, written);
-      if (range !== undefined && range.from <= s.to && s.from <= range.to) return true;
-    }
+    for (const written of editWrites(input)) if (writtenWithin(content, written, s.from, s.to)) return true;
   }
   return editNames(s.label, editText(input));
 }

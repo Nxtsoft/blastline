@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agentForAddress, checkpointFor, checkpointRef, checkpointTrailer, editNames, promptLine, provenanceOf, symbolReasonsIn, testCommandsIn } from "./checkpoint.js";
+import { agentForAddress, checkpointFor, checkpointRef, checkpointTrailer, editNames, promptLine, provenanceOf, symbolReasonsIn, testCommandsIn, writtenWithin } from "./checkpoint.js";
 
 // src/testdata/checkpoint-ref/ is the tree of a real Entire 0.11.2 checkpoint
 // (ref refs/entire/checkpoints/H5/01M3AY9296319GSPWRKXGHXMH5, written for
@@ -343,6 +343,16 @@ describe("symbolReasonsIn by line range", () => {
     expect(symbolReasonsIn(edit, symbols).map((r) => r.label)).toEqual(["COMMENT_MARKER"]);
     // text that was later changed again is not found as committed, so the name match still applies
     expect(symbolReasonsIn(edit, symbols, () => "unrelated file\n").map((r) => r.label)).toEqual(["COMMENT_MARKER"]);
+  });
+
+  it("counts every occurrence of text that appears in several places, so no symbol holding one is missed", () => {
+    const content = "function a() {\n  return x;\n}\n\nfunction b() {\n  return x;\n}\n";
+    expect(writtenWithin(content, "  return x;", 1, 3)).toBe(true);
+    expect(writtenWithin(content, "  return x;", 5, 7)).toBe(true);
+    expect(writtenWithin(content, "  return x;", 4, 4)).toBe(false);
+    expect(writtenWithin(content, "", 1, 7)).toBe(false);
+    expect(writtenWithin(content, "function b() {\n  return x;", 1, 4)).toBe(false);
+    expect(writtenWithin(content, "function b() {\n  return x;", 6, 6)).toBe(true);
   });
 });
 

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Checkpoint, SymbolAt, SymbolReason } from "./checkpoint.js";
-import { editNames } from "./checkpoint.js";
+import { editNames, writtenWithin } from "./checkpoint.js";
 
 /**
  * The fleet's session index (agents-cli), read-only. One row per agent session
@@ -311,13 +311,7 @@ export interface IndexedEdit {
 function editTouches(e: IndexedEdit, s: SymbolAt, content: string | undefined): boolean {
   if (e.whole) return true;
   if (content !== undefined && s.from !== undefined && s.to !== undefined) {
-    for (const written of e.wrote) {
-      const at = written === "" ? -1 : content.indexOf(written);
-      if (at === -1) continue;
-      const from = content.slice(0, at).split("\n").length;
-      const to = from + written.split("\n").length - 1;
-      if (from <= s.to && s.from <= to) return true;
-    }
+    for (const written of e.wrote) if (writtenWithin(content, written, s.from, s.to)) return true;
   }
   return editNames(s.label, e.text);
 }
