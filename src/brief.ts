@@ -387,7 +387,9 @@ function codeNames(text: string): string[] {
   return [...new Set(names)];
 }
 
-const isPath = (name: string): boolean => name.includes("/") || /\.[a-z0-9]{1,5}$/i.test(name);
+/** A name that is a file: it has a directory, or a source, config or doc extension; `a.b.c` alone is a dotted identifier. */
+const isPath = (name: string): boolean =>
+  name.includes("/") || /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|rb|php|swift|cs|c|cc|cpp|h|hpp|sql|sh|md|ya?ml|json|toml|css|html|txt)$/i.test(name);
 
 /**
  * What the narratives (the PR body, each commit's message) claim against what

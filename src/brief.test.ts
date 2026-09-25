@@ -349,6 +349,10 @@ describe("narrative claims", () => {
     const phantom = b.claims.find((c) => c.claim === "PR body names `fetchGraph`");
     expect(phantom).toEqual({ claim: "PR body names `fetchGraph`", verdict: "refuted", evidence: "no changed symbol bears it and no changed line contains it (phantom change)" });
     expect(b.claims.filter((c) => c.claim.startsWith("PR body names") && c.verdict === "refuted")).toHaveLength(1);
+    // a dotted identifier is not a path: its tokens are looked up in the changed lines
+    const dotted = brief({ narrative: "Reads `github.event.pull_request.body` and `parse.length`." });
+    expect(dotted.claims.filter((c) => c.claim.startsWith("PR body names") && c.verdict === "refuted").map((c) => c.claim)).toEqual(["PR body names `github.event.pull_request.body`"]);
+    expect(dotted.claims.find((c) => c.claim === "PR body names `github.event.pull_request.body`")?.evidence).toContain("no changed symbol bears it");
     expect(b.unchecked.some((u) => u.startsWith("narrative:"))).toBe(false);
     expect(brief().unchecked).toContain("narrative: no `--narrative` given, so only commit messages were read");
     expect(brief({ narrative: "" }).claims).toContainEqual({ claim: "PR body describes the change", verdict: "refuted", evidence: "placeholder text: empty" });
