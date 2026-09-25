@@ -361,4 +361,16 @@ describe("renderBrief: a commit attributed by trailer", () => {
     expect(md).toContain("Intent: 0 of 3 commits, 2 attributed by trailer.");
     expect(md).not.toContain("undefined");
   });
+
+  it("counts an unattributed commit even beside an unfetched checkpoint and a checkpointed one", () => {
+    const mixed: Brief = {
+      ...attributed,
+      commits: [
+        brief.commits[0]!,
+        { sha: "8".repeat(40), subject: "chore: unpushed ref", checkpointId: "01M3AY9296319GSPWRKXGHXQQQ", files: ["src/z.ts"], reach: { files: 0, tests: 0 }, reachingTests: [], ranReachingTests: [] },
+        attributed.commits[2]!,
+      ],
+    };
+    expect(renderBrief(mixed, ctx)).toContain("| Intent | 1 of 3 commits carry a checkpoint · `claude-sonnet-5` · 1 not fetched · 1 unattributed |");
+  });
 });
