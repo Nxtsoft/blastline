@@ -39,7 +39,7 @@ export interface CommitBrief {
   /** The id from the commit's trailer, present even when the ref itself is missing. */
   checkpointId?: string;
   checkpoint?: Checkpoint;
-  /** Who made the commit, from its own marks, when no checkpoint says. */
+  /** Who made the commit, from its own marks, when it carries no checkpoint trailer at all. */
   provenance?: Provenance;
   /** Repo-relative paths the commit touched. */
   files: string[];
@@ -392,7 +392,8 @@ export function buildBrief(o: BriefOptions): Brief {
       const checkpointId = checkpointTrailer(repo, sha);
       const checkpoint =
         checkpointId !== undefined ? checkpointFor(repo, sha) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files);
-      const provenance = checkpoint === undefined ? provenanceOf(repo, sha) : undefined;
+      // Only for a commit with no trailer at all: a dangling trailer stays "not fetched", which names the fix (push the refs).
+      const provenance = checkpointId === undefined && checkpoint === undefined ? provenanceOf(repo, sha) : undefined;
       if (checkpointId !== undefined && checkpoint === undefined) {
         const present = (() => {
           try {

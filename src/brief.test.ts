@@ -209,6 +209,12 @@ describe("buildBrief", () => {
     expect(brief().unchecked).toContain(
       "intent for 1 commit: no `Entire-Checkpoint` or `Agent-Logs-Url` trailer, no vendor address as author or co-author, and no session index (`--local`) on this machine",
     );
+    git("commit", "-q", "--allow-empty", "--author=Claude <noreply@anthropic.com>", "-m", "chore: unpushed ref\n\nEntire-Checkpoint: 01M3AY9296319GSPWRKXGHXQQQ");
+    const dangling = git("rev-parse", "HEAD");
+    const d = brief({ range: `${sha}..${dangling}` }).commits[0];
+    expect(d).toMatchObject({ sha: dangling, checkpointId: "01M3AY9296319GSPWRKXGHXQQQ" });
+    expect(d?.checkpoint).toBeUndefined();
+    expect(d?.provenance).toBeUndefined();
   });
 
   it("refutes a removal the base graph still sees callers for, in files the diff did not touch", () => {

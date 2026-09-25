@@ -436,7 +436,7 @@ function intentRow(brief: Brief): string {
   }
   const carry = brief.commits.length === 1 ? "carries" : "carry";
   const byTrailer = attributed.length === 0 ? "" : `${attributed.length} attributed by trailer (${[...new Set(attributed)].join(", ")})`;
-  const none = brief.commits.length - withCheckpoint - unfetched - attributed.length;
+  const none = brief.commits.filter((c) => c.checkpointId === undefined && !c.checkpoint && !c.provenance).length;
   const parts =
     withCheckpoint > 0
       ? [`${withCheckpoint} of ${total} ${carry} a checkpoint`, models.length > 0 ? models.map(code).join(", ") : "", byTrailer]
