@@ -70,6 +70,8 @@ brief options:
   --previous <file>    the previously posted comment; its embedded snapshot gives the "since push" row
   --author <login>     the PR author; with --reviews, the Reviewed-by row says whether anyone else has looked
   --reviews <file>     the PR's reviews as GitHub's reviews API lists them (user.login, state), any order
+  --narrative <file>   the PR body, checked with each commit message against the diff: a name in code font
+                       nothing in the diff carries, changed code the text never names, placeholder text
   --selection <file>   reuse a saved --json selection for the reach instead of computing one
   --annotations <n>    check-run annotations on the highest-reach changed lines (default and ceiling 50)
   --json               {brief, markdown, check_run}: check_run is the Checks API POST body for the head sha
@@ -233,6 +235,7 @@ if (command === "mcp") {
           ...(opt("previous") !== undefined && { previousFile: opt("previous") as string }),
           ...(opt("author") !== undefined && { author: opt("author") as string }),
           ...(opt("reviews") !== undefined && { reviews: reviewsIn(readFileSync(opt("reviews") as string, "utf8")) }),
+          ...(opt("narrative") !== undefined && { narrative: readFileSync(opt("narrative") as string, "utf8") }),
           ...(opt("annotations") !== undefined && { annotations: Number(opt("annotations")) }),
           ...(argv.includes("--local") && { sessionsDb: opt("sessions-db") ?? DEFAULT_SESSIONS_DB }),
         })

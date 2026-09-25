@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildBrief, commandRuns, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
+import { changedDeclarationClaims, declares, narrativeClaims, buildBrief, commandRuns, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
+import { parseUnifiedDiff } from "./diff.js";
+import { loadGraph } from "./graph.js";
 import { checkpointRef } from "./checkpoint.js";
 import { DatabaseSync } from "node:sqlite";
 
@@ -252,8 +254,8 @@ describe("buildBrief", () => {
         evidence: "touched but not in the commit: src/scratch.ts",
       },
     ]);
-    // the human commit makes no claims
-    expect(brief().claims.some((c) => c.claim.includes(testCommit.slice(0, 7)))).toBe(false);
+    // the human commit has no checkpoint, so it makes no checkpoint claim
+    expect(brief().claims.some((c) => c.claim.startsWith(`\`${testCommit.slice(0, 7)}\``))).toBe(false);
   });
 
   it("still tells changed from unchanged callers when the graph was built below the repository root (bin-v0.5.0 labels)", () => {
@@ -330,7 +332,8 @@ describe("buildBrief", () => {
     expect(b.selection.kind).toBe("all");
     expect(b.commits.map((c) => c.sha)).toEqual([libCommit, testCommit]);
     expect(b.commits[0]?.reach).toEqual({ files: 0, tests: 0 });
-    expect(b.claims.map((c) => c.verdict)).toEqual(["refuted"]); // files touched; nothing reach-based
+    // files touched (refuted); the commit messages name the changed code (consistent); nothing reach-based
+    expect(b.claims.map((c) => c.verdict)).toEqual(["refuted", "consistent"]);
     expect(b.annotations).toEqual([]);
     expect(b.snapshot).toMatchObject({ commits: 2, files: 0, tests: 0, reached: [] });
   });
@@ -349,5 +352,103 @@ describe("commandRuns", () => {
     expect(commandRuns("pytest tests/unit", "tests/unit/test_x.py")).toBe(true);
     expect(commandRuns("pytest tests/unit", "tests/e2e/test_x.py")).toBe(false);
     expect(commandRuns("vitest run ./src/a.test.ts --reporter=dot", "src/a.test.ts")).toBe(true);
+  });
+});
+
+describe("narrative claims", () => {
+  it("refutes a name in code font the diff does not carry, and reports a placeholder body", () => {
+    const b = brief({ narrative: "Adds retry to `fetchGraph` and touches `src/lib.ts`; see `parse`. Range `main..HEAD`, sha `3ff023b`, flag `--local`, `v0.14.0`." });
+    const phantom = b.claims.find((c) => c.claim === "PR body names `fetchGraph`");
+    expect(phantom).toEqual({ claim: "PR body names `fetchGraph`", verdict: "refuted", evidence: "no changed symbol bears it and no changed line contains it (phantom change)" });
+    expect(b.claims.filter((c) => c.claim.startsWith("PR body names") && c.verdict === "refuted")).toHaveLength(1);
+    // a dotted identifier is not a path: its tokens are looked up in the changed lines
+    const dotted = brief({ narrative: "Reads `github.event.pull_request.body` and `parse.length`." });
+    expect(dotted.claims.filter((c) => c.claim.startsWith("PR body names") && c.verdict === "refuted").map((c) => c.claim)).toEqual(["PR body names `github.event.pull_request.body`"]);
+    expect(dotted.claims.find((c) => c.claim === "PR body names `github.event.pull_request.body`")?.evidence).toContain("no changed symbol bears it");
+    expect(b.unchecked.some((u) => u.startsWith("narrative:"))).toBe(false);
+    expect(brief().unchecked).toContain("narrative: no `--narrative` given, so only commit messages were read");
+    expect(brief({ narrative: "" }).claims).toContainEqual({ claim: "PR body describes the change", verdict: "refuted", evidence: "placeholder text: empty" });
+    expect(brief({ narrative: "<!-- Describe your changes -->\n" }).claims).toContainEqual({ claim: "PR body describes the change", verdict: "refuted", evidence: "placeholder text: empty" });
+    expect(brief({ narrative: "TODO write this" }).claims).toContainEqual({ claim: "PR body describes the change", verdict: "refuted", evidence: 'placeholder text: "TODO"' });
+    // a marker inside a real description is prose, not a placeholder
+    const prose = brief({ narrative: "Drops the wip check from `parse`; the TODO in `src/lib.ts` is gone. Long enough to be a description of the change." });
+    expect(prose.claims.some((c) => c.claim === "PR body describes the change")).toBe(false);
+  });
+
+  it("reads a commit's subject, not its body, for a throwaway marker", () => {
+    const files = parseUnifiedDiff("diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n");
+    const claims = narrativeClaims(
+      [
+        { source: "commit `aaaaaaa`", text: "wip: parser\n\nnot ready" },
+        { source: "commit `bbbbbbb`", text: "fix(brief): a wip or fixup subject is placeholder text\n\nThe word wip in a description is prose." },
+        { source: "commit `ccccccc`", text: "fixup! feat(brief): the narrative is a claim\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>" },
+        { source: "commit `ddddddd`", text: "squash! wire up narrative claims" },
+        { source: "commit `eeeeeee`", text: "wipe the cache on start" },
+      ],
+      files,
+      undefined,
+      new Set(["src/x.ts"]),
+    );
+    expect(claims).toEqual([
+      { claim: "commit `aaaaaaa` describes the change", verdict: "refuted", evidence: 'placeholder text: "wip"' },
+      { claim: "commit `ccccccc` describes the change", verdict: "refuted", evidence: 'placeholder text: "fixup!"' },
+      { claim: "commit `ddddddd` describes the change", verdict: "refuted", evidence: 'placeholder text: "squash!"' },
+    ]);
+  });
+
+  it("calls every named thing consistent when the diff carries it, and never counts a fenced run log", () => {
+    const b = brief({ narrative: "Inlines `helper` into `parse` in `src/lib.ts`.\n\n```\n$ bunx vitest run\n Tests  9 passed\nfetchGraph not here\n```\n" });
+    expect(b.claims).toContainEqual({ claim: "PR body names 3 things in code font", verdict: "consistent", evidence: "every one is a changed symbol, a changed path, or in a changed line" });
+    expect(b.claims.some((c) => c.claim.includes("fetchGraph"))).toBe(false);
+    expect(b.claims).toContainEqual({ claim: "the narrative names the changed code", verdict: "consistent", evidence: "all 1 file with symbol changes are named" });
+  });
+
+  it("reports understated scope: a file with symbol changes no narrative names", () => {
+    const files = parseUnifiedDiff("diff --git a/src/comment.ts b/src/comment.ts\n--- a/src/comment.ts\n+++ b/src/comment.ts\n@@ -1 +1 @@\n-const a = 1;\n+const a = 2;\n");
+    const symbols = [
+      { path: "src/comment.ts", label: "renderClaims", kind: "function", status: "changed", line: 1 },
+      { path: "src/comment.ts", label: "intentRow", kind: "function", status: "changed", line: 9 },
+    ];
+    const claims = narrativeClaims([{ source: "PR body", text: "Retry the fetch." }, { source: "commit `abc1234`", text: "wip" }], files, symbols, new Set(["src/comment.ts"]));
+    expect(claims).toEqual([
+      { claim: "commit `abc1234` describes the change", verdict: "refuted", evidence: 'placeholder text: "wip"' },
+      { claim: "the narrative names the changed code", verdict: "partial", evidence: "not named by the PR body or any commit message: src/comment.ts (`renderClaims` changed, +1) (understated scope)" },
+    ]);
+    expect(narrativeClaims([{ source: "PR body", text: "Rework renderClaims." }], files, symbols, new Set(["src/comment.ts"]))).toEqual([
+      { claim: "the narrative names the changed code", verdict: "consistent", evidence: "all 1 file with symbol changes are named" },
+    ]);
+  });
+
+  it("marks a changed declaration partial when the base graph shows callers this diff does not touch", () => {
+    const files = parseUnifiedDiff(
+      "diff --git a/src/lib.ts b/src/lib.ts\n--- a/src/lib.ts\n+++ b/src/lib.ts\n@@ -5 +5 @@\n-export function parse(input: string): number {\n+export function parse(input: string, strict = false): number {\n",
+    );
+    const symbols = [{ path: "src/lib.ts", label: "parse", kind: "function", status: "changed", line: 5 }];
+    expect(changedDeclarationClaims(symbols, files, loadGraph(baseGraph), new Set(["src/lib.ts"]))).toEqual([
+      {
+        claim: "`parse` declaration changed in `src/lib.ts`",
+        verdict: "partial",
+        evidence: "still called by `use` (src/use.ts:3), `src/lib.test.ts`, `src/use.ts` in files this diff does not touch; check those call sites against the new declaration",
+      },
+    ]);
+    // a body-only change (the declaring line untouched) and a declaration whose callers are all in the diff say nothing
+    const bodyOnly = parseUnifiedDiff("diff --git a/src/lib.ts b/src/lib.ts\n--- a/src/lib.ts\n+++ b/src/lib.ts\n@@ -6 +6 @@\n-  return 1;\n+  return 2;\n");
+    expect(changedDeclarationClaims(symbols, bodyOnly, loadGraph(baseGraph), new Set(["src/lib.ts"]))).toEqual([]);
+    expect(changedDeclarationClaims(symbols, files, loadGraph(baseGraph), new Set(["src/lib.ts", "src/use.ts", "src/lib.test.ts"]))).toEqual([]);
+  });
+});
+
+describe("declares", () => {
+  it("recognises declarations across the extracted languages and not call sites", () => {
+    expect(declares("parse", "export function parse(input: string): number {")).toBe(true);
+    expect(declares("parse", "  async parse<T>(input: T): Promise<number> {")).toBe(true);
+    expect(declares("parse", "export const parse = (input: string): number => {")).toBe(true);
+    expect(declares("Parser", "export class Parser extends Base {")).toBe(true);
+    expect(declares("parse", "def parse(input):")).toBe(true);
+    expect(declares("parse", "func (p *Parser) parse(input string) int {")).toBe(true);
+    expect(declares("parse", "pub fn parse(input: &str) -> u32 {")).toBe(true);
+    expect(declares("parse", "  parse(input);")).toBe(false);
+    expect(declares("parse", "  const n = parse(input) + 1;")).toBe(false);
+    expect(declares("parse", "export function parseAll(inputs: string[]): number {")).toBe(false);
   });
 });

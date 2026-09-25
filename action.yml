@@ -465,6 +465,8 @@ runs:
         PREVIOUS: ${{ steps.existing.outputs.previous }}
         PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         GH_TOKEN: ${{ inputs.github-token }}
+        PR_BODY: ${{ github.event.pull_request.body }}
+        PR_EVENT: ${{ github.event_name == 'pull_request' }}
       run: |
         set -euo pipefail
         repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
@@ -481,6 +483,12 @@ runs:
             && gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" --jq '[.[] | {login: .user.login, state: .state}]' > blastline-reviews.json 2>/dev/null; then
             args+=(--reviews blastline-reviews.json)
           fi
+        fi
+        # The PR body is a claim like any other: an empty one is a placeholder,
+        # a name in code font the diff does not carry is a phantom change.
+        if [ "${PR_EVENT:-false}" = "true" ]; then
+          printf '%s' "${PR_BODY:-}" > blastline-narrative.md
+          args+=(--narrative blastline-narrative.md)
         fi
         [ -n "${PR_NUMBER:-}" ] && args+=(--pr "$PR_NUMBER")
         # On pull_request the range ends at GitHub's merge commit, which is the

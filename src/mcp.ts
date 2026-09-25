@@ -54,6 +54,7 @@ const BRIEF_INPUT_SCHEMA = {
     previous: { type: "string", description: "path to the previously posted comment; its embedded snapshot gives the since-push delta" },
     author: { type: "string", description: "the PR author's login; with reviews, the Reviewed-by row says whether anyone else has looked" },
     reviews: { type: "array", items: { type: "object", properties: { login: { type: "string" }, state: { type: "string" } } }, description: "the PR's reviews (login, state), any order" },
+    narrative: { type: "string", description: "the PR body text, checked with each commit message against the diff: phantom names in code font, changed code never named, placeholder text" },
     annotations: { type: "number", description: "check-run annotations on the highest-reach changed lines (default and ceiling 50)" },
     head_sha: { type: "string", description: "commit to name as the head in links and the check run when the range ends elsewhere" },
     local: { type: "boolean", description: "on the agent machine: commits without a checkpoint ref take their intent from the fleet session index (~/.agents/.history/sessions/sessions.db); nothing leaves the machine" },
@@ -92,7 +93,8 @@ const TOOLS = [
     description:
       "The PR brief for a range, before you push it: what each commit did (from its Entire checkpoint: first prompt line, " +
       "agent, model, files touched, test commands run; never the transcript), symbol changes from cgraph change-context, " +
-      "reach, and claims checked against the graph (refuted | partial | consistent, never verified). " +
+      "reach, and claims checked against the graph and the diff (refuted | partial | consistent, never verified), " +
+      "including the narrative's: a name in code font the diff does not carry, changed code it never names, placeholder text. " +
       "Returns {brief, markdown, check_run}; check_run is the Checks API body the Action posts.",
     inputSchema: BRIEF_INPUT_SCHEMA,
   },
@@ -149,6 +151,7 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       ...(typeof args["previous"] === "string" && { previousFile: args["previous"] }),
       ...(typeof args["author"] === "string" && { author: args["author"] }),
       ...(Array.isArray(args["reviews"]) && { reviews: reviewsIn(JSON.stringify(args["reviews"])) }),
+      ...(typeof args["narrative"] === "string" && { narrative: args["narrative"] }),
       ...(typeof args["annotations"] === "number" && { annotations: args["annotations"] }),
       ...(typeof args["head_sha"] === "string" && { headSha: args["head_sha"] }),
       ...(args["local"] === true && { sessionsDb: typeof args["sessions_db"] === "string" ? args["sessions_db"] : DEFAULT_SESSIONS_DB }),
