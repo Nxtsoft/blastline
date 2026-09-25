@@ -109,6 +109,8 @@ export interface BriefOptions extends RunOptions {
   range: string;
   /** A selection already computed for this range (the Action's `--json` output), instead of running one. */
   selection?: Selection;
+  /** The commit to call the head when the range ends elsewhere (a `pull_request` merge commit standing in for the PR head). */
+  headSha?: string;
   /** `cgraph change-context` JSON. */
   changeContextFile?: string;
   /** The previously rendered comment, whose embedded snapshot gives the delta. */
@@ -320,9 +322,10 @@ export function buildBrief(o: BriefOptions): Brief {
   const git = (...args: string[]): string =>
     execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
 
-  const { range, selection: given, changeContextFile, previousFile, annotations: annotationLimit, ...runOptions } = o;
+  const { range, selection: given, headSha: headOverride, changeContextFile, previousFile, annotations: annotationLimit, ...runOptions } = o;
   const selection = given ?? runSelection({ ...runOptions, range });
-  const shas = resolveRange(repo, range);
+  const resolved = resolveRange(repo, range);
+  const shas = resolved && headOverride !== undefined ? { base: resolved.base, head: headOverride } : resolved;
   const unchecked: string[] = [];
 
   let diffText = "";

@@ -143,8 +143,9 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       ...(typeof args["change_context"] === "string" && { changeContextFile: args["change_context"] }),
       ...(typeof args["previous"] === "string" && { previousFile: args["previous"] }),
       ...(typeof args["annotations"] === "number" && { annotations: args["annotations"] }),
+      ...(typeof args["head_sha"] === "string" && { headSha: args["head_sha"] }),
     });
-    const headSha = typeof args["head_sha"] === "string" ? args["head_sha"] : brief.headSha;
+    const headSha = brief.headSha;
     const markdown = renderBrief(brief, {
       range: args["range"],
       repo: args["repo"],
