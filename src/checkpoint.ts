@@ -52,7 +52,8 @@ export function checkpointRef(id: string): string {
 interface CheckpointMetadata {
   files_touched?: string[];
   source?: string;
-  sessions?: { metadata?: string; prompt?: string; compact_transcript?: string }[];
+  /** One entry per session; only its count is used. Paths are never taken from here. */
+  sessions?: unknown[];
 }
 
 interface SessionMetadata {
@@ -65,12 +66,17 @@ interface TranscriptRecord {
   content?: { type?: string; name?: string; input?: { command?: unknown } }[];
 }
 
-/** The Bash commands in a compact transcript that run a test runner, in order, deduplicated. */
+/** The Bash commands in a compact transcript that run a test runner, in order, deduplicated. A line that is not JSON is skipped. */
 export function testCommandsIn(transcript: string): string[] {
   const seen = new Set<string>();
   for (const line of transcript.split("\n")) {
     if (line.trim() === "") continue;
-    const record = JSON.parse(line) as TranscriptRecord;
+    let record: TranscriptRecord;
+    try {
+      record = JSON.parse(line) as TranscriptRecord;
+    } catch {
+      continue;
+    }
     for (const block of record.content ?? []) {
       if (block.type !== "tool_use" || block.name !== "Bash") continue;
       const command = block.input?.command;
@@ -82,40 +88,42 @@ export function testCommandsIn(transcript: string): string[] {
 
 /**
  * Resolve a commit's `Entire-Checkpoint:` trailer to its checkpoint ref and
- * return the allowlisted subset. Undefined when the commit has no trailer, or
+ * return the allowlisted subset. Undefined when the commit has no trailer,
  * names a checkpoint whose ref is not in this repository (the refs are pushed
  * separately from the branch; `checkpointTrailer` still reports the id so the
- * brief can say the ref is missing rather than that there was no checkpoint).
+ * brief can say the ref is missing rather than that there was no checkpoint),
+ * or names one whose files cannot be read or parsed. Never throws.
+ *
+ * The paths read are Entire's layout, spelled out here: `<i>/metadata.json`,
+ * `<i>/prompt.txt` and `<i>/transcript.jsonl` per session, `metadata.json` at
+ * the root. `metadata.json` also lists per-session paths; those are not
+ * followed, so no checkpoint can point this reader at `<i>/full.jsonl`.
  */
 export function checkpointFor(repo: string, commit: string): Checkpoint | undefined {
   const id = checkpointTrailer(repo, commit);
   if (id === undefined) return undefined;
   const ref = checkpointRef(id);
   const show = (path: string): string => git(repo, ["show", `${ref}:${path}`]);
-  let meta: CheckpointMetadata;
   try {
-    meta = JSON.parse(show("metadata.json")) as CheckpointMetadata;
+    const meta = JSON.parse(show("metadata.json")) as CheckpointMetadata;
+    const sessionCount = Math.max(1, meta.sessions?.length ?? 1);
+    const session = JSON.parse(show("0/metadata.json")) as SessionMetadata;
+    const prompt = (show("0/prompt.txt").split("\n")[0] ?? "").slice(0, 200);
+    const testCommands = new Set<string>();
+    for (let i = 0; i < sessionCount; i++) {
+      for (const c of testCommandsIn(show(`${i}/transcript.jsonl`))) testCommands.add(c);
+    }
+    return {
+      id,
+      commit: git(repo, ["rev-parse", `${commit}^{commit}`]).trim(),
+      agent: session.agent ?? "",
+      model: session.model ?? "",
+      prompt,
+      filesTouched: meta.files_touched ?? [],
+      testCommands: [...testCommands],
+      source: meta.source ?? "entire",
+    };
   } catch {
     return undefined;
   }
-  const sessions = meta.sessions ?? [];
-  const first = sessions[0];
-  const session = first?.metadata ? (JSON.parse(show(first.metadata.replace(/^\//, ""))) as SessionMetadata) : {};
-  const promptFile = first?.prompt?.replace(/^\//, "");
-  const prompt = promptFile ? (show(promptFile).split("\n")[0] ?? "").slice(0, 200) : "";
-  const testCommands = new Set<string>();
-  for (const s of sessions) {
-    if (!s.compact_transcript) continue;
-    for (const c of testCommandsIn(show(s.compact_transcript.replace(/^\//, "")))) testCommands.add(c);
-  }
-  return {
-    id,
-    commit: git(repo, ["rev-parse", `${commit}^{commit}`]).trim(),
-    agent: session.agent ?? "",
-    model: session.model ?? "",
-    prompt,
-    filesTouched: meta.files_touched ?? [],
-    testCommands: [...testCommands],
-    source: meta.source ?? "entire",
-  };
 }

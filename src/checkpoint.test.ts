@@ -160,6 +160,39 @@ describe("checkpointFor", () => {
     expect(checkpointTrailer(repo, commitNoTrailer)).toBeUndefined();
   });
 
+  it("reads Entire's layout by position and never follows the paths metadata.json declares", () => {
+    // A checkpoint whose metadata points the compact transcript at the raw
+    // transcript: the reader must still open <i>/transcript.jsonl.
+    const id = "01M3AY9296319GSPWRKXGHXMK9";
+    const meta = JSON.parse(readFileSync(join(FIXTURE, "metadata.json"), "utf8")) as { sessions: { compact_transcript: string; prompt: string }[] };
+    meta.sessions[0]!.compact_transcript = "/0/full.jsonl";
+    meta.sessions[0]!.prompt = "/0/full.jsonl";
+    writeCheckpointRef(id, {
+      "metadata.json": JSON.stringify(meta),
+      "0/metadata.json": readFileSync(join(FIXTURE, "0/metadata.json"), "utf8"),
+      "0/prompt.txt": readFileSync(join(FIXTURE, "0/prompt.txt"), "utf8"),
+      "0/transcript.jsonl": VITEST_RECORD + "\n",
+      "0/full.jsonl": JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Bash", input: { command: "pytest RAW-TRANSCRIPT-MUST-NOT-LEAK" } }] }) + "\n",
+    });
+    const sha = commitFile("src/comment.ts", "export const COMMENT_MARKER = 5;\n", `feat: declared paths\n\nEntire-Checkpoint: ${id}\n`);
+    const cp = checkpointFor(repo, sha);
+    expect(cp?.testCommands).toEqual(["bunx vitest run src/comment.test.ts"]);
+    expect(cp?.prompt.startsWith("In this repo (cwd)")).toBe(true);
+    expect(JSON.stringify(cp)).not.toContain("RAW-TRANSCRIPT");
+  });
+
+  it("returns undefined instead of throwing for a ref that is not in Entire's layout", () => {
+    const id = "01M3AY9296319GSPWRKXGHXMQ2";
+    writeCheckpointRef(id, { "metadata.json": "{not json", "0/metadata.json": "{}" });
+    const bad = commitFile("src/comment.ts", "export const COMMENT_MARKER = 6;\n", `chore: broken ref\n\nEntire-Checkpoint: ${id}\n`);
+    expect(checkpointFor(repo, bad)).toBeUndefined();
+    const id2 = "01M3AY9296319GSPWRKXGHXMQ3";
+    writeCheckpointRef(id2, { "metadata.json": JSON.stringify({ sessions: [{}] }), "0/metadata.json": "{}" }); // no prompt, no transcript
+    const missing = commitFile("src/comment.ts", "export const COMMENT_MARKER = 7;\n", `chore: partial ref\n\nEntire-Checkpoint: ${id2}\n`);
+    expect(checkpointFor(repo, missing)).toBeUndefined();
+    expect(testCommandsIn("not json\n" + VITEST_RECORD)).toEqual(["bunx vitest run src/comment.test.ts"]);
+  });
+
   it("reports the id but no checkpoint when the trailer names a ref that was not pushed", () => {
     expect(checkpointTrailer(repo, commitDanglingTrailer)).toBe("01M3AY9296319GSPWRKXGHXZZZ");
     expect(checkpointFor(repo, commitDanglingTrailer)).toBeUndefined();

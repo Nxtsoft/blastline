@@ -200,6 +200,16 @@ describe("buildBrief", () => {
     expect(text).not.toContain("safe to");
   });
 
+  it("names a checkpoint it could not read and keeps the brief", () => {
+    // Every other test names its range by sha, so one more commit on top is harmless.
+    write("src/other.ts", "export function other(): number {\n  return 3;\n}\n");
+    const dangling = commitAll("chore: unpushed ref\n\nEntire-Checkpoint: 01M3AY9296319GSPWRKXGHXZZZ\n");
+    const b = buildBrief({ repo, range: `${base}..${dangling}`, graphPath: headGraph, minDensity: 0 });
+    expect(b.commits.at(-1)).toMatchObject({ sha: dangling, checkpointId: "01M3AY9296319GSPWRKXGHXZZZ" });
+    expect(b.commits.at(-1)?.checkpoint).toBeUndefined();
+    expect(b.unchecked).toContain(`checkpoint \`01M3AY9296319GSPWRKXGHXZZZ\` for \`${dangling.slice(0, 7)}\`: its ref is not in this repository (push refs/entire/checkpoints/*)`);
+  });
+
   it("names what it could not check instead of staying silent", () => {
     const noContext = buildBrief({ repo, range: `${base}..${testCommit}`, graphPath: headGraph, minDensity: 0 });
     expect(noContext.changeContext).toBeUndefined();

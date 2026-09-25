@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { checkCallers } from "./check.js";
 import type { Checkpoint } from "./checkpoint.js";
-import { checkpointFor, checkpointTrailer } from "./checkpoint.js";
+import { checkpointFor, checkpointRef, checkpointTrailer } from "./checkpoint.js";
 import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
 import { loadGraph } from "./graph.js";
@@ -364,6 +364,21 @@ export function buildBrief(o: BriefOptions): Brief {
     const files = git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", sha).split("\n").filter(Boolean);
     const checkpointId = checkpointTrailer(repo, sha);
     const checkpoint = checkpointId === undefined ? undefined : checkpointFor(repo, sha);
+    if (checkpointId !== undefined && checkpoint === undefined) {
+      const present = (() => {
+        try {
+          git("rev-parse", "--verify", "--quiet", `${checkpointRef(checkpointId)}^{commit}`);
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      unchecked.push(
+        present
+          ? `checkpoint \`${checkpointId}\` for \`${shortSha(sha)}\`: its ref is present but not in Entire's layout, so it was not read`
+          : `checkpoint \`${checkpointId}\` for \`${shortSha(sha)}\`: its ref is not in this repository (push refs/entire/checkpoints/*)`,
+      );
+    }
     const impacts = files.map((f) => byPath.get(f)).filter((f): f is ChangedFileImpact => f !== undefined && f.disposition === "mapped");
     const reached = new Set<string>();
     const tests = new Set<string>();
