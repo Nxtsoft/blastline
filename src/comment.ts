@@ -509,6 +509,35 @@ function intentRow(brief: Brief): string {
   return `| Intent | ${parts.filter(Boolean).join(" · ")} |`;
 }
 
+/**
+ * Who has looked, and who knows the reached code. "No reviewer other than the
+ * author" is the exact fact; it never says "unreviewed", since whether the
+ * author's own reading counts is the reader's call.
+ */
+function reviewedRow(brief: Brief): string | undefined {
+  const r = brief.review;
+  if (!r) return undefined;
+  // Reviews never fetched is not "none": the row says nothing about who has looked and the footer says why.
+  const others = r.reviews?.filter((v) => v.state !== "PENDING");
+  const looked =
+    others === undefined
+      ? undefined
+      : others.length > 0
+        ? others.map((v) => `${v.login} (${v.state.toLowerCase().replace("_", " ")})`).join(", ")
+        : r.author !== undefined
+          ? `no reviewer other than the author (${r.author}) so far`
+          : "no review so far";
+  const top = r.owners.authors.slice(0, 3).map((a) => `${a.name} (${plural(a.commits, "commit")} in ${plural(a.files, "file")})`);
+  const knows =
+    r.owners.files === 0
+      ? undefined
+      : top.length === 0
+        ? `no human commit in the ${plural(r.owners.files, "changed or reached file")} before this range${r.owners.agentCommits > 0 ? ` (${plural(r.owners.agentCommits, "agent commit")} set aside)` : ""}`
+        : `the ${plural(r.owners.files, "changed and reached file")} were last changed by ${top.join(", ")}${r.owners.authors.length > 3 ? `, +${r.owners.authors.length - 3}` : ""}`;
+  const parts = [looked, knows].filter((p): p is string => p !== undefined);
+  return parts.length === 0 ? undefined : `| Reviewed by | ${parts.join(" · ")} |`;
+}
+
 function symbolsRow(brief: Brief): string | undefined {
   const cc = brief.changeContext;
   if (!cc) return undefined;
@@ -578,6 +607,7 @@ export function renderBrief(brief: Brief, ctx: CommentContext): string {
       `| Summary | ${ctx.prNumber !== undefined ? `PR #${ctx.prNumber}` : code(ctx.range)} |`,
       "|---|---|",
       intentRow(brief),
+      reviewedRow(brief),
       symbolsRow(brief),
       sinceRow(brief),
       "",
@@ -595,6 +625,7 @@ export function renderBrief(brief: Brief, ctx: CommentContext): string {
     "|---|---|",
     ...p.summaryRows,
     intentRow(brief),
+    reviewedRow(brief),
     symbolsRow(brief),
     sinceRow(brief),
     ctx.baseSha ? `| Compared against | base ${code(shortSha(ctx.baseSha))} |` : undefined,

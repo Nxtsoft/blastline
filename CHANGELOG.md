@@ -7,6 +7,13 @@ The per-file table says why each changed symbol changed, in the agent's own word
 - A **Why** column in "What each changed file reaches", present when a checkpoint carries a reason: for each changed symbol the brief knows from change-context, the first line of the agent's last text before the edit that touched it, with the turn (`turn 7: Map the labels back before matching`), at most two distinct lines per file. Reviewers of agent code reconstruct intent rather than check against it (Agarwal, Miller, Kastner, Vasilescu 2026); this puts the intent at the granularity they read.
 - `src/checkpoint.ts` gains one allowlisted field, `reasons`: `symbolReasonsIn` matches the compact transcript's `Edit`, `Write` and `MultiEdit` calls to the symbols by file and by name (a `Write` touches every symbol in its file), and keeps only the capped first line of the preceding text. The edit's contents are searched and never shown; `checkpointFor(repo, commit, symbols)` takes the symbols to look for.
 - On the agent machine, `blastline brief --local` reads the same from the fleet index's `tool_calls`, with the narration step covering the edit as the reason.
+## 0.14.3
+
+The brief says who has looked at the change and who knows the code it reaches.
+
+- A **Reviewed by** Summary row: every reviewer other than the author with their latest state, or `no reviewer other than the author (login) so far`; and the humans whose commits last changed the changed and reached files before this range, most commits first. `src/owners.ts` reads that history in one `git log` up to the base and sets aside the commits an agent authored (a vendor address as the author, or Copilot's `Agent-Logs-Url:` trailer); a human's commit with an agent co-author or a checkpoint is the human's.
+- `blastline brief --author <login> --reviews <file>` (GitHub's reviews API body or `[{login, state}]`); `author` and `reviews` on `blastline_brief` over MCP; the Action passes the PR author and fetches its reviews with the token it has. Without `--reviews` the row names owners only and the footer says so.
+- `brief.review` in `--json`: `{author, reviews, owners: {files, commits, agentCommits, authors: [{name, commits, files}]}}`; `reviews` is absent when none were fetched, and the row then says nothing about who has looked.
 
 ## 0.14.2
 
