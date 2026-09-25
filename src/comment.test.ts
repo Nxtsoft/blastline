@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { COMMENT_MARKER, renderComment } from "./comment.js";
-import type { CommentContext, } from "./comment.js";
+import type { Brief } from "./brief.js";
+import { COMMENT_MARKER, renderBrief, renderCheckRun, renderComment } from "./comment.js";
+import type { CommentContext } from "./comment.js";
 import type { Selection } from "./types.js";
 
 const REPO = "/r";
@@ -156,5 +157,173 @@ describe("renderComment: fail-open", () => {
     expect(md).toContain("research/evidence/run-0");
     expect(md).toContain("bench");
     expect(md).toContain("more");
+  });
+});
+
+const brief: Brief = {
+  range: "main..HEAD",
+  baseSha: "a".repeat(40),
+  headSha: "b".repeat(40),
+  selection: subset,
+  changeContext: {
+    symbols: [
+      { path: "src/lib.ts", label: "parse", kind: "function", status: "changed", line: 3 },
+      { path: "src/lib.ts", label: "helper", kind: "function", status: "deleted_or_renamed", line: 1 },
+      { path: "src/lib.ts", label: "emit", kind: "function", status: "added_or_renamed", line: 9 },
+    ],
+    budget: 20000,
+    omitted: { impacts: 0, context: 388 },
+    truncated: true,
+  },
+  commits: [
+    {
+      sha: "1".repeat(40),
+      subject: "refactor(lib): inline helper, add emit",
+      checkpointId: "01M3AY9296319GSPWRKXGHXMH5",
+      checkpoint: {
+        id: "01M3AY9296319GSPWRKXGHXMH5",
+        commit: "1".repeat(40),
+        agent: "Claude Code",
+        model: "claude-sonnet-5",
+        prompt: "Remove helper from src/lib.ts and inline it into parse; add emit.",
+        filesTouched: ["src/lib.ts"],
+        testCommands: ["bunx vitest run src/a.test.ts"],
+        source: "entire",
+      },
+      files: ["src/lib.ts"],
+      reach: { files: 1, tests: 2 },
+      reachingTests: ["src/a.test.ts", "src/b.test.ts"],
+      ranReachingTests: ["src/a.test.ts"],
+    },
+    {
+      sha: "2".repeat(40),
+      subject: "docs: guide",
+      files: ["docs/guide.md", "docs/faq.md"],
+      reach: { files: 0, tests: 0 },
+      reachingTests: [],
+      ranReachingTests: [],
+    },
+    {
+      sha: "3".repeat(40),
+      subject: "chore: unpushed checkpoint",
+      checkpointId: "01M3AY9296319GSPWRKXGHXZZZ",
+      files: ["src/lib.ts"],
+      reach: { files: 1, tests: 2 },
+      reachingTests: ["src/a.test.ts", "src/b.test.ts"],
+      ranReachingTests: [],
+    },
+  ],
+  claims: [
+    { claim: "`1111111` ran the tests it reaches", verdict: "partial", evidence: "ran 1 of 2: src/a.test.ts; not run: src/b.test.ts" },
+    { claim: "`helper` removed from `src/lib.ts`", verdict: "refuted", evidence: "still referenced by `use` (src/use.ts:3) in files this diff does not touch" },
+    { claim: "`1111111` commits what the agent touched", verdict: "consistent", evidence: "all 1 touched file are in the commit" },
+  ],
+  sincePrevious: { head: "9".repeat(40), commits: 1, files: 1, tests: 0, newlyReached: ["src/c.ts"] },
+  annotations: [
+    { path: "src/lib.ts", start_line: 3, end_line: 4, annotation_level: "notice", title: "blastline: reach", message: "Reaches 1 file and 2 test files through parse." },
+  ],
+  unchecked: [],
+  snapshot: { head: "b".repeat(40), commits: 3, files: 3, tests: 2, reached: ["src/c.ts"] },
+};
+
+describe("renderBrief: subset", () => {
+  it("keeps the comment marker first so the Action edits the existing comment, and embeds its snapshot", () => {
+    const lines = renderBrief(brief, ctx).split("\n");
+    expect(lines[0]).toBe(COMMENT_MARKER);
+    expect(lines[1]).toBe(`<!-- blastline:brief ${JSON.stringify(brief.snapshot)} -->`);
+    expect(lines[2]).toBe("### PR brief: 1 agent commit · 2 of 40 test files reach this diff");
+  });
+
+  it("adds the intent, symbols and since-push rows to the summary", () => {
+    const md = renderBrief(brief, ctx);
+    expect(md).toContain("| Intent | 1 of 3 commits carry a checkpoint · `claude-sonnet-5` · 1 not fetched |");
+    expect(md).toContain("| Symbols | 1 changed, 1 added, 1 removed within the diff |");
+    expect(md).toContain("| Since push `9999999` | 1 new commit, +1 changed file, 0 tests reached, newly reaches `src/c.ts` |");
+    expect(md).toContain("| Tests reached | **2** of 40");
+    expect(renderBrief(brief, { ...ctx, baseSha: "a".repeat(40), headSha: "b".repeat(40) })).toContain("| Compared against | base `aaaaaaa` |");
+  });
+
+  it("tabulates each commit with its intent, files, reach and what ran before the push", () => {
+    const md = renderBrief(brief, { ...ctx, repoUrl: "https://github.com/o/r" });
+    expect(md).toContain("#### What each commit did");
+    expect(md).toContain("| Commit | Intent | Files | Reaches | Ran before push |");
+    expect(md).toContain(
+      "| [`1111111`](https://github.com/o/r/commit/" + "1".repeat(40) + ") refactor(lib): inline helper, add emit | Remove helper from src/lib.ts and inline it into parse; add emit. <sub>Claude Code · claude-sonnet-5</sub> | 1 file | 1 file, 2 tests | 1 of 2 reaching tests |",
+    );
+    expect(md).toContain("docs: guide | _no checkpoint_ | 2 files |  |  |");
+    expect(md).toContain("chore: unpushed checkpoint | _checkpoint `01M3AY9296319GSPWRKXGHXZZZ` not fetched_ | 1 file | 1 file, 2 tests |  |");
+    expect(md).not.toContain("<details><summary>3 commits");
+  });
+
+  it("lists claims refuted first and never prints a certificate", () => {
+    const md = renderBrief(brief, ctx);
+    const claims = md.slice(md.indexOf("#### Claims checked"));
+    expect(claims.indexOf("**refuted**")).toBeLessThan(claims.indexOf("**partial**"));
+    expect(claims.indexOf("**partial**")).toBeLessThan(claims.indexOf("**consistent**"));
+    expect(md).toContain("- **refuted**: `helper` removed from `src/lib.ts`. still referenced by `use` (src/use.ts:3) in files this diff does not touch.");
+    expect(md.toLowerCase()).not.toContain("verified");
+  });
+
+  it("replaces the symbols column with what changed per symbol when change-context is present", () => {
+    const md = renderBrief(brief, ctx);
+    expect(md).toContain("| Changed file | Change | Reaches | Tests |");
+    expect(md).toContain("| `src/lib.ts` | `parse` changed, `helper` removed, `emit` added | 1 file | 2 |");
+    expect(md).toContain("| 2 files under `docs/` | ignored by policy | | 0 |");
+  });
+
+  it("prints the change-context counters and checkpoint coverage in the footer", () => {
+    const md = renderBrief(brief, ctx);
+    expect(md).toContain("change-context budget 20000: omitted 0 impacts, 388 context entries (truncated); symbols are classified within the diff only.");
+    expect(md).toContain("Intent: 1 of 3 commits.");
+    expect(md).toContain("Graph `ccccccc`");
+    expect(md).toContain("#pr-brief");
+  });
+
+  it("folds the commit table after ten commits", () => {
+    const many = { ...brief, commits: Array.from({ length: 11 }, (_, i) => ({ ...brief.commits[1]!, sha: String(i).padStart(40, "0"), subject: `c${i}` })) };
+    const md = renderBrief(many, ctx);
+    expect(md).toContain("<details><summary>11 commits</summary>");
+    expect(md).toContain("| `0000000` c0 |");
+  });
+});
+
+describe("renderBrief: no checkpoints, fail-open", () => {
+  const bare: Brief = {
+    range: "main..HEAD",
+    selection: { kind: "all", reasons: [{ kind: "graph-unavailable", detail: "no graph" }] },
+    commits: [
+      { sha: "4".repeat(40), subject: "feat: x", files: ["src/x.ts"], reach: { files: 0, tests: 0 }, reachingTests: [], ranReachingTests: [] },
+    ],
+    claims: [],
+    annotations: [],
+    unchecked: ["symbol changes: no `--change-context` given"],
+    snapshot: { head: "main..HEAD", commits: 1, files: 0, tests: 0, reached: [] },
+  };
+
+  it("keeps the full-suite warning and says plainly that no checkpoint and no change-context exist", () => {
+    const md = renderBrief(bare, ctx);
+    expect(md.split("\n")[0]).toBe(COMMENT_MARKER);
+    expect(md).toContain("### PR brief: 0 agent commits · run the full suite");
+    expect(md).toContain("Run the full suite");
+    expect(md).toContain("| Intent | no checkpoints on this branch (1 commit) |");
+    expect(md).not.toContain("| Symbols |");
+    expect(md).toContain("| `4444444` feat: x | _no checkpoint_ | 1 file |  |  |");
+    expect(md).toContain("_no checkpoint on this branch makes a claim the graph can check_");
+    expect(md).toContain("Not checked: symbol changes: no `--change-context` given.");
+    expect(md).toContain("Intent: 0 of 1 commit.");
+    expect(md).not.toContain("undefined");
+  });
+});
+
+describe("renderCheckRun", () => {
+  it("builds one completed neutral check run per head sha with the brief's annotations", () => {
+    const md = renderBrief(brief, ctx);
+    const run = renderCheckRun(brief, md, "b".repeat(40));
+    expect(run).toMatchObject({ name: "blastline", head_sha: "b".repeat(40), status: "completed", conclusion: "neutral" });
+    expect(run.output.title).toBe("PR brief: 1 agent commit · 2 of 40 test files reach this diff");
+    expect(run.output.summary).toContain("| Intent |");
+    expect(run.output.summary).not.toContain("<!-- ");
+    expect(run.output.text).toContain("#### What each commit did");
+    expect(run.output.annotations).toEqual(brief.annotations);
   });
 });

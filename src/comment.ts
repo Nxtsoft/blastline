@@ -1,3 +1,5 @@
+import type { Brief, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
+import { SNAPSHOT_MARKER } from "./brief.js";
 import { relativeTo, sharedDir } from "./paths.js";
 import type { ChangedFileImpact, FailOpenReason, Selection } from "./types.js";
 
@@ -26,6 +28,10 @@ export interface CommentContext {
 }
 
 const README = "https://github.com/Nxtsoft/blastline#how-selection-works";
+const BRIEF_README = "https://github.com/Nxtsoft/blastline#pr-brief";
+
+/** Commit rows beyond this fold behind a summary; a long PR must not bury the claims. */
+export const COMMIT_ROWS_UNFOLDED = 10;
 
 function code(s: string): string {
   return `\`${s}\``;
@@ -75,6 +81,11 @@ class Links {
     const head = code(shortSha(headSha));
     return repoUrl ? `[${head}](${repoUrl}/compare/${baseSha}...${headSha})` : head;
   }
+  commit(sha: string): string {
+    const { repoUrl } = this.ctx;
+    const short = code(shortSha(sha));
+    return repoUrl ? `[${short}](${repoUrl}/commit/${sha})` : short;
+  }
 }
 
 /** Sort the mapped rows by tests reached, then reach, so the widest change reads first. */
@@ -101,7 +112,37 @@ function ignoredRows(files: ChangedFileImpact[]): string[] {
     });
 }
 
-function renderSubset(selection: Extract<Selection, { kind: "subset" }>, ctx: CommentContext): string {
+type Subset = Extract<Selection, { kind: "subset" }>;
+
+/** The pieces of a subset comment, so the brief can interleave its own sections. */
+interface SubsetParts {
+  header: string;
+  lead: string;
+  /** Rows of the summary table, without the title row. */
+  summaryRows: string[];
+  summaryTitle: string;
+  figure: string;
+  perFile: string;
+  prefixNote: string;
+  tests: string;
+  blast: string;
+}
+
+/**
+ * The status per changed file from cgraph's symbol changes: `parse` changed,
+ * `helper` removed. Cheaper for the reader than the head-side symbol list
+ * alone, because it says what happened to each symbol, not just where.
+ */
+function changeCell(path: string, symbols: SymbolChange[], fallback: string[]): string {
+  const own = symbols.filter((s) => s.path === path);
+  if (own.length === 0) return symbolsCell(fallback);
+  const word = (status: string): string =>
+    status === "changed" ? "changed" : status === "moved" ? "moved" : status.startsWith("added") ? "added" : status.startsWith("deleted") ? "removed" : status;
+  const shown = own.slice(0, 3).map((s) => `${code(s.label)} ${word(s.status)}`);
+  return own.length > 3 ? `${shown.join(", ")}, +${own.length - 3}` : shown.join(", ");
+}
+
+function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolChange[]): SubsetParts {
   const links = new Links(ctx);
   const mapped = selection.files.filter((f) => f.disposition === "mapped");
   const ignored = selection.files.filter((f) => f.disposition === "ignored");
@@ -109,7 +150,7 @@ function renderSubset(selection: Extract<Selection, { kind: "subset" }>, ctx: Co
   const reachedFiles = new Set<string>();
   for (const f of mapped) for (const r of f.reaches) reachedFiles.add(r.file);
   const n = selection.tests.length;
-  const header = `### Test impact: ${n} of ${plural(selection.testsTotal, "test file")} reach${n === 1 ? "es" : ""} this diff`;
+  const header = `${n} of ${plural(selection.testsTotal, "test file")} reach${n === 1 ? "es" : ""} this diff`;
   const lead =
     n > 0
       ? "**Run at least these.** Selection is a safe superset; it never marks a test safe to skip."
@@ -123,16 +164,11 @@ function renderSubset(selection: Extract<Selection, { kind: "subset" }>, ctx: Co
   ]
     .filter(Boolean)
     .join(", ");
-  const summary = [
-    `| Summary | ${summaryTitle} |`,
-    "|---|---|",
+  const summaryRows = [
     `| Changed | ${changedCell} |`,
     `| Tests reached | **${n}** of ${selection.testsTotal} ${bar(n, selection.testsTotal)} ${percent(n, selection.testsTotal)} of the suite |`,
     `| Downstream code | ${plural(reachedFiles.size, "file")}, ${plural(selection.blast.length, "dependent")} |`,
-    ctx.baseSha ? `| Compared against | base ${code(shortSha(ctx.baseSha))} |` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ];
 
   const figure =
     ctx.figure === undefined
@@ -150,12 +186,12 @@ function renderSubset(selection: Extract<Selection, { kind: "subset" }>, ctx: Co
   const prefix = sharedDir(mapped.map((f) => f.path));
   const short = (rel: string): string => (prefix && rel.startsWith(prefix) ? rel.slice(prefix.length) : rel);
   const isTestFile = (f: ChangedFileImpact): boolean => f.tests.some((t) => t.endsWith(`/${f.path}`) || t === f.path);
-  const rows = [
-    "| Changed file | Symbols touched | Reaches | Tests |",
+  const perFile = [
+    `| Changed file | ${symbols ? "Change" : "Symbols touched"} | Reaches | Tests |`,
     "|---|---|---:|---:|",
     ...[...mapped].sort(byImpact).map((f) => {
       const name = links.path(f.path, short(f.path)) + (f.status === "added" ? " (new)" : f.status === "deleted" ? " (deleted)" : "");
-      const what = isTestFile(f) ? "test code, selected directly" : symbolsCell(f.symbols);
+      const what = isTestFile(f) ? "test code, selected directly" : symbols ? changeCell(f.path, symbols, f.symbols) : symbolsCell(f.symbols);
       const reaches = f.reaches.length === 0 ? "" : plural(f.reaches.length, "file");
       return `| ${cell(name)} | ${cell(what)} | ${reaches} | ${f.tests.length} |`;
     }),
@@ -191,27 +227,36 @@ function renderSubset(selection: Extract<Selection, { kind: "subset" }>, ctx: Co
         ].join("\n")
       : "_no downstream dependents_";
 
+  return { header, lead, summaryRows, summaryTitle, figure, perFile, prefixNote, tests, blast };
+}
+
+function renderSubset(selection: Subset, ctx: CommentContext): string {
+  const p = subsetParts(selection, ctx);
+  const n = selection.tests.length;
+  const summary = [`| Summary | ${p.summaryTitle} |`, "|---|---|", ...p.summaryRows, ctx.baseSha ? `| Compared against | base ${code(shortSha(ctx.baseSha))} |` : ""]
+    .filter(Boolean)
+    .join("\n");
   return [
     COMMENT_MARKER,
-    header,
+    `### Test impact: ${p.header}`,
     "",
-    lead,
+    p.lead,
     "",
     summary,
     "",
-    figure,
-    figure ? "" : undefined,
+    p.figure,
+    p.figure ? "" : undefined,
     "#### What each changed file reaches",
     "",
-    rows,
+    p.perFile,
     "",
-    prefixNote,
-    prefixNote ? "" : undefined,
+    p.prefixNote,
+    p.prefixNote ? "" : undefined,
     `#### Tests to run (${n})`,
     "",
-    tests,
+    p.tests,
     "",
-    blast,
+    p.blast,
     "",
     footer(selection.contentRoot, ctx),
     "",
@@ -220,9 +265,10 @@ function renderSubset(selection: Extract<Selection, { kind: "subset" }>, ctx: Co
     .join("\n");
 }
 
-function footer(contentRoot: string | undefined, ctx: CommentContext): string {
+function footer(contentRoot: string | undefined, ctx: CommentContext, extra: string[] = [], readme = README): string {
   const graph = contentRoot ? ` Graph ${code(contentRoot.slice(0, 7))}.` : "";
-  return `<sub>blastline ${ctx.version}. Selection is advisory unless your workflow gates on it. [How selection works](${README}).${graph}</sub>`;
+  const more = extra.length > 0 ? ` ${extra.join(" ")}` : "";
+  return `<sub>blastline ${ctx.version}. Selection is advisory unless your workflow gates on it. [How selection works](${readme}).${graph}${more}</sub>`;
 }
 
 /** Each fail-open reason, as the cause and the one thing the reader can do about it. */
@@ -301,7 +347,10 @@ function renderUnmapped(paths: string[]): string {
   ].join("\n");
 }
 
-function renderAll(selection: Extract<Selection, { kind: "all" }>, ctx: CommentContext): string {
+type All = Extract<Selection, { kind: "all" }>;
+
+/** The body of a fail-open comment, after its heading: the warning, the reasons, the unmapped files. */
+function allBody(selection: All, ctx: CommentContext): string[] {
   const links = new Links(ctx);
   const unmapped = selection.reasons.filter((r) => r.kind === "unmapped-file").map((r) => r.path);
   const others = selection.reasons.filter(
@@ -318,9 +367,6 @@ function renderAll(selection: Extract<Selection, { kind: "all" }>, ctx: CommentC
         ].join("\n")
       : "";
   return [
-    COMMENT_MARKER,
-    "### Test impact: run the full suite",
-    "",
     "> [!WARNING]",
     "> **Run the full suite.** The graph cannot vouch for this diff, so every test file is selected. Nothing is skipped; this is the safe default, not a failure.",
     "",
@@ -329,15 +375,211 @@ function renderAll(selection: Extract<Selection, { kind: "all" }>, ctx: CommentC
     unmapped.length > 0 ? renderUnmapped(unmapped) : undefined,
     unmapped.length > 0 ? "" : undefined,
     where,
+  ].filter((line): line is string => line !== undefined);
+}
+
+function renderAll(selection: All, ctx: CommentContext): string {
+  return [COMMENT_MARKER, "### Test impact: run the full suite", "", ...allBody(selection, ctx), "", footer(undefined, ctx), ""].join("\n");
+}
+
+/** Render a selection as the PR-comment markdown the GitHub Action posts. */
+export function renderComment(selection: Selection, ctx: CommentContext): string {
+  return selection.kind === "all" ? renderAll(selection, ctx) : renderSubset(selection, ctx);
+}
+
+/** The commit table: what each commit intended (its checkpoint), touched, reaches, and ran before the push. */
+function commitTable(commits: CommitBrief[], links: Links): string {
+  const truncate = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+  const rows = commits.map((c) => {
+    const cp = c.checkpoint;
+    const intent = cp
+      ? `${cell(truncate(cp.prompt, 120))}${cp.model ? ` <sub>${cp.agent ? `${cp.agent} · ` : ""}${cp.model}</sub>` : ""}`
+      : c.checkpointId !== undefined
+        ? `_checkpoint ${code(c.checkpointId)} not fetched_`
+        : "_no checkpoint_";
+    const files = c.files.length === 0 ? "" : plural(c.files.length, "file");
+    const reach = c.reach.files === 0 && c.reach.tests === 0 ? "" : `${plural(c.reach.files, "file")}, ${plural(c.reach.tests, "test")}`;
+    const ran = !cp
+      ? ""
+      : cp.testCommands.length === 0
+        ? "no test runner"
+        : c.reachingTests.length === 0
+          ? cell(cp.testCommands.map(code).join(", "))
+          : `${c.ranReachingTests.length} of ${plural(c.reachingTests.length, "reaching test")}`;
+    return `| ${links.commit(c.sha)} ${cell(truncate(c.subject, 60))} | ${intent} | ${files} | ${reach} | ${ran} |`;
+  });
+  const table = ["| Commit | Intent | Files | Reaches | Ran before push |", "|---|---|---:|---|---|", ...rows].join("\n");
+  if (commits.length <= COMMIT_ROWS_UNFOLDED) return table;
+  return [`<details><summary>${plural(commits.length, "commit")}</summary>`, "", table, "", "</details>"].join("\n");
+}
+
+function claimsList(claims: ClaimCheck[]): string {
+  if (claims.length === 0) return "_no checkpoint on this branch makes a claim the graph can check_";
+  const order: ClaimCheck["verdict"][] = ["refuted", "partial", "consistent"];
+  return [...claims]
+    .sort((a, b) => order.indexOf(a.verdict) - order.indexOf(b.verdict))
+    .map((c) => `- **${c.verdict}**: ${c.claim}. ${c.evidence}.`)
+    .join("\n");
+}
+
+function intentRow(brief: Brief): string {
+  const withCheckpoint = brief.commits.filter((c) => c.checkpoint).length;
+  const unfetched = brief.commits.filter((c) => c.checkpointId !== undefined && !c.checkpoint).length;
+  const models = [...new Set(brief.commits.map((c) => c.checkpoint?.model).filter((m): m is string => !!m))];
+  const total = plural(brief.commits.length, "commit");
+  if (brief.commits.length === 0) return `| Intent | no commits in ${code(brief.range)} |`;
+  if (withCheckpoint === 0 && unfetched === 0) return `| Intent | no checkpoints on this branch (${total}) |`;
+  const parts = [`${withCheckpoint} of ${total} carry a checkpoint`, models.length > 0 ? models.map(code).join(", ") : "", unfetched > 0 ? `${unfetched} not fetched` : ""];
+  return `| Intent | ${parts.filter(Boolean).join(" · ")} |`;
+}
+
+function symbolsRow(brief: Brief): string | undefined {
+  const cc = brief.changeContext;
+  if (!cc) return undefined;
+  const count = (test: (s: string) => boolean): number => cc.symbols.filter((s) => test(s.status)).length;
+  const parts = [
+    [count((s) => s === "changed"), "changed"],
+    [count((s) => s.startsWith("added")), "added"],
+    [count((s) => s.startsWith("deleted")), "removed"],
+    [count((s) => s === "moved"), "moved"],
+  ]
+    .filter(([n]) => (n as number) > 0)
+    .map(([n, word]) => `${n} ${word}`);
+  return `| Symbols | ${parts.length > 0 ? parts.join(", ") : "none classified"} within the diff |`;
+}
+
+function sinceRow(brief: Brief): string | undefined {
+  const d = brief.sincePrevious;
+  if (!d) return undefined;
+  const signed = (n: number, one: string, many: string): string => `${n > 0 ? "+" : ""}${n} ${Math.abs(n) === 1 ? one : many}`;
+  const parts = [plural(d.commits, "new commit"), signed(d.files, "changed file", "changed files"), signed(d.tests, "test reached", "tests reached")];
+  if (d.newlyReached.length > 0) parts.push(`newly reaches ${d.newlyReached.slice(0, 3).map(code).join(", ")}${d.newlyReached.length > 3 ? `, +${d.newlyReached.length - 3}` : ""}`);
+  return `| Since push ${code(shortSha(d.head))} | ${parts.join(", ")} |`;
+}
+
+/** What the brief could not classify or check, and the change-context counters, verbatim. */
+function briefFooter(brief: Brief, ctx: CommentContext): string {
+  const extra: string[] = [];
+  const cc = brief.changeContext;
+  if (cc) extra.push(`change-context budget ${cc.budget}: omitted ${cc.omitted.impacts} impacts, ${cc.omitted.context} context entries${cc.truncated ? " (truncated)" : ""}; symbols are classified within the diff only.`);
+  const withCheckpoint = brief.commits.filter((c) => c.checkpoint).length;
+  extra.push(`Intent: ${withCheckpoint} of ${plural(brief.commits.length, "commit")}.`);
+  for (const u of brief.unchecked) extra.push(`Not checked: ${u}.`);
+  const contentRoot = brief.selection.kind === "subset" ? brief.selection.contentRoot : undefined;
+  return footer(contentRoot, ctx, extra, BRIEF_README);
+}
+
+/**
+ * The PR brief: the test-impact comment grown a per-commit table, a claims
+ * list, an intent and a symbols row, and the delta since the previous push.
+ * Same marker as `renderComment`, so an existing comment is edited in place.
+ */
+export function renderBrief(brief: Brief, ctx: CommentContext): string {
+  const links = new Links(ctx);
+  const agentCommits = brief.commits.filter((c) => c.checkpoint).length;
+  const title = `### PR brief: ${plural(agentCommits, "agent commit")} · `;
+  const snapshot = `${SNAPSHOT_MARKER}${JSON.stringify(brief.snapshot)} -->`;
+  const sections = (verdictParts: (string | undefined)[]): (string | undefined)[] => [
+    "#### What each commit did",
     "",
-    footer(undefined, ctx),
+    commitTable(brief.commits, links),
+    "",
+    "#### Claims checked",
+    "",
+    claimsList(brief.claims),
+    "",
+    ...verdictParts,
+  ];
+  if (brief.selection.kind === "all") {
+    return [
+      COMMENT_MARKER,
+      snapshot,
+      `${title}run the full suite`,
+      "",
+      ...allBody(brief.selection, ctx),
+      "",
+      `| Summary | ${ctx.prNumber !== undefined ? `PR #${ctx.prNumber}` : code(ctx.range)} |`,
+      "|---|---|",
+      intentRow(brief),
+      symbolsRow(brief),
+      sinceRow(brief),
+      "",
+      ...sections([]),
+      briefFooter(brief, ctx),
+      "",
+    ]
+      .filter((line): line is string => line !== undefined)
+      .join("\n");
+  }
+  const p = subsetParts(brief.selection, ctx, brief.changeContext?.symbols);
+  const n = brief.selection.tests.length;
+  const summary = [
+    `| Summary | ${p.summaryTitle} |`,
+    "|---|---|",
+    ...p.summaryRows,
+    intentRow(brief),
+    symbolsRow(brief),
+    sinceRow(brief),
+    ctx.baseSha ? `| Compared against | base ${code(shortSha(ctx.baseSha))} |` : undefined,
+  ]
+    .filter((line): line is string => line !== undefined)
+    .join("\n");
+  return [
+    COMMENT_MARKER,
+    snapshot,
+    `${title}${p.header}`,
+    "",
+    p.lead,
+    "",
+    summary,
+    "",
+    p.figure,
+    p.figure ? "" : undefined,
+    ...sections([
+      "#### What each changed file reaches",
+      "",
+      p.perFile,
+      "",
+      p.prefixNote,
+      p.prefixNote ? "" : undefined,
+      `#### Tests to run (${n})`,
+      "",
+      p.tests,
+      "",
+      p.blast,
+      "",
+    ]),
+    briefFooter(brief, ctx),
     "",
   ]
     .filter((line): line is string => line !== undefined)
     .join("\n");
 }
 
-/** Render a selection as the PR-comment markdown the GitHub Action posts. */
-export function renderComment(selection: Selection, ctx: CommentContext): string {
-  return selection.kind === "all" ? renderAll(selection, ctx) : renderSubset(selection, ctx);
+/** The Checks API `check-runs` request body for a brief: one run per head sha, annotations on the highest-reach lines. */
+export interface CheckRun {
+  name: "blastline";
+  head_sha: string;
+  status: "completed";
+  conclusion: "neutral";
+  output: { title: string; summary: string; text: string; annotations: Brief["annotations"] };
+}
+
+export function renderCheckRun(brief: Brief, markdown: string, headSha: string): CheckRun {
+  const lines = markdown.split("\n");
+  const heading = lines.find((l) => l.startsWith("### ")) ?? "### PR brief";
+  const body = lines.filter((l) => !l.startsWith("<!-- ")).join("\n");
+  const summaryEnd = body.indexOf("\n#### ");
+  return {
+    name: "blastline",
+    head_sha: headSha,
+    status: "completed",
+    conclusion: "neutral",
+    output: {
+      title: heading.replace(/^### /, "").slice(0, 255),
+      summary: (summaryEnd === -1 ? body : body.slice(0, summaryEnd)).slice(0, 65535),
+      text: (summaryEnd === -1 ? "" : body.slice(summaryEnd + 1)).slice(0, 65535),
+      annotations: brief.annotations,
+    },
+  };
 }
