@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildBrief, commandRuns, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
+import { buildBrief, commandRuns, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
 import { checkpointRef } from "./checkpoint.js";
 import { DatabaseSync } from "node:sqlite";
 
@@ -215,6 +215,18 @@ describe("buildBrief", () => {
     expect(d).toMatchObject({ sha: dangling, checkpointId: "01M3AY9296319GSPWRKXGHXQQQ" });
     expect(d?.checkpoint).toBeUndefined();
     expect(d?.provenance).toBeUndefined();
+  });
+
+  it("reads who last changed the changed and reached files up to the base, and keeps only reviews by others", () => {
+    const b = brief({ author: "taylorg009", reviews: [{ login: "taylorg009", state: "COMMENTED" }, { login: "tgod009", state: "COMMENTED" }, { login: "tgod009", state: "APPROVED" }] });
+    expect(b.review?.author).toBe("taylorg009");
+    expect(b.review?.reviews).toEqual([{ login: "tgod009", state: "APPROVED" }]);
+    expect(b.review?.owners.files).toBeGreaterThan(0);
+    const fixtureAuthor = execFileSync("git", ["-C", repo, "log", "-1", "--format=%an", base], { encoding: "utf8" }).trim();
+    expect(b.review?.owners.authors).toEqual([{ name: fixtureAuthor, commits: 1, files: 3 }]);
+    expect(b.review?.owners.agentCommits).toBe(0);
+    expect(brief().unchecked).toContain("reviewed by: no `--reviews` given, so the row names owners only");
+    expect(reviewsIn('[{"user":{"login":"a"},"state":"APPROVED"},{"login":"b","state":"COMMENTED"},{"state":"X"}]')).toEqual([{ login: "a", state: "APPROVED" }, { login: "b", state: "COMMENTED" }]);
   });
 
   it("refutes a removal the base graph still sees callers for, in files the diff did not touch", () => {

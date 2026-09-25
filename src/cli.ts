@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { buildBrief, resolveRange } from "./brief.js";
+import { buildBrief, resolveRange, reviewsIn } from "./brief.js";
 import { runCheck } from "./check.js";
 import { renderBrief, renderCheckRun, renderComment } from "./comment.js";
 import { checkpointRef, checkpointTrailer } from "./checkpoint.js";
@@ -68,6 +68,8 @@ comment and figure options:
 brief options:
   --change-context <file>  cgraph change-context JSON: the Symbols row, the Change column, removed-symbol claims
   --previous <file>    the previously posted comment; its embedded snapshot gives the "since push" row
+  --author <login>     the PR author; with --reviews, the Reviewed-by row says whether anyone else has looked
+  --reviews <file>     the PR's reviews as GitHub's reviews API lists them (user.login, state), any order
   --selection <file>   reuse a saved --json selection for the reach instead of computing one
   --annotations <n>    check-run annotations on the highest-reach changed lines (default and ceiling 50)
   --json               {brief, markdown, check_run}: check_run is the Checks API POST body for the head sha
@@ -229,6 +231,8 @@ if (command === "mcp") {
           ...(opt("head-sha") !== undefined && { headSha: opt("head-sha") as string }),
           ...(opt("change-context") !== undefined && { changeContextFile: opt("change-context") as string }),
           ...(opt("previous") !== undefined && { previousFile: opt("previous") as string }),
+          ...(opt("author") !== undefined && { author: opt("author") as string }),
+          ...(opt("reviews") !== undefined && { reviews: reviewsIn(readFileSync(opt("reviews") as string, "utf8")) }),
           ...(opt("annotations") !== undefined && { annotations: Number(opt("annotations")) }),
           ...(argv.includes("--local") && { sessionsDb: opt("sessions-db") ?? DEFAULT_SESSIONS_DB }),
         })

@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import { checkCallers } from "./check.js";
 import type { Checkpoint, Provenance } from "./checkpoint.js";
 import { checkpointFor, checkpointRef, checkpointTrailer, provenanceOf } from "./checkpoint.js";
+import type { Owners } from "./owners.js";
+import { ownersOf } from "./owners.js";
 import { SessionsIndex, localCheckpoint } from "./sessions.js";
 import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
@@ -93,6 +95,26 @@ export interface SincePrevious {
   newlyReached: string[];
 }
 
+/** A review the PR has received, as GitHub's reviews API lists it. */
+export interface Review {
+  login: string;
+  /** `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`, `PENDING`. */
+  state: string;
+}
+
+/**
+ * Who has looked at the change, and who knows the code it reaches: the PR's
+ * reviews other than the author's, and the humans whose commits last touched
+ * the changed and reached files before this range.
+ */
+export interface ReviewState {
+  /** The PR author: the human who opened it, or invoked the agent that did. */
+  author?: string;
+  /** Reviews by anyone but the author, latest state per login. */
+  reviews: Review[];
+  owners: Owners;
+}
+
 export interface Brief {
   range: string;
   baseSha?: string;
@@ -101,6 +123,8 @@ export interface Brief {
   changeContext?: ChangeContext;
   commits: CommitBrief[];
   claims: ClaimCheck[];
+  /** Present when the range resolved: owners are read from the base's history. */
+  review?: ReviewState;
   sincePrevious?: SincePrevious;
   annotations: Annotation[];
   /** What this brief could not check, one line each, printed verbatim. */
@@ -118,6 +142,10 @@ export interface BriefOptions extends RunOptions {
   changeContextFile?: string;
   /** The previously rendered comment, whose embedded snapshot gives the delta. */
   previousFile?: string;
+  /** The PR author's login; with `reviews`, the Reviewed-by row says whether anyone else has looked. */
+  author?: string;
+  /** The PR's reviews (GitHub's reviews API: user.login and state), any order. */
+  reviews?: Review[];
   /** Annotation count, at most 50 (the Checks API ceiling per request). Default 50. */
   annotations?: number;
   /**
@@ -126,6 +154,16 @@ export interface BriefOptions extends RunOptions {
    * of that database; nothing is written and nothing leaves the machine.
    */
   sessionsDb?: string;
+}
+
+/** GitHub's reviews API body (`user.login`, `state`), or the brief's own `{login, state}` shape, to reviews. */
+export function reviewsIn(json: string): Review[] {
+  const rows = JSON.parse(json) as { login?: unknown; state?: unknown; user?: { login?: unknown } }[];
+  if (!Array.isArray(rows)) throw new Error("reviews: expected a JSON array");
+  return rows.flatMap((r) => {
+    const login = typeof r.login === "string" ? r.login : typeof r.user?.login === "string" ? r.user.login : undefined;
+    return login !== undefined && typeof r.state === "string" ? [{ login, state: r.state }] : [];
+  });
 }
 
 export const MAX_ANNOTATIONS = 50;
@@ -346,7 +384,7 @@ export function buildBrief(o: BriefOptions): Brief {
   const git = (...args: string[]): string =>
     execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
 
-  const { range, selection: given, headSha: headOverride, changeContextFile, previousFile, annotations: annotationLimit, ...runOptions } = o;
+  const { range, selection: given, headSha: headOverride, changeContextFile, previousFile, annotations: annotationLimit, author, reviews, ...runOptions } = o;
   const selection = given ?? runSelection({ ...runOptions, range });
   const resolved = resolveRange(repo, range);
   const shas = resolved && headOverride !== undefined ? { base: resolved.base, head: headOverride } : resolved;
@@ -456,6 +494,21 @@ export function buildBrief(o: BriefOptions): Brief {
 
   const reachedFiles = new Set<string>();
   if (selection.kind === "subset") for (const f of selection.files) for (const r of f.reaches) reachedFiles.add(relativeTo(repo, r.file));
+
+  let review: ReviewState | undefined;
+  if (shas === undefined) {
+    unchecked.push("reviewed by: the range did not resolve, so no history was read");
+  } else {
+    const mapped = selection.kind === "subset" ? selection.files.filter((f) => f.disposition === "mapped").map((f) => f.path) : [...changedPaths];
+    const latest = new Map<string, string>();
+    for (const r of reviews ?? []) if (r.login !== author) latest.set(r.login, r.state);
+    review = {
+      ...(author !== undefined && { author }),
+      reviews: [...latest.entries()].map(([login, state]) => ({ login, state })),
+      owners: ownersOf(repo, shas.base, [...new Set([...mapped, ...reachedFiles])].sort()),
+    };
+    if (reviews === undefined) unchecked.push("reviewed by: no `--reviews` given, so the row names owners only");
+  }
   const snapshot: BriefSnapshot = {
     head: shas?.head ?? range,
     commits: commits.length,
@@ -525,6 +578,7 @@ export function buildBrief(o: BriefOptions): Brief {
     ...(changeContext !== undefined && { changeContext }),
     commits,
     claims,
+    ...(review !== undefined && { review }),
     ...(sincePrevious !== undefined && { sincePrevious }),
     annotations,
     unchecked,
