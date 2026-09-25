@@ -533,6 +533,18 @@ export function buildBrief(o: BriefOptions): Brief {
     unchecked.push(`commits: git could not list \`${range}\``);
   }
   const byPath = new Map<string, ChangedFileImpact>(selection.kind === "subset" ? selection.files.map((f) => [f.path, f]) : []);
+  // Where each changed symbol sits at head, from the graph, so an edit inside its body is attributed to it.
+  let headGraph: CodeGraph | undefined;
+  try {
+    headGraph = loadGraph(runOptions.graphPath ?? resolve(repo, "cgraph-out/graph.json"));
+  } catch {
+    headGraph = undefined;
+  }
+  const rangeOf = (s: SymbolChange): { from?: number; to?: number } => {
+    const nodes = headGraph?.byFile.get(resolve(repo, s.path)) ?? [];
+    const node = nodes.find((n) => n.label === s.label && n.type !== "file" && n.source_location !== undefined);
+    return node?.source_location ? { from: node.source_location.start_line, to: node.source_location.end_line } : {};
+  };
   const sessions = o.sessionsDb === undefined ? undefined : new SessionsIndex(o.sessionsDb);
   let commits: CommitBrief[];
   try {
@@ -540,7 +552,7 @@ export function buildBrief(o: BriefOptions): Brief {
       const subject = git("log", "-1", "--format=%s", sha).trim();
       const files = git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", sha).split("\n").filter(Boolean);
       const checkpointId = checkpointTrailer(repo, sha);
-      const own = (changeContext?.symbols ?? []).filter((s) => files.includes(s.path)).map((s) => ({ path: s.path, label: s.label }));
+      const own = (changeContext?.symbols ?? []).filter((s) => files.includes(s.path)).map((s) => ({ path: s.path, label: s.label, ...rangeOf(s) }));
       const checkpoint =
         checkpointId !== undefined ? checkpointFor(repo, sha, own) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files, own);
       // Only for a commit with no trailer at all: a dangling trailer stays "not fetched", which names the fix (push the refs).

@@ -329,6 +329,23 @@ describe("symbolReasonsIn", () => {
   });
 });
 
+describe("symbolReasonsIn by line range", () => {
+  it("attributes an edit inside a symbol's body to that symbol when the written text sits in its range as committed", () => {
+    const content = "/** doc */\nexport const COMMENT_MARKER = 1;\n\nexport function renderHeader(n: number): string {\n  return [COMMENT_MARKER, `### ${n}`].join(\"\\n\");\n}\n";
+    const edit = JSON.stringify({ type: "assistant", content: [{ type: "text", text: "Build the header from a list." }, { type: "tool_use", name: "Edit", input: { file_path: "src/comment.ts", old_string: "return `x`;", new_string: "  return [COMMENT_MARKER, `### ${n}`].join(\"\\n\");" } }] });
+    const symbols = [
+      { path: "src/comment.ts", label: "COMMENT_MARKER", from: 2, to: 2 },
+      { path: "src/comment.ts", label: "renderHeader", from: 4, to: 6 },
+    ];
+    const reasons = symbolReasonsIn(edit, symbols, () => content);
+    expect(reasons.map((r) => r.label).sort()).toEqual(["COMMENT_MARKER", "renderHeader"]);
+    // without the committed content the body edit only reaches the symbol it names
+    expect(symbolReasonsIn(edit, symbols).map((r) => r.label)).toEqual(["COMMENT_MARKER"]);
+    // text that was later changed again is not found as committed, so the name match still applies
+    expect(symbolReasonsIn(edit, symbols, () => "unrelated file\n").map((r) => r.label)).toEqual(["COMMENT_MARKER"]);
+  });
+});
+
 describe("checkpointFor with symbols", () => {
   it("returns the reasons for the symbols asked about and nothing from the edit's contents or result", () => {
     const cp = checkpointFor(repo, commitEdited, [{ path: "src/comment.ts", label: "COMMENT_MARKER" }, { path: "src/comment.ts", label: "nope" }]);

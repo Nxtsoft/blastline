@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { Checkpoint, SymbolReason } from "./checkpoint.js";
+import type { Checkpoint, SymbolAt, SymbolReason } from "./checkpoint.js";
 import { editNames } from "./checkpoint.js";
 
 /**
@@ -178,8 +178,9 @@ export class SessionsIndex {
    * covering the call as the reason. The edit's text is searched for a
    * symbol's name and never returned.
    */
-  edits(sessionId: string, from: string, to: string): { path: string; text?: string; at: string; why: string }[] {
+  edits(sessionId: string, from: string, to: string): IndexedEdit[] {
     let rows: { input: string; timestamp: string; tool: string }[];
+    const nothing: IndexedEdit[] = [];
     try {
       rows = this.db
         .prepare(
@@ -189,9 +190,9 @@ export class SessionsIndex {
         )
         .all(sessionId, from, to) as unknown as { input: string; timestamp: string; tool: string }[];
     } catch {
-      return [];
+      return nothing;
     }
-    const out: { path: string; text?: string; at: string; why: string }[] = [];
+    const out: IndexedEdit[] = [];
     for (const r of rows) {
       let input: { file_path?: unknown; old_string?: unknown; new_string?: unknown; content?: unknown; edits?: unknown };
       try {
@@ -201,10 +202,17 @@ export class SessionsIndex {
       }
       if (typeof input.file_path !== "string") continue;
       const parts: string[] = [];
+      const wrote: string[] = [];
       for (const v of [input.old_string, input.new_string, input.content]) if (typeof v === "string") parts.push(v);
-      if (Array.isArray(input.edits)) for (const e of input.edits as { old_string?: unknown; new_string?: unknown }[]) for (const v of [e?.old_string, e?.new_string]) if (typeof v === "string") parts.push(v);
+      if (typeof input.new_string === "string") wrote.push(input.new_string);
+      if (Array.isArray(input.edits)) {
+        for (const e of input.edits as { old_string?: unknown; new_string?: unknown }[]) {
+          for (const v of [e?.old_string, e?.new_string]) if (typeof v === "string") parts.push(v);
+          if (typeof e?.new_string === "string") wrote.push(e.new_string);
+        }
+      }
       const why = (this.stepCovering(sessionId, r.timestamp)?.text ?? "").split("\n")[0]!.slice(0, 200);
-      out.push({ path: input.file_path, ...(r.tool !== "Write" && { text: parts.join("\n") }), at: r.timestamp, why });
+      out.push({ path: input.file_path, whole: r.tool === "Write", text: parts.join("\n"), wrote, at: r.timestamp, why });
     }
     return out;
   }
@@ -289,6 +297,31 @@ export function repositoryRoot(repo: string): string {
   return common.endsWith("/.git") ? common.slice(0, -"/.git".length) : git(repo, ["rev-parse", "--show-toplevel"]);
 }
 
+/** One edit the index recorded: the file, whether it rewrote the whole file, its text (searched, never shown), and the narration covering it. */
+export interface IndexedEdit {
+  path: string;
+  whole: boolean;
+  text: string;
+  wrote: string[];
+  at: string;
+  why: string;
+}
+
+/** Whether an indexed edit touched a symbol: a whole-file write, new text inside the symbol's range as committed, or the symbol named as a word. */
+function editTouches(e: IndexedEdit, s: SymbolAt, content: string | undefined): boolean {
+  if (e.whole) return true;
+  if (content !== undefined && s.from !== undefined && s.to !== undefined) {
+    for (const written of e.wrote) {
+      const at = written === "" ? -1 : content.indexOf(written);
+      if (at === -1) continue;
+      const from = content.slice(0, at).split("\n").length;
+      const to = from + written.split("\n").length - 1;
+      if (from <= s.to && s.from <= to) return true;
+    }
+  }
+  return editNames(s.label, e.text);
+}
+
 /** Where a checkpoint-shaped intent came from when no ref exists: the fleet index on this machine. */
 export const LOCAL_SOURCE = "sessions.db";
 
@@ -298,16 +331,27 @@ export const LOCAL_SOURCE = "sessions.db";
  * is written and nothing leaves the machine; `id` is empty because there is
  * no trailer. `filesTouched` is what the commit changed.
  */
-export function localCheckpoint(index: SessionsIndex, repo: string, sha: string, files: string[], symbols: { path: string; label: string }[] = []): Checkpoint | undefined {
+export function localCheckpoint(index: SessionsIndex, repo: string, sha: string, files: string[], symbols: SymbolAt[] = []): Checkpoint | undefined {
   const intent = fleetIntent(index, repo, sha);
   if (!intent) return undefined;
   const from = intent.step?.at ?? intent.session.startedAt;
   const to = intent.step?.endedAt ?? intent.committedAt;
   const reasons = new Map<string, SymbolReason>();
+  const committed = new Map<string, string | undefined>();
+  const contents = (path: string): string | undefined => {
+    if (!committed.has(path)) {
+      try {
+        committed.set(path, git(repo, ["show", `${sha}:${path}`]));
+      } catch {
+        committed.set(path, undefined);
+      }
+    }
+    return committed.get(path);
+  };
   index.edits(intent.session.id, from, to).forEach((e, i) => {
     for (const s of symbols) {
       if (e.path !== s.path && !e.path.endsWith(`/${s.path}`)) continue;
-      if (e.text !== undefined && !editNames(s.label, e.text)) continue;
+      if (!editTouches(e, s, contents(s.path))) continue;
       reasons.set(`${s.path}\0${s.label}`, { path: s.path, label: s.label, turn: i + 1, why: e.why });
     }
   });

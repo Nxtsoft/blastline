@@ -183,7 +183,48 @@ function editText(input: NonNullable<TranscriptRecord["content"]>[number]["input
  * of the agent's last text block before that edit, in that turn or an earlier
  * one. A line that is not JSON is skipped.
  */
-export function symbolReasonsIn(transcript: string, symbols: { path: string; label: string }[]): SymbolReason[] {
+/** A changed symbol to look for: its file, its name, and its line range in the file as committed when known. */
+export interface SymbolAt {
+  path: string;
+  label: string;
+  from?: number;
+  to?: number;
+}
+
+/** The new text an edit wrote, per string, for the line search; never returned. */
+function editWrites(input: NonNullable<TranscriptRecord["content"]>[number]["input"]): string[] {
+  const out: string[] = [];
+  if (typeof input?.new_string === "string") out.push(input.new_string);
+  if (Array.isArray(input?.edits)) for (const e of input.edits as { new_string?: unknown }[]) if (typeof e?.new_string === "string") out.push(e.new_string);
+  return out;
+}
+
+/** The line range `written` occupies in `content`, when it is found there verbatim. */
+function linesOf(content: string, written: string): { from: number; to: number } | undefined {
+  const at = written === "" ? -1 : content.indexOf(written);
+  if (at === -1) return undefined;
+  const from = content.slice(0, at).split("\n").length;
+  return { from, to: from + written.split("\n").length - 1 };
+}
+
+/**
+ * Whether an edit touched a symbol: a `Write` rewrites the whole file, so it
+ * touches every symbol there; otherwise the text the edit wrote sits inside
+ * the symbol's line range in the file as committed (`content`), or the
+ * edit's text names the symbol as a whole word.
+ */
+function touches(tool: string, input: NonNullable<TranscriptRecord["content"]>[number]["input"], s: SymbolAt, content: string | undefined): boolean {
+  if (tool === "Write") return true;
+  if (content !== undefined && s.from !== undefined && s.to !== undefined) {
+    for (const written of editWrites(input)) {
+      const range = linesOf(content, written);
+      if (range !== undefined && range.from <= s.to && s.from <= range.to) return true;
+    }
+  }
+  return editNames(s.label, editText(input));
+}
+
+export function symbolReasonsIn(transcript: string, symbols: SymbolAt[], contents: (path: string) => string | undefined = () => undefined): SymbolReason[] {
   const reasons = new Map<string, SymbolReason>();
   let turn = 0;
   let lastText = "";
@@ -202,10 +243,9 @@ export function symbolReasonsIn(transcript: string, symbols: { path: string; lab
       if (block.type !== "tool_use" || block.name === undefined || !EDIT_TOOLS.has(block.name)) continue;
       const path = block.input?.file_path;
       if (typeof path !== "string") continue;
-      const text = block.name === "Write" ? undefined : editText(block.input);
       for (const s of symbols) {
         if (path !== s.path && !path.endsWith(`/${s.path}`)) continue;
-        if (text !== undefined && !editNames(s.label, text)) continue;
+        if (!touches(block.name, block.input, s, contents(s.path))) continue;
         reasons.set(`${s.path}\0${s.label}`, { path: s.path, label: s.label, turn, why: promptLine(lastText) });
       }
     }
@@ -249,7 +289,7 @@ export function testCommandsIn(transcript: string): string[] {
  * the root. `metadata.json` also lists per-session paths; those are not
  * followed, so no checkpoint can point this reader at `<i>/full.jsonl`.
  */
-export function checkpointFor(repo: string, commit: string, symbols: { path: string; label: string }[] = []): Checkpoint | undefined {
+export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] = []): Checkpoint | undefined {
   const id = checkpointTrailer(repo, commit);
   if (id === undefined) return undefined;
   const ref = checkpointRef(id);
@@ -261,10 +301,21 @@ export function checkpointFor(repo: string, commit: string, symbols: { path: str
     const prompt = promptLine(show("0/prompt.txt"));
     const testCommands = new Set<string>();
     const reasons = new Map<string, SymbolReason>();
+    const committed = new Map<string, string | undefined>();
+    const contents = (path: string): string | undefined => {
+      if (!committed.has(path)) {
+        try {
+          committed.set(path, git(repo, ["show", `${commit}:${path}`]));
+        } catch {
+          committed.set(path, undefined);
+        }
+      }
+      return committed.get(path);
+    };
     for (let i = 0; i < sessionCount; i++) {
       const transcript = show(`${i}/transcript.jsonl`);
       for (const c of testCommandsIn(transcript)) testCommands.add(c);
-      for (const r of symbolReasonsIn(transcript, symbols)) reasons.set(`${r.path}\0${r.label}`, r);
+      for (const r of symbolReasonsIn(transcript, symbols, contents)) reasons.set(`${r.path}\0${r.label}`, r);
     }
     return {
       id,
