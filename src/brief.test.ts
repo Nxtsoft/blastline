@@ -222,6 +222,22 @@ describe("buildBrief", () => {
     expect(brief().claims.some((c) => c.claim.includes(testCommit.slice(0, 7)))).toBe(false);
   });
 
+  it("still tells changed from unchanged callers when the graph was built below the repository root (bin-v0.5.0 labels)", () => {
+    // bin-v0.5.0 labels file nodes relative to the graph root: built with --root src, the
+    // file at src/use.ts is labelled "use.ts". The claim check must not compare that to
+    // the diff's "src/lib.ts".
+    const rooted = JSON.parse(readFileSync(baseGraph, "utf8")) as { nodes: { type?: string; label: string }[] };
+    for (const n of rooted.nodes) if (n.type === "file" && n.label.startsWith("src/")) n.label = n.label.slice("src/".length);
+    const path = join(repo, "base-graph-rooted.json");
+    writeFileSync(path, JSON.stringify(rooted));
+    const removed = brief({ baseGraphPath: path }).claims.find((c) => c.claim.startsWith("`helper` removed"));
+    expect(removed).toEqual({
+      claim: "`helper` removed from `src/lib.ts`",
+      verdict: "refuted",
+      evidence: "still referenced by `use` (src/use.ts:3), `src/use.ts` in files this diff does not touch",
+    });
+  });
+
   it("never prints a certificate", () => {
     const text = JSON.stringify(brief()).toLowerCase();
     expect(text).not.toContain("verified");
