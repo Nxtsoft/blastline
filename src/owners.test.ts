@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agentCommit, ownersOf } from "./owners.js";
+import { agentCommit, ownersOf, unfamiliarTo } from "./owners.js";
 
 let repo: string;
 let base: string;
@@ -51,7 +51,18 @@ describe("ownersOf", () => {
         { name: "Bo", commits: 1, files: 1 },
         { name: "Di", commits: 1, files: 1 },
       ],
+      perFile: [
+        { path: "src/lib.ts", authors: ["Ada"] },
+        { path: "src/use.ts", authors: ["Ada", "Bo", "Di"] },
+      ],
     });
+  });
+
+  it("names the files none of the given humans has a commit in, and nothing when no human is given", () => {
+    const owners = ownersOf(repo, base, ["src/lib.ts", "src/use.ts", "src/new.ts"]);
+    expect(unfamiliarTo(owners, new Set(["Bo"]), ["src/lib.ts", "src/use.ts", "src/new.ts"])).toEqual(["src/lib.ts", "src/new.ts"]);
+    expect(unfamiliarTo(owners, new Set(["Ada"]), ["src/lib.ts", "src/use.ts"])).toEqual([]);
+    expect(unfamiliarTo(owners, new Set(), ["src/lib.ts"])).toEqual([]);
   });
 
   it("stops at the base, so the range's own commits never count as prior ownership", () => {
@@ -61,9 +72,9 @@ describe("ownersOf", () => {
   });
 
   it("returns an empty answer for no files, unknown files, or a repository git cannot read", () => {
-    expect(ownersOf(repo, base, [])).toEqual({ files: 0, commits: 0, agentCommits: 0, authors: [] });
-    expect(ownersOf(repo, base, ["src/nope.ts"])).toEqual({ files: 1, commits: 0, agentCommits: 0, authors: [] });
-    expect(ownersOf("/nonexistent", base, ["src/lib.ts"])).toEqual({ files: 1, commits: 0, agentCommits: 0, authors: [] });
+    expect(ownersOf(repo, base, [])).toEqual({ files: 0, commits: 0, agentCommits: 0, authors: [], perFile: [] });
+    expect(ownersOf(repo, base, ["src/nope.ts"])).toEqual({ files: 1, commits: 0, agentCommits: 0, authors: [], perFile: [] });
+    expect(ownersOf("/nonexistent", base, ["src/lib.ts"])).toEqual({ files: 1, commits: 0, agentCommits: 0, authors: [], perFile: [] });
   });
 });
 

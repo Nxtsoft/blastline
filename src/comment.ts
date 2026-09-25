@@ -534,7 +534,12 @@ function reviewedRow(brief: Brief): string | undefined {
       : top.length === 0
         ? `no human commit in the ${plural(r.owners.files, "changed or reached file")} before this range${r.owners.agentCommits > 0 ? ` (${plural(r.owners.agentCommits, "agent commit")} set aside)` : ""}`
         : `the ${plural(r.owners.files, "changed and reached file")} were last changed by ${top.join(", ")}${r.owners.authors.length > 3 ? `, +${r.owners.authors.length - 3}` : ""}`;
-  const parts = [looked, knows].filter((p): p is string => p !== undefined);
+  // When no human commit precedes the range at all, `knows` already says so; the gap would repeat it.
+  const gap =
+    r.unfamiliar === undefined || top.length === 0
+      ? undefined
+      : `${r.unfamiliar.names.join(", ")} ${r.unfamiliar.names.length === 1 ? "has" : "have"} no prior commit in ${r.unfamiliar.files.length} of the ${plural(r.unfamiliar.of, "file")} this change touches or reaches: ${r.unfamiliar.files.slice(0, 3).map(code).join(", ")}${r.unfamiliar.files.length > 3 ? `, +${r.unfamiliar.files.length - 3}` : ""}`;
+  const parts = [looked, knows, gap].filter((p): p is string => p !== undefined);
   return parts.length === 0 ? undefined : `| Reviewed by | ${parts.join(" · ")} |`;
 }
 

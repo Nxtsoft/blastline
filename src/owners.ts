@@ -11,6 +11,8 @@ export interface Owners {
   agentCommits: number;
   /** Humans by commits touching the files, most first; `files` counts the distinct files each touched. */
   authors: { name: string; commits: number; files: number }[];
+  /** Per file with any human commit read, the humans who made one. A file absent here had none in the commits read. */
+  perFile: { path: string; authors: string[] }[];
 }
 
 const CLOUD_AGENT = /^Agent-Logs-Url:/m;
@@ -33,7 +35,7 @@ export function agentCommit(authorEmail: string, body: string): boolean {
  */
 export function ownersOf(repo: string, upTo: string, files: string[], limit = 300): Owners {
   const wanted = new Set(files);
-  const empty: Owners = { files: files.length, commits: 0, agentCommits: 0, authors: [] };
+  const empty: Owners = { files: files.length, commits: 0, agentCommits: 0, authors: [], perFile: [] };
   if (files.length === 0) return empty;
   let log: string;
   try {
@@ -47,6 +49,7 @@ export function ownersOf(repo: string, upTo: string, files: string[], limit = 30
   }
   const commitsBy = new Map<string, number>();
   const filesBy = new Map<string, Set<string>>();
+  const authorsOf = new Map<string, Set<string>>();
   let commits = 0;
   let agentCommits = 0;
   for (const record of log.split("\x1e")) {
@@ -64,11 +67,27 @@ export function ownersOf(repo: string, upTo: string, files: string[], limit = 30
     commits++;
     commitsBy.set(name, (commitsBy.get(name) ?? 0) + 1);
     const seen = filesBy.get(name) ?? new Set<string>();
-    for (const f of touched) seen.add(f);
+    for (const f of touched) {
+      seen.add(f);
+      authorsOf.set(f, (authorsOf.get(f) ?? new Set<string>()).add(name));
+    }
     filesBy.set(name, seen);
   }
   const authors = [...commitsBy.entries()]
     .map(([name, n]) => ({ name, commits: n, files: filesBy.get(name)?.size ?? 0 }))
     .sort((a, b) => b.commits - a.commits || b.files - a.files || a.name.localeCompare(b.name));
-  return { files: files.length, commits, agentCommits, authors };
+  const perFile = [...authorsOf.entries()].map(([path, names]) => ({ path, authors: [...names].sort() })).sort((a, b) => a.path.localeCompare(b.path));
+  return { files: files.length, commits, agentCommits, authors, perFile };
+}
+
+/**
+ * The files among `files` that none of `names` has a human commit in, from
+ * the same history read: the author's blind spots in what the change reaches.
+ * Empty when `names` is empty, since an unknown author has no history to
+ * check against.
+ */
+export function unfamiliarTo(owners: Owners, names: Set<string>, files: string[]): string[] {
+  if (names.size === 0) return [];
+  const known = new Map(owners.perFile.map((f) => [f.path, f.authors]));
+  return files.filter((f) => !(known.get(f) ?? []).some((a) => names.has(a)));
 }

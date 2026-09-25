@@ -5,7 +5,7 @@ import { checkCallers } from "./check.js";
 import type { Checkpoint, Provenance } from "./checkpoint.js";
 import { checkpointFor, checkpointRef, checkpointTrailer, provenanceOf } from "./checkpoint.js";
 import type { Owners } from "./owners.js";
-import { ownersOf } from "./owners.js";
+import { agentCommit, ownersOf, unfamiliarTo } from "./owners.js";
 import { SessionsIndex, localCheckpoint } from "./sessions.js";
 import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
@@ -136,6 +136,13 @@ export interface Review {
 export interface ReviewState {
   /** The PR author: the human who opened it, or invoked the agent that did. */
   author?: string;
+  /**
+   * The changed and reached files with no human commit by anyone who authored
+   * a commit in this range (the humans behind it, by git name): what the
+   * change reaches that its author has never touched. Absent when the range
+   * has no human-authored commit to name them by, or when every file was.
+   */
+  unfamiliar?: { names: string[]; files: string[]; of: number };
   /** Reviews by anyone but the author, latest state per login; absent when none were fetched, which is not the same as none given. */
   reviews?: Review[];
   owners: Owners;
@@ -750,10 +757,26 @@ export function buildBrief(o: BriefOptions): Brief {
     const mapped = selection.kind === "subset" ? selection.files.filter((f) => f.disposition === "mapped").map((f) => f.path) : [...changedPaths];
     const latest = new Map<string, string>();
     for (const r of reviews ?? []) if (r.login !== author) latest.set(r.login, r.state);
+    const scanned = [...new Set([...mapped, ...reachedFiles])].sort();
+    const owners = ownersOf(repo, shas.base, scanned);
+    const names = new Set<string>();
+    for (const sha of shaList) {
+      try {
+        const [name = "", email = "", body = ""] = git("log", "-1", "--format=%an%x00%ae%x00%B", sha).split("\0");
+        if (!agentCommit(email, body)) names.add(name);
+      } catch {
+        // A commit git cannot show names nobody.
+      }
+    }
+    // Files the range adds have no history to know; the diff says which, whether or not the graph mapped them.
+    const added = new Set(parsed.filter((f) => f.status === "added").map((f) => f.path));
+    const existing = scanned.filter((f) => !added.has(f));
+    const unfamiliar = unfamiliarTo(owners, names, existing);
     review = {
       ...(author !== undefined && { author }),
       ...(reviews !== undefined && { reviews: [...latest.entries()].map(([login, state]) => ({ login, state })) }),
-      owners: ownersOf(repo, shas.base, [...new Set([...mapped, ...reachedFiles])].sort()),
+      owners,
+      ...(names.size > 0 && unfamiliar.length > 0 && { unfamiliar: { names: [...names].sort(), files: unfamiliar, of: existing.length } }),
     };
     if (reviews === undefined) unchecked.push("reviewed by: no `--reviews` given, so the row names owners only");
   }
