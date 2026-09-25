@@ -1,7 +1,7 @@
 import type { Brief, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
 import { SNAPSHOT_MARKER } from "./brief.js";
 import { relativeTo, sharedDir } from "./paths.js";
-import type { ChangedFileImpact, FailOpenReason, Selection } from "./types.js";
+import type { ChangedFileImpact, FileEdge, FailOpenReason, Selection } from "./types.js";
 
 /** First line of every comment: the Action finds and updates the existing comment by it. */
 export const COMMENT_MARKER = "<!-- blastline:test-impact -->";
@@ -107,16 +107,24 @@ function isTestFile(f: ChangedFileImpact): boolean {
  * (Rahman, Codabux, Roy 2026: about 8.7% lower odds per extra file), so the
  * order carries the reach, not the alphabet.
  */
-export function readingOrder(mapped: ChangedFileImpact[], repo: string): { file: ChangedFileImpact; after?: ChangedFileImpact }[] {
+export function readingOrder(mapped: ChangedFileImpact[], edges: FileEdge[], repo: string): { file: ChangedFileImpact; after?: ChangedFileImpact }[] {
   const code = [...mapped].filter((f) => !isTestFile(f)).sort(byImpact);
   const tests = [...mapped].filter(isTestFile).sort(byImpact);
+  // A per-file walk never lists another changed file among its reaches (the
+  // diff already covers it), so the changed-to-changed dependencies come from
+  // the file edges: `to` depends on `from`.
+  const dependentsOf = new Map<string, Set<string>>();
+  for (const e of edges) {
+    const from = relativeTo(repo, e.from);
+    dependentsOf.set(from, (dependentsOf.get(from) ?? new Set()).add(relativeTo(repo, e.to)));
+  }
   const placed = new Set<ChangedFileImpact>();
   const out: { file: ChangedFileImpact; after?: ChangedFileImpact }[] = [];
   const place = (f: ChangedFileImpact, after?: ChangedFileImpact): void => {
     if (placed.has(f)) return;
     placed.add(f);
     out.push(after ? { file: f, after } : { file: f });
-    const reached = new Set(f.reaches.map((r) => relativeTo(repo, r.file)));
+    const reached = dependentsOf.get(f.path) ?? new Set<string>();
     for (const dependent of code) if (!placed.has(dependent) && reached.has(dependent.path)) place(dependent, f);
   };
   for (const f of code) place(f);
@@ -233,7 +241,7 @@ function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolCha
   const perFile = [
     `| Read | Changed file | ${symbols ? "Change" : "Symbols touched"} | Reaches | Tests |`,
     "|---|---|---|---:|---:|",
-    ...readingOrder(mapped, ctx.repo).map(({ file: f, after }) => {
+    ...readingOrder(mapped, selection.edges, ctx.repo).map(({ file: f, after }) => {
       const read = after ? `with ${code(short(after.path))}` : String(++position);
       const name = links.path(f.path, short(f.path)) + (f.status === "added" ? " (new)" : f.status === "deleted" ? " (deleted)" : "");
       const what = isTestFile(f) ? "test code, selected directly" : symbols ? changeCell(f.path, symbols, f.symbols) : symbolsCell(f.symbols);
