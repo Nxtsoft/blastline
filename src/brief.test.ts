@@ -195,6 +195,22 @@ describe("buildBrief", () => {
     expect(brief().commits[1]?.checkpoint).toBeUndefined();
   });
 
+  it("attributes a checkpoint-less commit by its Copilot trailer, and names the sources it lacked otherwise", () => {
+    write("GUIDE.md", "# guide\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "docs: guide\n\nAgent-Logs-Url: https://github.com/o/r/sessions/01ABC");
+    const sha = git("rev-parse", "HEAD");
+    const b = brief({ range: `${testCommit}..${sha}` });
+    expect(b.commits).toHaveLength(1);
+    expect(b.commits[0]).toMatchObject({ sha, provenance: { agent: "copilot", via: "Agent-Logs-Url", logsUrl: "https://github.com/o/r/sessions/01ABC" } });
+    expect(b.commits[0]?.checkpoint).toBeUndefined();
+    expect(b.claims.filter((c) => c.claim.includes(sha.slice(0, 7)))).toEqual([]);
+    expect(b.unchecked.some((u) => u.startsWith("intent for"))).toBe(false);
+    expect(brief().unchecked).toContain(
+      "intent for 1 commit: no `Entire-Checkpoint` or `Agent-Logs-Url` trailer, no vendor address as author or co-author, and no session index (`--local`) on this machine",
+    );
+  });
+
   it("refutes a removal the base graph still sees callers for, in files the diff did not touch", () => {
     const removed = brief().claims.find((c) => c.claim.startsWith("`helper` removed"));
     expect(removed).toEqual({

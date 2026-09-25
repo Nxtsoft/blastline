@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.0
+
+The Intent column no longer goes empty on a commit that carries no checkpoint but does carry the agent's own marks.
+
+- `src/checkpoint.ts` reads a commit's provenance from the commit itself: Copilot's `Agent-Logs-Url:` trailer (the agent and a session-log link), and a vendor noreply address as the author or a `Co-authored-by:` (`noreply@anthropic.com` is claude-code, `copilot@users.noreply.github.com` is copilot, after lowercasing and dropping GitHub's `<id>+` prefix; the registry agent-change-control ships). Consulted only when no checkpoint resolves.
+- The brief carries it as `commits[].provenance`; the comment renders `copilot by Agent-Logs-Url · session log` in the Intent column, counts the commit as an agent commit, says `N attributed by trailer` in the Intent row and footer, and names each commit with neither source, together with the sources it lacked, in the footer.
+- A mark makes no claim: no prompt, files or test commands, so nothing is refuted or called consistent on its account.
+
 ## 0.13.2
 
 - Action: `cgraph-version` defaults to `bin-v0.5.0`. Node ids are repo-relative in that release (Nxtsoft/CGraph #113), so a base graph and a head graph of the same tree share ids: verified on this repository's `src/` extracted from two roots of different depth, 545 of 545 ids identical, none carrying a root segment.

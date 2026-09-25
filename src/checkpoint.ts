@@ -27,6 +27,60 @@ export interface Checkpoint {
 
 const TRAILER = /^Entire-Checkpoint:\s*([0-9A-Z]{26})\s*$/m;
 
+/**
+ * Who made a commit when no checkpoint says: the marks the agents' own
+ * tooling leaves on the commit itself. GitHub's Copilot cloud agent adds an
+ * `Agent-Logs-Url:` trailer linking the session log (since 2026-03-20); a
+ * vendor noreply address as the author or a `Co-authored-by:` names the agent.
+ * Weaker than a checkpoint: no prompt, no files, no test commands, so it fills
+ * the Intent column and makes no claim the brief could check.
+ */
+export interface Provenance {
+  /** The agent the mark names: `copilot`, `claude-code`. */
+  agent: string;
+  /** Which mark: `Agent-Logs-Url`, `author`, or `Co-authored-by`. */
+  via: "Agent-Logs-Url" | "author" | "Co-authored-by";
+  /** The `Agent-Logs-Url:` trailer's link, when the commit carries one. */
+  logsUrl?: string;
+}
+
+/**
+ * Vendor noreply addresses that name the agent, matched after lowercasing and
+ * dropping GitHub's `<id>+` prefix: the registry agent-change-control ships
+ * (src/provenance/mod.rs, release 0.4.0).
+ */
+const AGENT_ADDRESSES: Record<string, string> = {
+  "noreply@anthropic.com": "claude-code",
+  "copilot@users.noreply.github.com": "copilot",
+};
+
+/** The agent a vendor address names, or undefined for a human's or an unknown one. */
+export function agentForAddress(address: string): string | undefined {
+  return AGENT_ADDRESSES[address.trim().toLowerCase().replace(/^\d+\+/, "")];
+}
+
+const LOGS_URL = /^Agent-Logs-Url:\s*(\S+)\s*$/m;
+const CO_AUTHOR = /^Co-authored-by:.*<([^>]+)>\s*$/gim;
+
+/**
+ * A commit's provenance from its own marks: the author address first, then
+ * each `Co-authored-by:`, then an `Agent-Logs-Url:` trailer on its own, which
+ * only Copilot's cloud agent writes. Undefined for a commit with none.
+ */
+export function provenanceOf(repo: string, commit: string): Provenance | undefined {
+  const [body = "", author = ""] = git(repo, ["log", "-1", "--format=%B%x00%ae", commit]).split("\0");
+  const logsUrl = LOGS_URL.exec(body)?.[1];
+  const link = logsUrl === undefined ? {} : { logsUrl };
+  const byAuthor = agentForAddress(author);
+  if (byAuthor !== undefined) return { agent: byAuthor, via: "author", ...link };
+  for (const m of body.matchAll(CO_AUTHOR)) {
+    const agent = agentForAddress(m[1] ?? "");
+    if (agent !== undefined) return { agent, via: "Co-authored-by", ...link };
+  }
+  if (logsUrl !== undefined) return { agent: "copilot", via: "Agent-Logs-Url", logsUrl };
+  return undefined;
+}
+
 /** A shell command that runs tests, by the runner it names. */
 export const TEST_RUNNER =
   /\b(vitest|jest|mocha|pytest|go test|cargo test|ctest|gradlew? test|mvn (?:verify|test)|(?:npm|bun|pnpm|yarn)(?: run)? test)\b/;

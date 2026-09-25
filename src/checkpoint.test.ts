@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { checkpointFor, checkpointRef, checkpointTrailer, promptLine, testCommandsIn } from "./checkpoint.js";
+import { agentForAddress, checkpointFor, checkpointRef, checkpointTrailer, promptLine, provenanceOf, testCommandsIn } from "./checkpoint.js";
 
 // src/testdata/checkpoint-ref/ is the tree of a real Entire 0.11.2 checkpoint
 // (ref refs/entire/checkpoints/H5/01M3AY9296319GSPWRKXGHXMH5, written for
@@ -229,5 +229,47 @@ describe("testCommandsIn", () => {
       JSON.stringify({ v: 1, type: "user", content: [{ id: "u", text: "please run pytest" }] }),
     ].join("\n");
     expect(testCommandsIn(transcript)).toEqual(["bunx vitest run src/a.test.ts", "go test ./..."]);
+  });
+});
+
+describe("provenanceOf", () => {
+  let copilotCloud: string;
+  let coAuthored: string;
+  let claudeAuthor: string;
+  let human: string;
+  beforeAll(() => {
+    git("commit", "-q", "--allow-empty", "-m", "feat: retry fetch\n\nAgent-Logs-Url: https://github.com/o/r/sessions/01ABC");
+    copilotCloud = git("rev-parse", "HEAD");
+    git("commit", "-q", "--allow-empty", "-m", "fix: typo\n\nCo-authored-by: Copilot <198982749+Copilot@users.noreply.github.com>");
+    coAuthored = git("rev-parse", "HEAD");
+    git("commit", "-q", "--allow-empty", "--author=Claude <noreply@anthropic.com>", "-m", "chore: bump");
+    claudeAuthor = git("rev-parse", "HEAD");
+    git("commit", "-q", "--allow-empty", "-m", "docs: by hand\n\nCo-authored-by: Pat <pat@example.com>");
+    human = git("rev-parse", "HEAD");
+  });
+
+  it("reads Copilot's Agent-Logs-Url trailer as the agent and the session-log link", () => {
+    expect(provenanceOf(repo, copilotCloud)).toEqual({ agent: "copilot", via: "Agent-Logs-Url", logsUrl: "https://github.com/o/r/sessions/01ABC" });
+  });
+
+  it("names the agent from a vendor address in Co-authored-by, dropping GitHub's numeric prefix", () => {
+    expect(provenanceOf(repo, coAuthored)).toEqual({ agent: "copilot", via: "Co-authored-by" });
+  });
+
+  it("names the agent from a vendor address as the author", () => {
+    expect(provenanceOf(repo, claudeAuthor)).toEqual({ agent: "claude-code", via: "author" });
+  });
+
+  it("returns nothing for a human's commit, a human co-author, or a checkpointed commit's trailer alone", () => {
+    expect(provenanceOf(repo, human)).toBeUndefined();
+    expect(provenanceOf(repo, commitNoTrailer)).toBeUndefined();
+    expect(provenanceOf(repo, commitWithRef)).toBeUndefined();
+  });
+
+  it("matches addresses case-insensitively and only the two vendor addresses", () => {
+    expect(agentForAddress("NoReply@Anthropic.com")).toBe("claude-code");
+    expect(agentForAddress("12+copilot@users.noreply.github.com")).toBe("copilot");
+    expect(agentForAddress("copilot@example.com")).toBeUndefined();
+    expect(agentForAddress("t@blastline.invalid")).toBeUndefined();
   });
 });
