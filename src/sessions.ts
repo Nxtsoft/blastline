@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { Checkpoint } from "./checkpoint.js";
 
 /**
  * The fleet's session index (agents-cli), read-only. One row per agent session
@@ -96,11 +97,13 @@ export class SessionsIndex {
       .prepare(
         `select id, agent, model, cwd, timestamp, last_activity, ticket_id, pr_number, first_user_message
            from sessions
-          where (cwd = ? or cwd like ? or instr(coalesce(recent_directories_touched, ''), ?) > 0)
+          where (cwd = ? or cwd like ?
+                 or instr(coalesce(recent_directories_touched, ''), ?) > 0
+                 or instr(coalesce(recent_directories_touched, ''), ?) > 0)
             and timestamp <= ? and last_activity >= ?
           order by last_activity desc`,
       )
-      .all(dir, `${dir}/%`, JSON.stringify(dir), at, at) as unknown as SessionRow[];
+      .all(dir, `${dir}/%`, JSON.stringify(dir), `"${dir}/`, at, at) as unknown as SessionRow[];
     return rows.map(toSession);
   }
 
@@ -123,17 +126,29 @@ export class SessionsIndex {
    */
   sessionsMentioning(needle: string): string[] {
     const q = `"${needle.replace(/"/g, '""')}"*`;
-    const calls = this.db
-      .prepare(
-        `select distinct tc.session_id as session_id
-           from tool_call_text t join tool_calls tc on tc.call_key = t.call_key
-          where tool_call_text match ?`,
-      )
-      .all(q) as unknown as { session_id: string }[];
-    const text = this.db
-      .prepare(`select distinct session_id from session_text where session_text match ?`)
-      .all(q) as unknown as { session_id: string }[];
-    return [...new Set([...calls, ...text].map((r) => r.session_id))];
+    const calls = this.ftsIds(
+      `select distinct tc.session_id as session_id
+         from tool_call_text t join tool_calls tc on tc.call_key = t.call_key
+        where tool_call_text match ?`,
+      q,
+    );
+    const text = this.ftsIds(`select distinct session_id from session_text where session_text match ?`, q);
+    return [...new Set([...calls, ...text])];
+  }
+
+  /**
+   * One FTS index's answer, or none when that index cannot answer: the table
+   * is absent in an older index, or the FTS content table is missing rows
+   * (mars, 2026-09-25: "fts5: missing row 237052 from content table"). The
+   * join is an optimisation over the directory candidates; a broken index
+   * must not stop the brief.
+   */
+  private ftsIds(sql: string, q: string): string[] {
+    try {
+      return (this.db.prepare(sql).all(q) as unknown as { session_id: string }[]).map((r) => r.session_id);
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -215,9 +230,46 @@ function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
 }
 
-/** A commit's committer time as ISO UTC, the form the index stores. */
+/**
+ * When the commit was made, as ISO UTC, the form the index stores: the author
+ * date, which a rebase-merge keeps while it replaces the committer date with
+ * the merge time.
+ */
 export function commitTime(repo: string, sha: string): string {
-  return new Date(git(repo, ["log", "-1", "--format=%cI", sha])).toISOString();
+  return new Date(git(repo, ["log", "-1", "--format=%aI", sha])).toISOString();
+}
+
+/**
+ * The repository's main working tree, so sessions in any of its linked
+ * worktrees (`<repo>/.agents/worktrees/<slug>`) count as working in it.
+ */
+export function repositoryRoot(repo: string): string {
+  const common = git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  return common.endsWith("/.git") ? common.slice(0, -"/.git".length) : git(repo, ["rev-parse", "--show-toplevel"]);
+}
+
+/** Where a checkpoint-shaped intent came from when no ref exists: the fleet index on this machine. */
+export const LOCAL_SOURCE = "sessions.db";
+
+/**
+ * A commit's intent from the fleet index, in the shape the brief reads from a
+ * checkpoint ref, for `blastline brief --local` on the agent machine. No ref
+ * is written and nothing leaves the machine; `id` is empty because there is
+ * no trailer. `filesTouched` is what the commit changed.
+ */
+export function localCheckpoint(index: SessionsIndex, repo: string, sha: string, files: string[]): Checkpoint | undefined {
+  const intent = fleetIntent(index, repo, sha);
+  if (!intent) return undefined;
+  return {
+    id: "",
+    commit: git(repo, ["rev-parse", `${sha}^{commit}`]),
+    agent: intent.session.agent,
+    model: intent.session.model ?? "",
+    prompt: (intent.step?.text ?? intent.session.firstUserMessage ?? "").split("\n")[0]!.slice(0, 200),
+    filesTouched: files,
+    testCommands: intent.testCommands,
+    source: LOCAL_SOURCE,
+  };
 }
 
 /**
@@ -229,8 +281,7 @@ export function commitTime(repo: string, sha: string): string {
  */
 export function fleetIntent(index: SessionsIndex, repo: string, sha: string): CommitIntent | undefined {
   const committedAt = commitTime(repo, sha);
-  const dir = git(repo, ["rev-parse", "--show-toplevel"]);
-  const candidates = index.sessionsAt(dir, committedAt);
+  const candidates = index.sessionsAt(repositoryRoot(repo), committedAt);
   const mentioning = index
     .sessionsMentioning(sha.slice(0, 7))
     .map((id) => candidates.find((s) => s.id === id) ?? index.sessionAt(id, committedAt))

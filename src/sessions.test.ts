@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { SessionsIndex, commandsOf, commitTime, fleetIntent } from "./sessions.js";
+import { SessionsIndex, commandsOf, commitTime, fleetIntent, localCheckpoint, repositoryRoot } from "./sessions.js";
 
 /**
  * A sessions.db with the exact column subset the reader touches, populated
@@ -91,7 +91,9 @@ describe("SessionsIndex", () => {
     db.close();
     const idx = new SessionsIndex(path);
     expect(idx.sessionsAt("/work/blastline", "2026-09-24T16:23:46.000Z")).toEqual([]);
-    expect(idx.sessionsAt("/work/blastline-secondary", "2026-09-24T16:23:46.000Z").map((s) => s.id)).toEqual(["7182303c-7ae6-4e9a-a0f3-fb7230b71749"]);
+    expect(idx.sessionsAt("/work/blastline-secondary", "2026-09-24T16:23:46.000Z").map((s) => s.id)).toEqual(["7182303c-7ae6-4e9a-a0f3-fb7230b71749", "00000000-touched-sibling"]);
+    // a session that only touched a directory under the repository counts for the repository
+    expect(idx.sessionsAt("/work/blastline-secondary/src", "2026-09-24T16:23:46.000Z").map((s) => s.id)).toEqual(["00000000-touched-sibling"]);
     idx.close();
   });
 
@@ -119,6 +121,40 @@ describe("SessionsIndex", () => {
       "NODE_DISABLE_COMPILE_CACHE=1 bunx vitest run src/figure.test.ts",
     ]);
     expect(idx.testCommands("7182303c-7ae6-4e9a-a0f3-fb7230b71749", "2026-09-24T16:00:00.000Z", "2026-09-24T17:00:00.000Z")).toHaveLength(2);
+    idx.close();
+  });
+});
+
+describe("sessionsMentioning on a damaged index", () => {
+  it("answers from the session text index when the per-call FTS table is missing or broken", () => {
+    const dir = mkdtempSync(join(tmpdir(), "blastline-sessions-"));
+    const path = fixtureDb(dir, "/work/blastline");
+    const db = new DatabaseSync(path);
+    db.exec("drop table tool_call_text");
+    db.prepare(`insert into session_text values (?,?,?,?,?,?)`).run("7182303c-7ae6-4e9a-a0f3-fb7230b71749", "label", "", "", "commit e2a86cd landed", "");
+    db.close();
+    const idx = new SessionsIndex(path);
+    expect(idx.sessionsMentioning("e2a86cd")).toEqual(["7182303c-7ae6-4e9a-a0f3-fb7230b71749"]);
+    expect(idx.sessionsMentioning("nothing-here")).toEqual([]);
+    idx.close();
+  });
+});
+
+describe("localCheckpoint", () => {
+  it("shapes the fleet intent like a checkpoint ref would read, with the commit's files and no id", () => {
+    const dir = mkdtempSync(join(tmpdir(), "blastline-sessions-"));
+    const { repo, sha } = repoWithCommit(dir);
+    const idx = new SessionsIndex(fixtureDb(dir, repo));
+    expect(localCheckpoint(idx, repo, sha, ["a.ts"])).toEqual({
+      id: "",
+      commit: sha,
+      agent: "claude",
+      model: "claude-fable-5-1",
+      prompt: "Three things in parallel now: confirm the follow-up commit state, produce run evidence for its PR.",
+      filesTouched: ["a.ts"],
+      testCommands: ["NODE_DISABLE_COMPILE_CACHE=1 bunx vitest run src/figure.test.ts"],
+      source: "sessions.db",
+    });
     idx.close();
   });
 });
@@ -178,6 +214,23 @@ describe("fleetIntent", () => {
     const idx = new SessionsIndex(path);
     expect(idx.sessionsAt(repo, "2026-09-24T16:23:46.000Z").map((s) => s.id)).toEqual(["00000000-in-worktree"]);
     expect(fleetIntent(idx, repo, sha)?.session.id).toBe("00000000-from-home");
+    idx.close();
+  });
+
+  it("counts a session in a sibling linked worktree of the same repository, at the commit's author time", () => {
+    const dir = mkdtempSync(join(tmpdir(), "blastline-sessions-"));
+    const { repo, sha } = repoWithCommit(dir);
+    const wt = join(repo, ".agents", "worktrees", "feature");
+    execFileSync("git", ["-C", repo, "worktree", "add", "-q", "-b", "feature", wt, "HEAD"]);
+    expect(repositoryRoot(wt)).toBe(repo);
+    // a rebase-merge style commit: author time kept, committer time hours later
+    execFileSync("git", ["-C", wt, "commit", "-q", "--allow-empty", "-m", "rebased"], { env: { ...process.env, GIT_AUTHOR_DATE: "2026-09-24T16:23:46Z", GIT_COMMITTER_DATE: "2026-09-24T23:30:00Z", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@x", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@x" } });
+    const rebased = execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    expect(commitTime(wt, rebased)).toBe("2026-09-24T16:23:46.000Z");
+    const path = fixtureDb(dir, join(repo, ".agents", "worktrees", "other"));
+    const idx = new SessionsIndex(path);
+    expect(fleetIntent(idx, wt, rebased)?.session.id).toBe("7182303c-7ae6-4e9a-a0f3-fb7230b71749");
+    expect(fleetIntent(idx, repo, sha)?.session.id).toBe("7182303c-7ae6-4e9a-a0f3-fb7230b71749");
     idx.close();
   });
 

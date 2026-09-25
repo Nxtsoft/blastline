@@ -39,6 +39,18 @@ function git(repo: string, args: string[]): string {
   });
 }
 
+/**
+ * The line of a prompt that states the intent, capped at 200 characters. A
+ * session launched through `agents run` starts with the harness preamble
+ * ("You are in a git worktree of <repo> on branch <b>…"); that paragraph is
+ * skipped, so the reviewer sees the first line the human wrote.
+ */
+export function promptLine(prompt: string): string {
+  const paragraphs = prompt.split(/\n\s*\n/);
+  const first = paragraphs.find((p) => p.trim() !== "" && !/^You are in a git worktree of /.test(p.trimStart())) ?? "";
+  return (first.split("\n").find((l) => l.trim() !== "") ?? "").trim().slice(0, 200);
+}
+
 /** The checkpoint id a commit's trailer names, or undefined when it carries none. */
 export function checkpointTrailer(repo: string, commit: string): string | undefined {
   return TRAILER.exec(git(repo, ["log", "-1", "--format=%B", commit]))?.[1];
@@ -108,7 +120,7 @@ export function checkpointFor(repo: string, commit: string): Checkpoint | undefi
     const meta = JSON.parse(show("metadata.json")) as CheckpointMetadata;
     const sessionCount = Math.max(1, meta.sessions?.length ?? 1);
     const session = JSON.parse(show("0/metadata.json")) as SessionMetadata;
-    const prompt = (show("0/prompt.txt").split("\n")[0] ?? "").slice(0, 200);
+    const prompt = promptLine(show("0/prompt.txt"));
     const testCommands = new Set<string>();
     for (let i = 0; i < sessionCount; i++) {
       for (const c of testCommandsIn(show(`${i}/transcript.jsonl`))) testCommands.add(c);
