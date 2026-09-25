@@ -354,6 +354,23 @@ describe("narrative claims", () => {
     expect(brief({ narrative: "" }).claims).toContainEqual({ claim: "PR body describes the change", verdict: "refuted", evidence: "placeholder text: empty" });
     expect(brief({ narrative: "<!-- Describe your changes -->\n" }).claims).toContainEqual({ claim: "PR body describes the change", verdict: "refuted", evidence: "placeholder text: empty" });
     expect(brief({ narrative: "TODO write this" }).claims).toContainEqual({ claim: "PR body describes the change", verdict: "refuted", evidence: 'placeholder text: "TODO"' });
+    // a marker inside a real description is prose, not a placeholder
+    const prose = brief({ narrative: "Drops the wip check from `parse`; the TODO in `src/lib.ts` is gone. Long enough to be a description of the change." });
+    expect(prose.claims.some((c) => c.claim === "PR body describes the change")).toBe(false);
+  });
+
+  it("reads a commit's subject, not its body, for a throwaway marker", () => {
+    const files = parseUnifiedDiff("diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n");
+    const claims = narrativeClaims(
+      [
+        { source: "commit `aaaaaaa`", text: "wip: parser\n\nnot ready" },
+        { source: "commit `bbbbbbb`", text: "fix(brief): a wip or fixup subject is placeholder text\n\nThe word wip in a description is prose." },
+      ],
+      files,
+      undefined,
+      new Set(["src/x.ts"]),
+    );
+    expect(claims).toEqual([{ claim: "commit `aaaaaaa` describes the change", verdict: "refuted", evidence: 'placeholder text: "wip"' }]);
   });
 
   it("calls every named thing consistent when the diff carries it, and never counts a fenced run log", () => {

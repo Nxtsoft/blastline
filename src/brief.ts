@@ -349,9 +349,20 @@ export function changedDeclarationClaims(symbols: SymbolChange[], files: Changed
   return claims;
 }
 
-/** Placeholder text where a description should be: empty, a template line, or a throwaway subject. */
-const PLACEHOLDER = /\b(?:TODO|TBD|WIP|FIXME)\b|\bdescribe (?:your|the) changes?\b|\bplaceholder\b/i;
+/**
+ * Placeholder text where a description should be: nothing, a short body that
+ * is only a marker or a template line, or a commit subject that is one. A
+ * marker inside a real description ("drops the wip check") is prose.
+ */
+const PLACEHOLDER_BODY = /^(?:TODO|TBD|WIP|FIXME|placeholder|describe (?:your|the) changes?)\b/i;
 const THROWAWAY_SUBJECT = /^(?:wip|fixup!|squash!|tmp|temp|todo|xxx)\b/i;
+
+function placeholderIn(narrative: Narrative, body: string): string | undefined {
+  if (body === "") return "empty";
+  if (body.length <= 60 && PLACEHOLDER_BODY.test(body)) return PLACEHOLDER_BODY.exec(body)![0];
+  if (narrative.source.startsWith("commit")) return THROWAWAY_SUBJECT.exec(body.split("\n")[0]!.trim())?.[0];
+  return undefined;
+}
 
 /** The prose of a narrative: fenced code, HTML comments and links stripped, so a run log pasted into a PR body names nothing. */
 function prose(text: string): string {
@@ -398,7 +409,7 @@ export function narrativeClaims(narratives: Narrative[], files: ChangedFile[], s
   };
   for (const n of narratives) {
     const body = prose(n.text).trim();
-    const placeholder = body === "" ? "empty" : PLACEHOLDER.exec(body)?.[0] ?? (n.source.startsWith("commit") ? THROWAWAY_SUBJECT.exec(body)?.[0] : undefined);
+    const placeholder = placeholderIn(n, body);
     if (placeholder !== undefined) {
       claims.push({ claim: `${n.source} describes the change`, verdict: "refuted", evidence: placeholder === "empty" ? "placeholder text: empty" : `placeholder text: "${placeholder}"` });
       continue;
