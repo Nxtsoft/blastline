@@ -178,7 +178,7 @@ permissions:
   pull-requests: write   # the comment
 ```
 
-With `graph-root`, the build is cached via `actions/cache` keyed on the tree hash of `graph-root` (`git rev-parse HEAD:<graph-root>`) rather than the graph's own content-root hash, since that hash lives inside `graph.json` and isn't known until after the build runs. `cgraph-version` (default `bin-v0.4.0`, the first release with `change-context`) pins the `Nxtsoft/CGraph` release tag the turnkey build installs from; currently Linux x64 runners only. With `graph-path`, supply your own graph from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
+With `graph-root`, the build is cached via `actions/cache` keyed on the tree hash of `graph-root` (`git rev-parse HEAD:<graph-root>`) rather than the graph's own content-root hash, since that hash lives inside `graph.json` and isn't known until after the build runs. `cgraph-version` (default `bin-v0.5.0`: repo-relative node ids, so base and head graphs share ids; `bin-v0.4.0` is the first release with `change-context`) pins the `Nxtsoft/CGraph` release tag the turnkey build installs from; currently Linux x64 runners only. With `graph-path`, supply your own graph from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
 
 `base-graph-command` automates deletion mapping: the action checks out the
 range's base commit into a worktree, runs your graph-build command there (it
@@ -227,7 +227,7 @@ The written ref has the same six paths as Entire's, so the Action reads both wri
 
 Locally, `blastline brief main..HEAD --change-context <file> [--previous <old-comment.md>] [--json]` renders the same brief before you push, and `blastline_brief` over MCP gives an agent its own brief (`{brief, markdown, check_run}`). `--json` carries the Checks API body the Action POSTs; annotations are capped at 50 per request, GitHub's ceiling.
 
-**In the Action**, the brief is on by default: `cgraph-version` now defaults to `bin-v0.4.0`, the first release with `change-context`, which runs over the range's diff against a detached worktree of the base (`fetch-depth: 0`); the checkpoint refs are fetched if present; `check-run: "false"` turns the check run off. The token needs one more permission for it:
+**In the Action**, the brief is on by default: `cgraph-version` defaults to `bin-v0.5.0` (repo-relative node ids; `bin-v0.4.0` is the first release with `change-context`), and `change-context` runs over the range's diff against a detached worktree of the base (`fetch-depth: 0`); the checkpoint refs are fetched if present; `check-run: "false"` turns the check run off. The token needs one more permission for it:
 
 ```yaml
 permissions:
@@ -236,7 +236,7 @@ permissions:
   checks: write          # the check run with annotations
 ```
 
-Known limits, stated in the footer: symbols are classified within the diff only (a symbol moved across files outside it is not classified, and until CGraph node ids are repo-relative a symbol moved across files pairs by label within its file); change-context sheds impacts and context under its budget, and the brief prints what it shed; on `pull_request` events the diff is taken at GitHub's merge commit, so annotation lines are the merge commit's.
+Known limits, stated in the footer: symbols are classified within the diff only (a symbol moved across files outside it is not classified; within it, a symbol moved across files pairs by label within its file); change-context sheds impacts and context under its budget, and the brief prints what it shed; on `pull_request` events the diff is taken at GitHub's merge commit, so annotation lines are the merge commit's.
 
 ## Cross-repo selection over seam graphs
 
