@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-import { runCheck } from "./check.js";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { renderComment } from "./comment.js";
+import { buildBrief, resolveRange } from "./brief.js";
+import { runCheck } from "./check.js";
+import { renderBrief, renderCheckRun, renderComment } from "./comment.js";
 import { renderFigure, renderMermaid } from "./figure.js";
 import { serveStdio } from "./mcp.js";
+import type { RunOptions } from "./run.js";
 import { runSelection } from "./run.js";
 import type { Selection } from "./types.js";
 
@@ -19,8 +20,11 @@ usage:
   blastline comment <base>..<head> [options]   render the selection as PR-comment markdown
   blastline figure <base>..<head> --out-dir <dir> [options]
                                                draw the reach figure (reach-dark.svg, reach-light.svg) the comment embeds
+  blastline brief <base>..<head> [options]     the PR brief: the comment plus what each commit did (from its Entire
+                                               checkpoint), symbol changes, claims checked, and the delta since the last push
   blastline check callers <symbol> [options]   list what references a symbol (pre-edit check)
-  blastline mcp                                serve the MCP tools (blastline_tests, blastline_blast, blastline_check) over stdio
+  blastline mcp                                serve the MCP tools (blastline_tests, blastline_blast, blastline_check,
+                                               blastline_brief) over stdio
 
 check options:
   <symbol>             file:line | file:label | bare label
@@ -55,26 +59,18 @@ comment and figure options:
                        e.g. a pull_request merge commit standing in for the PR head
   --out-dir <dir>      (figure) where to write the two SVGs
 
+brief options:
+  --change-context <file>  cgraph change-context JSON: the Symbols row, the Change column, removed-symbol claims
+  --previous <file>    the previously posted comment; its embedded snapshot gives the "since push" row
+  --annotations <n>    check-run annotations on the highest-reach changed lines (default and ceiling 50)
+  --json               {brief, markdown, check_run}: check_run is the Checks API POST body for the head sha
+  brief reads each commit's Entire-Checkpoint trailer (refs/entire/checkpoints/*) and shows only the
+  first prompt line, agent, model, files touched and the test commands run; never the transcript.
+
 Selection is a safe superset: "run at least these." Any file the graph cannot
 vouch for fails open to ALL, with the reason printed. Subsets carry the graph's
 sha256-merkle-v1 content root as provenance; pin with --expect-root or
 --daemon-verify (a graph older than the head commit also fails open as stale).`;
-
-/** Full shas of both ends of a range, or undefined when git cannot resolve them. */
-function resolveRange(repo: string, range: string): { base: string; head: string } | undefined {
-  const cut = range.indexOf("..");
-  if (cut === -1) return undefined;
-  try {
-    const rev = (ref: string): string =>
-      execFileSync("git", ["-C", repo, "rev-parse", `${ref}^{commit}`], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
-    return { base: rev(range.slice(0, cut)), head: rev(range.slice(cut + 2).replace(/^\./, "")) };
-  } catch {
-    return undefined;
-  }
-}
 
 function fail(message: string): never {
   console.error(message);
@@ -140,7 +136,7 @@ if (command === "mcp") {
   }
   process.exit(0);
 } else {
-  if (command !== "tests" && command !== "blast" && command !== "comment" && command !== "figure")
+  if (command !== "tests" && command !== "blast" && command !== "comment" && command !== "figure" && command !== "brief")
     fail(`blastline: unknown command "${command}"\n\n${USAGE}`);
 
   const range = argv.slice(1).find((a) => a.includes("..") && !a.startsWith("--"));
@@ -149,14 +145,14 @@ if (command === "mcp") {
   if (!range && !diffFile && !saved) fail("blastline: provide <base>..<head>, --diff-file, or --selection\n\n" + USAGE);
   const repo = resolve(opt("repo") ?? process.cwd());
 
-  const computeSelection = (): Selection => {
+  const runOptions = (): RunOptions => {
     const maxFilesRaw = opt("max-files");
     const maxSelectedRaw = opt("max-selected-fraction");
     const maxNodesRaw = opt("max-traversal-nodes");
     const minDensityRaw = opt("min-density");
     const minReachRaw = opt("min-test-reachability");
     const expectRoot = opt("expect-root");
-    return runSelection({
+    return {
       repo,
       ...(range !== undefined && { range }),
       ...(diffFile !== undefined && { diffFile }),
@@ -170,12 +166,23 @@ if (command === "mcp") {
       ...(minReachRaw !== undefined && { minTestReachability: Number(minReachRaw) }),
       ...(expectRoot !== undefined && { expectedContentRoot: expectRoot }),
       ...(argv.includes("--daemon-verify") && { daemonVerify: true }),
-    });
+    };
   };
+  const computeSelection = (): Selection => runSelection(runOptions());
 
-  if (command === "comment" || command === "figure") {
+  if (command === "comment" || command === "figure" || command === "brief") {
+    if (command === "brief" && range === undefined) fail("blastline brief: provide <base>..<head>\n\n" + USAGE);
+    const brief = command === "brief" && range !== undefined
+      ? buildBrief({
+          ...runOptions(),
+          range,
+          ...(opt("change-context") !== undefined && { changeContextFile: opt("change-context") as string }),
+          ...(opt("previous") !== undefined && { previousFile: opt("previous") as string }),
+          ...(opt("annotations") !== undefined && { annotations: Number(opt("annotations")) }),
+        })
+      : undefined;
     const selection: Selection =
-      saved !== undefined ? (JSON.parse(readFileSync(saved, "utf8")) as Selection) : computeSelection();
+      brief !== undefined ? brief.selection : saved !== undefined ? (JSON.parse(readFileSync(saved, "utf8")) as Selection) : computeSelection();
     const resolved = range !== undefined ? resolveRange(repo, range) : undefined;
     const headOverride = opt("head-sha");
     const shas = resolved !== undefined && headOverride !== undefined ? { base: resolved.base, head: headOverride } : resolved;
@@ -206,17 +213,26 @@ if (command === "mcp") {
           ? { kind: "image" as const, dark: `${figureBase}/reach-dark.svg`, light: `${figureBase}/reach-light.svg` }
           : undefined;
     const repoUrl = opt("repo-url")?.replace(/\/$/, "");
-    console.log(
-      renderComment(selection, {
-        range: range ?? diffFile ?? saved ?? "",
-        repo,
-        version: VERSION,
-        ...(shas !== undefined && { baseSha: shas.base, headSha: shas.head }),
-        ...(repoUrl !== undefined && { repoUrl }),
-        ...(pr !== undefined && { prNumber: Number(pr) }),
-        ...(figure !== undefined && { figure }),
-      }),
-    );
+    const ctx = {
+      range: range ?? diffFile ?? saved ?? "",
+      repo,
+      version: VERSION,
+      ...(shas !== undefined && { baseSha: shas.base, headSha: shas.head }),
+      ...(repoUrl !== undefined && { repoUrl }),
+      ...(pr !== undefined && { prNumber: Number(pr) }),
+      ...(figure !== undefined && { figure }),
+    };
+    if (brief !== undefined) {
+      const markdown = renderBrief(brief, ctx);
+      if (argv.includes("--json")) {
+        const checkRun = renderCheckRun(brief, markdown, shas?.head ?? headOverride ?? brief.snapshot.head);
+        console.log(JSON.stringify({ brief, markdown, check_run: checkRun }, null, 2));
+      } else {
+        console.log(markdown);
+      }
+      process.exit(0);
+    }
+    console.log(renderComment(selection, ctx));
     process.exit(0);
   }
 
