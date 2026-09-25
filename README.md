@@ -22,6 +22,7 @@
 [Benchmarks](#benchmarks) ·
 [Quick start](#quick-start) ·
 [GitHub Action](#github-action) ·
+[PR brief](#pr-brief) ·
 [Use with coding agents](#use-with-coding-agents) ·
 [CLI reference](#cli-reference) ·
 [Status & roadmap](#status--roadmap) ·
@@ -36,6 +37,7 @@ Deciding which tests a diff needs means knowing what the change *reaches* — an
 | --- | --- |
 | 🎯 **Impacted tests, not guesses** | Changed lines map to graph symbols; a transitive-dependents walk finds every test that reaches them. `blastline tests main..HEAD \| xargs vitest run` runs exactly those. |
 | 💥 **Blast radius on every PR** | The GitHub Action comments each PR with what the diff reaches: the verdict with its denominator, a reach figure (changed files, the files they reach, the tests at the end), one row per changed file, and the transitive dependents behind a fold — the reviewer sees what the diff touches before reading it. |
+| 📝 **A PR brief, per push** | The same comment says what each commit did (from the agent's [Entire](https://github.com/entireio/cli) checkpoint: the prompt, the tests it ran), what changed at the symbol level (`cgraph change-context`), which of the agent's claims the graph refutes, and what moved since the last push — plus a check run that annotates the highest-reach changed lines. |
 | 🛡️ **Safe superset, fail-open** | The contract is "run *at least* these," never "safe to skip." Unmapped files, a stale graph, an under-extracted graph, or an oversized diff all fail open to a full run, with machine-readable reasons. |
 | ⚡ **Deterministic & instant** | Selection is pure graph traversal: same repo state + same diff → byte-identical output, in under a millisecond on a built graph. No ML ranking, no coverage run. |
 | 🤖 **Built for coding agents** | `blastline mcp` serves `blastline_tests` / `blastline_blast` / `blastline_check` over MCP, so an agent sees what its edit reaches — and what still references a symbol it's about to change — *before* opening the PR. |
@@ -176,7 +178,7 @@ permissions:
   pull-requests: write   # the comment
 ```
 
-With `graph-root`, the build is cached via `actions/cache` keyed on the tree hash of `graph-root` (`git rev-parse HEAD:<graph-root>`) rather than the graph's own content-root hash, since that hash lives inside `graph.json` and isn't known until after the build runs. `cgraph-version` (default `bin-v0.1.0`) pins the `Nxtsoft/CGraph` release tag the turnkey build installs from; currently Linux x64 runners only. With `graph-path`, supply your own graph from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
+With `graph-root`, the build is cached via `actions/cache` keyed on the tree hash of `graph-root` (`git rev-parse HEAD:<graph-root>`) rather than the graph's own content-root hash, since that hash lives inside `graph.json` and isn't known until after the build runs. `cgraph-version` (default `bin-v0.4.0`, the first release with `change-context`) pins the `Nxtsoft/CGraph` release tag the turnkey build installs from; currently Linux x64 runners only. With `graph-path`, supply your own graph from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
 
 `base-graph-command` automates deletion mapping: the action checks out the
 range's base commit into a worktree, runs your graph-build command there (it
@@ -186,6 +188,45 @@ on the deleted symbols, instead of failing open on an unmapped path — the
 deleted code exists only in the base graph, so its dependents are walked there
 and translated back to head paths. Skip the input and deletions keep the
 documented safe degradation.
+
+## PR brief
+
+The comment the Action posts is a **PR brief**: the test-impact verdict above, plus what each commit did, what changed at the symbol level, and which of the agent's own claims the graph refutes. One comment per PR, edited in place on every push, and a `blastline` check run on the head sha that annotates the changed lines with the highest reach. Nothing else new appears in the thread.
+
+What the reviewer sees, in order:
+
+| Section | Where it comes from |
+| --- | --- |
+| **Verdict** — `N of M test files reach this diff`, `K agent commits` | the selection, unchanged |
+| **Summary** — Changed, Tests reached, Downstream code, plus **Intent** (how many commits carry a checkpoint, which models), **Symbols** (changed / added / removed / moved), **Since push `<sha>`** (new commits, changed files, tests reached, newly reached files) | the checkpoint refs, `cgraph change-context`, the snapshot embedded in the previous comment |
+| **What each commit did** — Commit · Intent · Files · Reaches · Ran before push, folded after 10 commits | each commit's `Entire-Checkpoint:` trailer, resolved to `refs/entire/checkpoints/<shard>/<id>` |
+| **Claims checked** — `refuted`, `partial` or `consistent`, refuted first | `blastline check` on removed symbols against the base graph; the reaching tests against the test commands the checkpoint ran; files touched against the commit |
+| **What each changed file reaches** — the Change column names what happened to each symbol | `cgraph change-context`, `changes[].symbol_changes` |
+| Tests to run, blast radius, footer | unchanged; the footer adds the change-context `omitted` counters verbatim and checkpoint coverage (`Intent: 2 of 3 commits`) |
+
+The brief **refutes, it never certifies**: `refuted` is authoritative (a removed symbol still has a static caller in a file the diff did not touch; a commit's reaching tests never ran; the agent touched a file that is not in the commit), `consistent` means the graph found nothing against the claim, and the word "verified" does not appear. Without checkpoint refs the comment says `no checkpoints on this branch`; without change-context the footer says so; the reach numbers are the same either way.
+
+**Where intent comes from.** [Entire](https://github.com/entireio/cli) (MIT) records one checkpoint per agent commit: the prompt, the compact transcript, the files touched. It lives on its own ref and travels with the branch when the agent machine pushes it. On the agent machine, once per repository:
+
+```sh
+entire enable --agent claude-code --local        # hooks in .claude/settings.json and .git/hooks; state in .entire/ (gitignore it)
+git push origin 'refs/entire/checkpoints/*'      # or leave Entire's push_sessions on, which does this on git push
+```
+
+**Privacy allowlist.** `src/checkpoint.ts` reads exactly these fields and nothing else: the checkpoint id, the commit, the agent and model, the **first line** of `0/prompt.txt` capped at 200 characters, `files_touched`, the `Bash` commands in the compact transcript that name a test runner (`vitest`, `jest`, `pytest`, `go test`, `cargo test`, `ctest`, `gradle test`, `mvn test`, `npm test` and kin), and the writer's `source`. The raw transcript (`0/full.jsonl`), tool results, file contents and any later prompt line never leave the ref. The allowlist is code, not a flag.
+
+Locally, `blastline brief main..HEAD --change-context <file> [--previous <old-comment.md>] [--json]` renders the same brief before you push, and `blastline_brief` over MCP gives an agent its own brief (`{brief, markdown, check_run}`). `--json` carries the Checks API body the Action POSTs; annotations are capped at 50 per request, GitHub's ceiling.
+
+**In the Action**, the brief is on by default: `cgraph-version` now defaults to `bin-v0.4.0`, the first release with `change-context`, which runs over the range's diff against a detached worktree of the base (`fetch-depth: 0`); the checkpoint refs are fetched if present; `check-run: "false"` turns the check run off. The token needs one more permission for it:
+
+```yaml
+permissions:
+  contents: write        # the image form of the figure, on figure-branch (public repositories)
+  pull-requests: write   # the comment
+  checks: write          # the check run with annotations
+```
+
+Known limits, stated in the footer: symbols are classified within the diff only (a symbol moved across files outside it is not classified, and until CGraph node ids are repo-relative a symbol moved across files pairs by label within its file); change-context sheds impacts and context under its budget, and the brief prints what it shed; on `pull_request` events the diff is taken at GitHub's merge commit, so annotation lines are the merge commit's.
 
 ## Cross-repo selection over seam graphs
 
@@ -216,8 +257,10 @@ A provider-side change then selects **consumer-side tests across the repo bounda
 | --- | --- |
 | `blastline_tests` | "Which test files does this diff reach?" — the set to run before claiming done |
 | `blastline_blast` | "What does this change touch, transitively?" — with `file:line`, before the edit is final |
+| `blastline_check` | "Does anything still reference this symbol?" — refutes, never certifies (see above) |
+| `blastline_brief` | "What will the reviewer see?" — the [PR brief](#pr-brief) for a `range`, with `change_context`, `previous` and `annotations` passthroughs; returns `{brief, markdown, check_run}` |
 
-Both take `repo` plus a `range` or raw `diff` text, with `graph_path`, `ignore`, and `min_density` passthroughs. A `kind: "all"` answer means run the full suite; the `reasons` say why — fail-open selections are returned as data, never as protocol errors, so an agent always gets an actionable answer.
+The selection tools take `repo` plus a `range` or raw `diff` text, with `graph_path`, `ignore`, and `min_density` passthroughs. A `kind: "all"` answer means run the full suite; the `reasons` say why — fail-open selections are returned as data, never as protocol errors, so an agent always gets an actionable answer.
 
 ## CLI reference
 
@@ -229,6 +272,7 @@ blastline tests <base>..<head> [options]     # impacted test files (list or --js
 blastline blast <base>..<head> [options]     # transitive dependents with file:line
 blastline comment <base>..<head> [options]   # the PR-comment markdown
 blastline figure <base>..<head> --out-dir <dir> [options]  # the reach figure the comment embeds (reach-dark.svg, reach-light.svg)
+blastline brief <base>..<head> [options]     # the PR brief: comment + per-commit intent, symbol changes, claims checked
 blastline mcp                                # MCP server over stdio
 ```
 
@@ -249,9 +293,12 @@ blastline mcp                                # MCP server over stdio
 | `--pr <n>` | `comment`/`figure`: the pull request number, shown in the summary |
 | `--figure-url <base>` | `comment`: embed the hosted figure at `<base>/reach-dark.svg` and `<base>/reach-light.svg` |
 | `--figure-mermaid` | `comment`: embed the figure as a mermaid block instead, which renders in private repositories |
-| `--head-sha <sha>` | `comment`/`figure`: name this commit in links and captions when the range ends elsewhere (the Action passes the PR head while diffing against GitHub's merge commit) |
+| `--head-sha <sha>` | `comment`/`figure`/`brief`: name this commit in links, captions and the check run when the range ends elsewhere (the Action passes the PR head while diffing against GitHub's merge commit) |
+| `--change-context <file>` | `brief`: `cgraph change-context` JSON, for the Symbols row, the Change column and the removed-symbol claims |
+| `--previous <file>` | `brief`: the previously posted comment, whose embedded snapshot gives the "since push" row |
+| `--annotations <n>` | `brief`: check-run annotations on the highest-reach changed lines (default and ceiling 50) |
 
-`tests`/`blast` print one item per line (empty = clean subset with nothing impacted); on fail-open they print `ALL` to stdout and one JSON reason per line to stderr, exit code 0 — consumers branch on the output, not the exit code. A `--json` subset also carries `testsTotal`, one `files` entry per changed file (symbols touched, files reached, tests reached), and the file-level `edges` among them: everything the comment and the figure show.
+`tests`/`blast` print one item per line (empty = clean subset with nothing impacted); on fail-open they print `ALL` to stdout and one JSON reason per line to stderr, exit code 0 — consumers branch on the output, not the exit code. A `--json` subset also carries `testsTotal`, one `files` entry per changed file (symbols touched, files reached, tests reached), and the file-level `edges` among them: everything the comment and the figure show. `brief --json` prints `{brief, markdown, check_run}`: the brief's data, the comment markdown, and the Checks API `check-runs` body for the head sha.
 
 </details>
 
