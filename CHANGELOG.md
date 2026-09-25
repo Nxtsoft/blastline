@@ -6,7 +6,8 @@ The brief says who has looked at the change and who knows the code it reaches.
 
 - A **Reviewed by** Summary row: every reviewer other than the author with their latest state, or `no reviewer other than the author (login) so far`; and the humans whose commits last changed the changed and reached files before this range, most commits first. `src/owners.ts` reads that history in one `git log` up to the base and sets aside the commits an agent authored (a vendor address as the author, or Copilot's `Agent-Logs-Url:` trailer); a human's commit with an agent co-author or a checkpoint is the human's.
 - `blastline brief --author <login> --reviews <file>` (GitHub's reviews API body or `[{login, state}]`); `author` and `reviews` on `blastline_brief` over MCP; the Action passes the PR author and fetches its reviews with the token it has. Without `--reviews` the row names owners only and the footer says so.
-- `brief.review` in `--json`: `{author, reviews, owners: {files, commits, agentCommits, authors: [{name, commits, files}]}}`.
+- `brief.review` in `--json`: `{author, reviews, owners: {files, commits, agentCommits, authors: [{name, commits, files}]}}`; `reviews` is absent when none were fetched, and the row then says nothing about who has looked.
+
 ## 0.14.2
 
 The narrative is a claim the brief checks: the PR body and each commit message against the diff.

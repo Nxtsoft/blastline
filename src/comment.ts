@@ -506,13 +506,16 @@ function intentRow(brief: Brief): string {
 function reviewedRow(brief: Brief): string | undefined {
   const r = brief.review;
   if (!r) return undefined;
-  const others = r.reviews.filter((v) => v.state !== "PENDING");
+  // Reviews never fetched is not "none": the row says nothing about who has looked and the footer says why.
+  const others = r.reviews?.filter((v) => v.state !== "PENDING");
   const looked =
-    others.length > 0
-      ? others.map((v) => `${v.login} (${v.state.toLowerCase().replace("_", " ")})`).join(", ")
-      : r.author !== undefined
-        ? `no reviewer other than the author (${r.author}) so far`
-        : undefined;
+    others === undefined
+      ? undefined
+      : others.length > 0
+        ? others.map((v) => `${v.login} (${v.state.toLowerCase().replace("_", " ")})`).join(", ")
+        : r.author !== undefined
+          ? `no reviewer other than the author (${r.author}) so far`
+          : "no review so far";
   const top = r.owners.authors.slice(0, 3).map((a) => `${a.name} (${plural(a.commits, "commit")} in ${plural(a.files, "file")})`);
   const knows =
     r.owners.files === 0

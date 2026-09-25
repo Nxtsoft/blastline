@@ -437,7 +437,13 @@ describe("renderBrief: reviewed-by row", () => {
   });
   it("says plainly when no human commit precedes the range in those files, and omits the row when nothing is known", () => {
     const md = renderBrief({ ...brief, review: { reviews: [], owners: { files: 2, commits: 0, agentCommits: 5, authors: [] } } }, ctx);
-    expect(md).toContain("| Reviewed by | no human commit in the 2 changed or reached files before this range (5 agent commits set aside) |");
-    expect(renderBrief({ ...brief, review: { reviews: [], owners: { files: 0, commits: 0, agentCommits: 0, authors: [] } } }, ctx)).not.toContain("| Reviewed by |");
+    expect(md).toContain("| Reviewed by | no review so far · no human commit in the 2 changed or reached files before this range (5 agent commits set aside) |");
+    expect(renderBrief({ ...brief, review: { owners: { files: 0, commits: 0, agentCommits: 0, authors: [] } } }, ctx)).not.toContain("| Reviewed by |");
+  });
+
+  it("never claims nobody has looked when reviews were not fetched: with the author alone the row names owners only", () => {
+    const md = renderBrief({ ...brief, review: { author: "taylorg009", owners } }, ctx);
+    expect(md).toContain("| Reviewed by | the 4 changed and reached files were last changed by Ada (12 commits in 4 files), Bo (3 commits in 1 file) |");
+    expect(md).not.toContain("no reviewer other than the author");
   });
 });

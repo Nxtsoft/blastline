@@ -110,8 +110,8 @@ export interface Review {
 export interface ReviewState {
   /** The PR author: the human who opened it, or invoked the agent that did. */
   author?: string;
-  /** Reviews by anyone but the author, latest state per login. */
-  reviews: Review[];
+  /** Reviews by anyone but the author, latest state per login; absent when none were fetched, which is not the same as none given. */
+  reviews?: Review[];
   owners: Owners;
 }
 
@@ -672,7 +672,7 @@ export function buildBrief(o: BriefOptions): Brief {
     for (const r of reviews ?? []) if (r.login !== author) latest.set(r.login, r.state);
     review = {
       ...(author !== undefined && { author }),
-      reviews: [...latest.entries()].map(([login, state]) => ({ login, state })),
+      ...(reviews !== undefined && { reviews: [...latest.entries()].map(([login, state]) => ({ login, state })) }),
       owners: ownersOf(repo, shas.base, [...new Set([...mapped, ...reachedFiles])].sort()),
     };
     if (reviews === undefined) unchecked.push("reviewed by: no `--reviews` given, so the row names owners only");

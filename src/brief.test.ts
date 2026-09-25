@@ -228,6 +228,8 @@ describe("buildBrief", () => {
     expect(b.review?.owners.authors).toEqual([{ name: fixtureAuthor, commits: 1, files: 3 }]);
     expect(b.review?.owners.agentCommits).toBe(0);
     expect(brief().unchecked).toContain("reviewed by: no `--reviews` given, so the row names owners only");
+    expect(brief({ author: "taylorg009" }).review?.reviews).toBeUndefined();
+    expect(brief({ author: "taylorg009", reviews: [] }).review?.reviews).toEqual([]);
     expect(reviewsIn('[{"user":{"login":"a"},"state":"APPROVED"},{"login":"b","state":"COMMENTED"},{"state":"X"}]')).toEqual([{ login: "a", state: "APPROVED" }, { login: "b", state: "COMMENTED" }]);
   });
 
