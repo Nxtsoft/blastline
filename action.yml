@@ -275,7 +275,13 @@ runs:
         diff="$RUNNER_TEMP/blastline-range.diff"
         git -C "$repo" diff --unified=0 "$RANGE" > "$diff"
         out="$RUNNER_TEMP/blastline-change-context.json"
-        if cgraph change-context --base-root "$base_src" --target-root "$repo" --diff "$diff" --budget 20000 > "$out"; then
+        # The budget bounds change-context's output in tokens (bytes/4), and
+        # the change evidence it must always carry grows with the diff: 20000
+        # held a 5-file diff and refused a 26-file one, which 40000 held.
+        # Runtime is flat (under a second either way), and the brief prints
+        # what a budget shed, so the budget follows the diff's size.
+        budget=$((20000 + $(wc -c < "$diff") / 2))
+        if cgraph change-context --base-root "$base_src" --target-root "$repo" --diff "$diff" --budget "$budget" > "$out"; then
           echo "path=$out" >> "$GITHUB_OUTPUT"
         else
           echo "::warning::blastline: cgraph change-context failed; the brief carries no symbol changes"
