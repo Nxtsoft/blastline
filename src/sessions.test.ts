@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { SessionsIndex, commitTime, fleetIntent } from "./sessions.js";
+import { SessionsIndex, commandsOf, commitTime, fleetIntent } from "./sessions.js";
 
 /**
  * A sessions.db with the exact column subset the reader touches, populated
@@ -83,6 +83,18 @@ describe("SessionsIndex", () => {
     idx.close();
   });
 
+  it("does not match a sibling directory that merely shares the prefix", () => {
+    const dir = mkdtempSync(join(tmpdir(), "blastline-sessions-"));
+    const path = fixtureDb(dir, "/work/blastline-secondary");
+    const db = new DatabaseSync(path);
+    db.prepare(`insert into sessions values (?,?,?,?,?,?,?,?,?,?)`).run("00000000-touched-sibling", "codex", null, "/home/x", "2026-09-24T16:00:00.000Z", "2026-09-24T17:00:00.000Z", null, null, "", JSON.stringify(["/work/blastline-secondary/src"]));
+    db.close();
+    const idx = new SessionsIndex(path);
+    expect(idx.sessionsAt("/work/blastline", "2026-09-24T16:23:46.000Z")).toEqual([]);
+    expect(idx.sessionsAt("/work/blastline-secondary", "2026-09-24T16:23:46.000Z").map((s) => s.id)).toEqual(["7182303c-7ae6-4e9a-a0f3-fb7230b71749"]);
+    idx.close();
+  });
+
   it("picks the narration step whose window contains the time, and flags the nearest earlier one otherwise", () => {
     const dir = mkdtempSync(join(tmpdir(), "blastline-sessions-"));
     const idx = new SessionsIndex(fixtureDb(dir, "/work/blastline"));
@@ -107,6 +119,35 @@ describe("SessionsIndex", () => {
       "NODE_DISABLE_COMPILE_CACHE=1 bunx vitest run src/figure.test.ts",
     ]);
     expect(idx.testCommands("7182303c-7ae6-4e9a-a0f3-fb7230b71749", "2026-09-24T16:00:00.000Z", "2026-09-24T17:00:00.000Z")).toHaveLength(2);
+    idx.close();
+  });
+});
+
+describe("commandsOf", () => {
+  it("reads Claude Bash, Droid Execute and Codex exec envelopes as the index stores them", () => {
+    expect(commandsOf(JSON.stringify({ command: "NODE_DISABLE_COMPILE_CACHE=1 bunx vitest run", description: "Run tests" }))).toEqual(["NODE_DISABLE_COMPILE_CACHE=1 bunx vitest run"]);
+    expect(commandsOf("gh pr diff 247 --repo Turing-Labs-AI/turing-agents")).toEqual(["gh pr diff 247 --repo Turing-Labs-AI/turing-agents"]);
+    // real Codex shape: a JS program; every exec_command({cmd: <literal>}) is one command
+    const codex = JSON.stringify({ input: 'text(await tools.exec_command({cmd:"cargo test -p blastline -- --nocapture",timeout_ms:120000}))\n' });
+    expect(commandsOf(codex)).toEqual(["cargo test -p blastline -- --nocapture"]);
+    const escaped = JSON.stringify({ input: "text(await tools.exec_command({cmd:\"python3 - <<'PY'\\nprint(\\\"hi\\\")\\nPY\"}))" });
+    expect(commandsOf(escaped)).toEqual(["python3 - <<'PY'\nprint(\"hi\")\nPY"]);
+    const many = JSON.stringify({ input: "const a = await tools.exec_command({cmd:`bunx vitest run ${file}`}); const b = await tools.exec_command({ cmd: 'git status' , yield_time_ms: 5 });" });
+    expect(commandsOf(many)).toEqual(["bunx vitest run ${file}", "git status"]);
+    expect(commandsOf(JSON.stringify({ input: "text(await tools.read_file({path:'a'}))" }))).toEqual([]);
+  });
+
+  it("counts a Codex test run as a test command", () => {
+    const dir = mkdtempSync(join(tmpdir(), "blastline-sessions-"));
+    const path = fixtureDb(dir, "/work/blastline");
+    const db = new DatabaseSync(path);
+    db.prepare(`insert into tool_calls values (?,?,?,?,?)`).run("x1", "7182303c-7ae6-4e9a-a0f3-fb7230b71749", "2026-09-24T16:24:00.000Z", "exec", JSON.stringify({ input: 'text(await tools.exec_command({cmd:"go test ./..."}))\n' }));
+    db.close();
+    const idx = new SessionsIndex(path);
+    expect(idx.testCommands("7182303c-7ae6-4e9a-a0f3-fb7230b71749", "2026-09-24T16:23:42.000Z", "2026-09-24T16:24:41.000Z")).toEqual([
+      "NODE_DISABLE_COMPILE_CACHE=1 bunx vitest run src/figure.test.ts",
+      "go test ./...",
+    ]);
     idx.close();
   });
 });

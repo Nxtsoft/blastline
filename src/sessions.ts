@@ -100,7 +100,7 @@ export class SessionsIndex {
             and timestamp <= ? and last_activity >= ?
           order by last_activity desc`,
       )
-      .all(dir, `${dir}/%`, `"${dir}`, at, at) as unknown as SessionRow[];
+      .all(dir, `${dir}/%`, JSON.stringify(dir), at, at) as unknown as SessionRow[];
     return rows.map(toSession);
   }
 
@@ -162,20 +162,53 @@ export class SessionsIndex {
           order by timestamp`,
       )
       .all(sessionId, from, to) as unknown as { input: string }[];
-    return rows.map((r) => commandOf(r.input)).filter((c): c is string => c !== undefined && TEST_RUNNER.test(c));
+    return rows.flatMap((r) => commandsOf(r.input)).filter((c) => TEST_RUNNER.test(c));
   }
 }
 
-function commandOf(input: string): string | undefined {
+/**
+ * The shell commands inside one indexed tool-call input. Three real shapes
+ * (sessions.db on mars, 2026-09-24):
+ * - Claude `Bash`: `{"command":"bunx vitest run","description":"…"}`
+ * - Droid `Execute`: the bare command string, not JSON
+ * - Codex `exec`: `{"input":"text(await tools.exec_command({cmd:\"bunx vitest run\"}))\n"}`,
+ *   a JS program whose every `exec_command({cmd: <string literal>` is one command
+ */
+export function commandsOf(input: string): string[] {
+  let parsed: { command?: unknown; cmd?: unknown; input?: unknown };
   try {
-    const parsed = JSON.parse(input) as { command?: unknown; cmd?: unknown };
-    if (typeof parsed.command === "string") return parsed.command;
-    if (typeof parsed.cmd === "string") return parsed.cmd;
-    if (Array.isArray(parsed.command)) return parsed.command.join(" ");
-    return undefined;
+    parsed = JSON.parse(input) as typeof parsed;
   } catch {
-    return input;
+    return [input];
   }
+  if (typeof parsed.command === "string") return [parsed.command];
+  if (typeof parsed.cmd === "string") return [parsed.cmd];
+  if (Array.isArray(parsed.command)) return [parsed.command.join(" ")];
+  if (typeof parsed.input === "string") return execCommandsIn(parsed.input);
+  return [];
+}
+
+const EXEC_CMD = /exec_command\(\{[^}]*?\bcmd:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g;
+
+function execCommandsIn(program: string): string[] {
+  const out: string[] = [];
+  for (const m of program.matchAll(EXEC_CMD)) out.push(decodeJsString(m[1]!));
+  return out;
+}
+
+/** A JS string literal (double, single or backtick quoted) to its value; template expressions stay literal. */
+function decodeJsString(literal: string): string {
+  const body = literal.slice(1, -1);
+  return body.replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (_, esc: string) => {
+    switch (esc[0]) {
+      case "n": return "\n";
+      case "t": return "\t";
+      case "r": return "\r";
+      case "u": return String.fromCharCode(parseInt(esc.slice(1), 16));
+      case "x": return String.fromCharCode(parseInt(esc.slice(1), 16));
+      default: return esc;
+    }
+  });
 }
 
 function git(repo: string, args: string[]): string {
