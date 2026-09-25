@@ -86,6 +86,12 @@ describe("renderComment: subset", () => {
         subset.files[0]!,
         { path: "src/lib.ts", status: "modified", disposition: "mapped", symbols: ["parse"], reaches: [{ file: "/r/src/use.ts", symbols: ["use"] }, { file: "/r/src/c.ts", symbols: ["use"] }], tests: ["/r/src/a.test.ts", "/r/src/b.test.ts", "/r/src/use.test.ts"] },
       ].filter((f) => f.path !== "src/lib.ts" || f.symbols.length === 1),
+      edges: [
+        { from: "/r/src/lib.ts", to: "/r/src/use.ts" },
+        { from: "/r/src/lib.ts", to: "/r/src/c.ts" },
+        { from: "/r/src/use.ts", to: "/r/src/app.ts" },
+        { from: "/r/src/lib.ts", to: "/r/src/use.test.ts" },
+      ],
     };
     const rows = renderComment(chained, ctx).split("\n").filter((l) => /^\| (\d|with|\| \d+ files under)/.test(l));
     expect(rows).toEqual([
