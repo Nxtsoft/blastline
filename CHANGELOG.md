@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.1
+
+The per-file table says what to read first, and the Downstream row says how much reviewing the change asks for.
+
+- A **Read** column leads the "What each changed file reaches" table: files in reach order (tests reached, then dependents), a changed file that another changed file reaches placed right after it as `with <file>`, test files last. Reviewers comment less on each file the further down a list it sits (Rahman, Codabux, Roy 2026), so the order carries the reach, not the alphabet. `readingOrder` in `src/comment.ts`.
+- `| Downstream code | 4 files, 11 dependents · review effort medium |`: a coarse tier from what the graph measured (`high` from 20 dependents or 10 mapped files, `low` under 5 dependents and 4 files), fixed thresholds stated in the README. `reviewEffort` in `src/comment.ts`.
+- Ignored rows gain an empty Read cell; nothing else in the comment or brief moves.
+
 ## 0.14.0
 
 The Intent column no longer goes empty on a commit that carries no checkpoint but does carry the agent's own marks.
