@@ -355,7 +355,7 @@ export function changedDeclarationClaims(symbols: SymbolChange[], files: Changed
  * marker inside a real description ("drops the wip check") is prose.
  */
 const PLACEHOLDER_BODY = /^(?:TODO|TBD|WIP|FIXME|placeholder|describe (?:your|the) changes?)\b/i;
-const THROWAWAY_SUBJECT = /^(?:wip|fixup!|squash!|tmp|temp|todo|xxx)\b/i;
+const THROWAWAY_SUBJECT = /^(?:wip\b|fixup!|squash!|tmp\b|temp\b|todo\b|xxx\b)/i;
 
 function placeholderIn(narrative: Narrative, body: string): string | undefined {
   if (body === "") return "empty";

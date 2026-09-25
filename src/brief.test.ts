@@ -369,12 +369,19 @@ describe("narrative claims", () => {
       [
         { source: "commit `aaaaaaa`", text: "wip: parser\n\nnot ready" },
         { source: "commit `bbbbbbb`", text: "fix(brief): a wip or fixup subject is placeholder text\n\nThe word wip in a description is prose." },
+        { source: "commit `ccccccc`", text: "fixup! feat(brief): the narrative is a claim\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>" },
+        { source: "commit `ddddddd`", text: "squash! wire up narrative claims" },
+        { source: "commit `eeeeeee`", text: "wipe the cache on start" },
       ],
       files,
       undefined,
       new Set(["src/x.ts"]),
     );
-    expect(claims).toEqual([{ claim: "commit `aaaaaaa` describes the change", verdict: "refuted", evidence: 'placeholder text: "wip"' }]);
+    expect(claims).toEqual([
+      { claim: "commit `aaaaaaa` describes the change", verdict: "refuted", evidence: 'placeholder text: "wip"' },
+      { claim: "commit `ccccccc` describes the change", verdict: "refuted", evidence: 'placeholder text: "fixup!"' },
+      { claim: "commit `ddddddd` describes the change", verdict: "refuted", evidence: 'placeholder text: "squash!"' },
+    ]);
   });
 
   it("calls every named thing consistent when the diff carries it, and never counts a fenced run log", () => {
