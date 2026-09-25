@@ -463,6 +463,8 @@ runs:
         BASE_GRAPH: ${{ steps.select.outputs.base_graph }}
         CHANGE_CONTEXT: ${{ steps.changecontext.outputs.path }}
         PREVIOUS: ${{ steps.existing.outputs.previous }}
+        PR_BODY: ${{ github.event.pull_request.body }}
+        PR_EVENT: ${{ github.event_name == 'pull_request' }}
       run: |
         set -euo pipefail
         repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
@@ -470,6 +472,12 @@ runs:
         [ -n "${BASE_GRAPH:-}" ] && args+=(--base-graph "$BASE_GRAPH")
         [ -n "${CHANGE_CONTEXT:-}" ] && args+=(--change-context "$CHANGE_CONTEXT")
         [ -n "${PREVIOUS:-}" ] && args+=(--previous "$PREVIOUS")
+        # The PR body is a claim like any other: an empty one is a placeholder,
+        # a name in code font the diff does not carry is a phantom change.
+        if [ "${PR_EVENT:-false}" = "true" ]; then
+          printf '%s' "${PR_BODY:-}" > blastline-narrative.md
+          args+=(--narrative blastline-narrative.md)
+        fi
         [ -n "${PR_NUMBER:-}" ] && args+=(--pr "$PR_NUMBER")
         # On pull_request the range ends at GitHub's merge commit, which is the
         # right thing to diff (base.sha is its first parent) but not the commit

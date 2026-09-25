@@ -11,7 +11,7 @@ import { loadGraph } from "./graph.js";
 import { relativeTo } from "./paths.js";
 import type { RunOptions } from "./run.js";
 import { runSelection } from "./run.js";
-import type { ChangedFileImpact, Selection } from "./types.js";
+import type { ChangedFile, ChangedFileImpact, Selection } from "./types.js";
 
 /** One symbol-level change from `cgraph change-context`, `changes[].symbol_changes[]`. */
 export interface SymbolChange {
@@ -108,8 +108,21 @@ export interface Brief {
   snapshot: BriefSnapshot;
 }
 
+/** A description the diff can be checked against: the PR body, or one commit's message. */
+export interface Narrative {
+  /** Where it came from, as the claim names it: "PR body", "commit `abc1234`". */
+  source: string;
+  text: string;
+}
+
 export interface BriefOptions extends RunOptions {
   range: string;
+  /**
+   * The PR body, checked against the diff with each commit's message: a name
+   * in code font that nothing in the diff carries (a phantom change), changed
+   * code the text never names (understated scope), placeholder text.
+   */
+  narrative?: string;
   /** A selection already computed for this range (the Action's `--json` output), instead of running one. */
   selection?: Selection;
   /** The commit to call the head when the range ends elsewhere (a `pull_request` merge commit standing in for the PR head). */
@@ -255,47 +268,184 @@ function labelPrefix(graph: CodeGraph, changedPaths: Set<string>): string {
  * exists. Callers inside changed files may have been updated, so they do not
  * refute; they are listed so the reviewer can check.
  */
+/** The base graph's static callers of a symbol, split by whether this diff touches their file; described for the claim text. */
+function callersOf(
+  symbol: SymbolChange,
+  baseGraph: CodeGraph,
+  changedPaths: Set<string>,
+): { kind: "fail-open"; why: string } | { kind: "ok"; remaining: string[]; updated: string[] } {
+  const prefix = labelPrefix(baseGraph, changedPaths);
+  const result = checkCallers({ graph: baseGraph, symbol: `${symbol.path}:${symbol.label}` });
+  if (result.kind === "fail-open") return { kind: "fail-open", why: result.reasons[0]?.kind ?? "unknown" };
+  const repoPath = (c: { file?: string }): string => (c.file ? prefix + fileLabel(baseGraph, c.file) : "");
+  const describe = (c: { label: string; kind: string; file?: string; line?: number }): string => {
+    const file = repoPath(c);
+    const at = file ? ` (${file}${c.line !== undefined && c.kind !== "file" ? `:${c.line}` : ""})` : "";
+    return c.kind === "file" ? `\`${file}\`` : `\`${c.label}\`${at}`;
+  };
+  const inChanged = (c: { file?: string }): boolean => changedPaths.has(repoPath(c));
+  // Symbols before their files: `use (src/use.ts:3)` says more than `src/use.ts`.
+  const callers = [...result.callers].sort((a, b) => Number(a.kind === "file") - Number(b.kind === "file") || a.label.localeCompare(b.label));
+  return { kind: "ok", remaining: callers.filter((c) => !inChanged(c)).map(describe), updated: callers.filter(inChanged).map(describe) };
+}
+
 function removedSymbolClaims(symbols: SymbolChange[], baseGraph: CodeGraph, changedPaths: Set<string>): ClaimCheck[] {
   const claims: ClaimCheck[] = [];
-  const prefix = labelPrefix(baseGraph, changedPaths);
   for (const s of symbols) {
     if (!s.status.startsWith("deleted")) continue;
     const claim = `\`${s.label}\` removed from \`${s.path}\``;
-    const result = checkCallers({ graph: baseGraph, symbol: `${s.path}:${s.label}` });
-    if (result.kind === "fail-open") {
-      const why = result.reasons[0]?.kind ?? "unknown";
-      claims.push({ claim, verdict: "partial", evidence: `could not resolve it in the base graph (${why})` });
-      continue;
-    }
-    const repoPath = (c: { file?: string }): string => (c.file ? prefix + fileLabel(baseGraph, c.file) : "");
-    const describe = (c: { label: string; kind: string; file?: string; line?: number }): string => {
-      const file = repoPath(c);
-      const at = file ? ` (${file}${c.line !== undefined && c.kind !== "file" ? `:${c.line}` : ""})` : "";
-      return c.kind === "file" ? `\`${file}\`` : `\`${c.label}\`${at}`;
-    };
-    const inChanged = (c: { file?: string }): boolean => changedPaths.has(repoPath(c));
-    // Symbols before their files: `use (src/use.ts:3)` says more than `src/use.ts`.
-    const callers = [...result.callers].sort((a, b) => Number(a.kind === "file") - Number(b.kind === "file") || a.label.localeCompare(b.label));
-    const remaining = callers.filter((c) => !inChanged(c));
-    const updated = callers.filter(inChanged);
-    if (remaining.length > 0) {
-      claims.push({
-        claim,
-        verdict: "refuted",
-        evidence: `still referenced by ${listOf(remaining.map(describe))} in files this diff does not touch`,
-      });
-    } else if (updated.length > 0) {
+    const callers = callersOf(s, baseGraph, changedPaths);
+    if (callers.kind === "fail-open") {
+      claims.push({ claim, verdict: "partial", evidence: `could not resolve it in the base graph (${callers.why})` });
+    } else if (callers.remaining.length > 0) {
+      claims.push({ claim, verdict: "refuted", evidence: `still referenced by ${listOf(callers.remaining)} in files this diff does not touch` });
+    } else if (callers.updated.length > 0) {
       claims.push({
         claim,
         verdict: "consistent",
-        evidence: `${plural(updated.length, "static caller")} in the base graph, all in files this diff changes: ${listOf(updated.map(describe))}`,
+        evidence: `${plural(callers.updated.length, "static caller")} in the base graph, all in files this diff changes: ${listOf(callers.updated)}`,
       });
     } else {
+      claims.push({ claim, verdict: "consistent", evidence: "no static callers in the base graph; dynamic dispatch, reflection and macros are invisible to it" });
+    }
+  }
+  return claims;
+}
+
+/**
+ * A line that declares `label` in the languages the graph extracts: a
+ * function, method, class, interface, type, enum or binding of that name.
+ */
+export function declares(label: string, line: string): boolean {
+  const l = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `^\\s*(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:(?:function\\*?|class|interface|type|enum|const|let|var|def|fn|pub(?:\\([^)]*\\))?\\s+fn|func(?:\\s+\\([^)]*\\))?)\\s+${l}\\b|(?:(?:public|private|protected|static|async|override|readonly)\\s+)*${l}\\s*(?:<[^>]*>)?\\([^;]*\\)\\s*(?::\\s*[^;{=]+)?\\s*(?:\\{|=>)\\s*$)`,
+  ).test(line);
+}
+
+/**
+ * "`x` declaration changed": a changed symbol whose declaring line is both
+ * removed and added, differently, while the base graph shows static callers
+ * in files this diff does not touch. Partial, never refuted: a caller may be
+ * compatible with the new declaration; the reviewer checks the call sites.
+ */
+export function changedDeclarationClaims(symbols: SymbolChange[], files: ChangedFile[], baseGraph: CodeGraph, changedPaths: Set<string>): ClaimCheck[] {
+  const claims: ClaimCheck[] = [];
+  const byPath = new Map(files.map((f) => [f.path, f]));
+  for (const s of symbols) {
+    if (s.status !== "changed") continue;
+    const f = byPath.get(s.path);
+    const before = f?.removed?.find((line) => declares(s.label, line));
+    const after = f?.added?.find((line) => declares(s.label, line));
+    if (before === undefined || after === undefined || before.trim() === after.trim()) continue;
+    const callers = callersOf(s, baseGraph, changedPaths);
+    if (callers.kind !== "ok" || callers.remaining.length === 0) continue;
+    claims.push({
+      claim: `\`${s.label}\` declaration changed in \`${s.path}\``,
+      verdict: "partial",
+      evidence: `still called by ${listOf(callers.remaining)} in files this diff does not touch; check those call sites against the new declaration`,
+    });
+  }
+  return claims;
+}
+
+/**
+ * Placeholder text where a description should be: nothing, a short body that
+ * is only a marker or a template line, or a commit subject that is one. A
+ * marker inside a real description ("drops the wip check") is prose.
+ */
+const PLACEHOLDER_BODY = /^(?:TODO|TBD|WIP|FIXME|placeholder|describe (?:your|the) changes?)\b/i;
+const THROWAWAY_SUBJECT = /^(?:wip\b|fixup!|squash!|tmp\b|temp\b|todo\b|xxx\b)/i;
+
+function placeholderIn(narrative: Narrative, body: string): string | undefined {
+  if (body === "") return "empty";
+  if (body.length <= 60 && PLACEHOLDER_BODY.test(body)) return PLACEHOLDER_BODY.exec(body)![0];
+  if (narrative.source.startsWith("commit")) return THROWAWAY_SUBJECT.exec(body.split("\n")[0]!.trim())?.[0];
+  return undefined;
+}
+
+/** The prose of a narrative: fenced code, HTML comments and links stripped, so a run log pasted into a PR body names nothing. */
+function prose(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/https?:\/\/\S+/g, " ");
+}
+
+/**
+ * The names a narrative sets in code font, kept when they can be checked:
+ * one token or path per span, no shas, versions, flags, ranges or commands.
+ */
+function codeNames(text: string): string[] {
+  const names: string[] = [];
+  for (const m of prose(text).matchAll(/`([^`\n]+)`/g)) {
+    const span = m[1]!.trim();
+    if (/\s/.test(span) || span.startsWith("-") || span.includes("..") || span.includes("@") || span.includes("://")) continue;
+    if (/^[0-9a-f]{7,40}$/i.test(span) || /^v?\d+(?:\.\d+)+/.test(span) || !/[A-Za-z]/.test(span)) continue;
+    names.push(span);
+  }
+  return [...new Set(names)];
+}
+
+/** A name that is a file: it has a directory, or a source, config or doc extension; `a.b.c` alone is a dotted identifier. */
+const isPath = (name: string): boolean =>
+  name.includes("/") || /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|rb|php|swift|cs|c|cc|cpp|h|hpp|sql|sh|md|ya?ml|json|toml|css|html|txt)$/i.test(name);
+
+/**
+ * What the narratives (the PR body, each commit's message) claim against what
+ * the diff carries. Refuted: a name in code font that no changed symbol bears
+ * and no changed line contains (a phantom change); placeholder text. Partial:
+ * files with symbol changes the text never names (understated scope). The
+ * checks are by name, so a description in other words is not a mismatch; the
+ * text is read, never scored.
+ */
+export function narrativeClaims(narratives: Narrative[], files: ChangedFile[], symbols: SymbolChange[] | undefined, changedPaths: Set<string>): ClaimCheck[] {
+  const claims: ClaimCheck[] = [];
+  const labels = new Set((symbols ?? []).map((s) => s.label));
+  const lines = files.flatMap((f) => [...(f.added ?? []), ...(f.removed ?? [])]);
+  const basenames = new Set([...changedPaths].map((p) => p.slice(p.lastIndexOf("/") + 1)));
+  const inDiff = (name: string): boolean => {
+    if (isPath(name)) return changedPaths.has(name) || [...changedPaths].some((p) => p.endsWith(`/${name}`)) || basenames.has(name);
+    const tokens = name.match(/[A-Za-z_$][\w$]*/g) ?? [];
+    return tokens.some((t) => labels.has(t) || basenames.has(t) || lines.some((line) => new RegExp(`(?<![\\w$])${t.replace(/\$/g, "\\$")}(?![\\w$])`).test(line)));
+  };
+  for (const n of narratives) {
+    const body = prose(n.text).trim();
+    const placeholder = placeholderIn(n, body);
+    if (placeholder !== undefined) {
+      claims.push({ claim: `${n.source} describes the change`, verdict: "refuted", evidence: placeholder === "empty" ? "placeholder text: empty" : `placeholder text: "${placeholder}"` });
+      continue;
+    }
+    if (files.length === 0) continue;
+    const names = codeNames(n.text);
+    const phantoms = names.filter((name) => !inDiff(name));
+    for (const name of phantoms) {
       claims.push({
-        claim,
-        verdict: "consistent",
-        evidence: "no static callers in the base graph; dynamic dispatch, reflection and macros are invisible to it",
+        claim: `${n.source} names \`${name}\``,
+        verdict: "refuted",
+        evidence: isPath(name) ? "no such path in the diff (phantom change)" : "no changed symbol bears it and no changed line contains it (phantom change)",
       });
+    }
+    if (names.length > 0 && phantoms.length === 0) {
+      claims.push({ claim: `${n.source} names ${plural(names.length, "thing")} in code font`, verdict: "consistent", evidence: `every one is a changed symbol, a changed path, or in a changed line` });
+    }
+  }
+  if (symbols !== undefined && symbols.length > 0) {
+    const text = narratives.map((n) => prose(n.text)).join("\n");
+    const byPath = new Map<string, SymbolChange[]>();
+    for (const s of symbols) byPath.set(s.path, [...(byPath.get(s.path) ?? []), s]);
+    const mentions = (p: string, changes: SymbolChange[]): boolean => {
+      const base = p.slice(p.lastIndexOf("/") + 1);
+      const stem = base.replace(/\.[^.]+$/, "");
+      return text.includes(p) || text.includes(base) || new RegExp(`\\b${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(text) || changes.some((c) => new RegExp(`(?<![\\w$])${c.label.replace(/[.*+?^${}()|[\]\\$]/g, "\\$&")}(?![\\w$])`).test(text));
+    };
+    const uncovered = [...byPath.entries()].filter(([p, changes]) => !mentions(p, changes));
+    const claim = "the narrative names the changed code";
+    if (uncovered.length > 0) {
+      const describe = ([p, changes]: [string, SymbolChange[]]): string => `${p} (\`${changes[0]!.label}\` ${changes[0]!.status.replace(/_or_renamed$/, "")}${changes.length > 1 ? `, +${changes.length - 1}` : ""})`;
+      claims.push({ claim, verdict: "partial", evidence: `not named by the PR body or any commit message: ${listOf(uncovered.map(describe))} (understated scope)` });
+    } else {
+      claims.push({ claim, verdict: "consistent", evidence: `all ${plural(byPath.size, "file")} with symbol changes are named` });
     }
   }
   return claims;
@@ -453,6 +603,24 @@ export function buildBrief(o: BriefOptions): Brief {
     }
   }
   for (const c of commits) claims.push(...checkpointClaims(c));
+  const narratives: Narrative[] = [];
+  if (o.narrative !== undefined) narratives.push({ source: "PR body", text: o.narrative });
+  else unchecked.push("narrative: no `--narrative` given, so only commit messages were read");
+  for (const c of commits) {
+    try {
+      narratives.push({ source: `commit \`${shortSha(c.sha)}\``, text: git("log", "-1", "--format=%B", c.sha) });
+    } catch {
+      // The commit is listed above; a message git cannot show is not a claim.
+    }
+  }
+  claims.push(...narrativeClaims(narratives, parsed, changeContext?.symbols, changedPaths));
+  if (changeContext !== undefined && o.baseGraphPath !== undefined && changeContext.symbols.some((s) => s.status === "changed")) {
+    try {
+      claims.push(...changedDeclarationClaims(changeContext.symbols, parsed, loadGraph(o.baseGraphPath), changedPaths));
+    } catch (e) {
+      unchecked.push(`changed-declaration callers: cannot load base graph at ${o.baseGraphPath}: ${(e as Error).message}`);
+    }
+  }
 
   const reachedFiles = new Set<string>();
   if (selection.kind === "subset") for (const f of selection.files) for (const r of f.reaches) reachedFiles.add(relativeTo(repo, r.file));

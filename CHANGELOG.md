@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.2
+
+The narrative is a claim the brief checks: the PR body and each commit message against the diff.
+
+- `blastline brief --narrative <file>` (the Action passes the PR body; `narrative` over MCP): a name set in code font that no changed symbol bears, no changed path matches and no changed line contains is `refuted` as a phantom change; an empty body, a template line, `TODO`/`TBD`/`WIP`, or a `wip`/`fixup!` subject is `refuted` as placeholder text; a file with symbol changes that neither the body nor any message names is a `partial` "the narrative names the changed code" (understated scope). Fenced code, HTML comments and links are skipped; shas, versions, flags and ranges in code font are not names. `narrativeClaims` in `src/brief.ts`.
+- A changed declaration (its declaring line removed and added, differently) with base-graph callers in files the diff does not touch is `partial`, never refuted. `changedDeclarationClaims` in `src/brief.ts`; the caller lookup is shared with the removed-symbol claim.
+- Without `--narrative` the footer says only commit messages were read.
+
 ## 0.14.1
 
 The per-file table says what to read first, and the Downstream row says how much reviewing the change asks for.
