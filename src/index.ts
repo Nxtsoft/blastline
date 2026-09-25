@@ -14,3 +14,7 @@ export type { RunOptions } from "./run.js";
 export { select } from "./select.js";
 export type { SelectOptions } from "./select.js";
 export type { ChangedFile, ChangedFileImpact, ChangedRange, FailOpenReason, FileEdge, Selection } from "./types.js";
+export { SessionsIndex, DEFAULT_SESSIONS_DB, commitTime, fleetIntent } from "./sessions.js";
+export type { CommitIntent, FleetSession, TimelineStep } from "./sessions.js";
+export { refFor, ulid, writeCheckpoint, CHECKPOINT_SOURCE } from "./checkpoint-write.js";
+export type { WriteOptions, WrittenCheckpoint } from "./checkpoint-write.js";
