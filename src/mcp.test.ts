@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { handleRequest } from "./mcp.js";
@@ -37,7 +41,7 @@ describe("MCP handleRequest", () => {
   it("lists the tools with schemas", () => {
     const resp = handleRequest({ jsonrpc: "2.0", id: 2, method: "tools/list" });
     const tools = (resp as { result: { tools: { name: string; description: string }[] } }).result.tools;
-    expect(tools.map((t) => t.name)).toEqual(["blastline_tests", "blastline_blast", "blastline_check"]);
+    expect(tools.map((t) => t.name)).toEqual(["blastline_tests", "blastline_blast", "blastline_check", "blastline_brief"]);
     const check = tools.find((t) => t.name === "blastline_check");
     expect(check?.description).toMatch(/REFUTES/); // leads with the refuter-not-certifier contract
   });
@@ -88,6 +92,34 @@ describe("MCP handleRequest", () => {
     );
     expect(parsed.kind).toBe("all");
     expect(parsed.reasons[0].kind).toBe("graph-unavailable");
+  });
+
+  it("blastline_brief returns the brief, its markdown and the check-run body for a range", () => {
+    const repo = mkdtempSync(join(tmpdir(), "blastline-mcp-"));
+    const git = (...args: string[]): string =>
+      execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@blastline.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" }).trim();
+    git("init", "-q");
+    writeFileSync(join(repo, "a.txt"), "1\n");
+    git("add", "a.txt");
+    git("commit", "-qm", "one");
+    const base = git("rev-parse", "HEAD");
+    writeFileSync(join(repo, "a.txt"), "2\n");
+    git("commit", "-qam", "two");
+    const head = git("rev-parse", "HEAD");
+    try {
+      const resp = call("blastline_brief", { repo, range: `${base}..${head}`, graph_path: FIXTURE, pr: 7 });
+      const text = (resp as { result: { content: { text: string }[] } }).result.content[0]!.text;
+      const parsed = JSON.parse(text) as { brief: { commits: { sha: string; subject: string }[]; selection: { kind: string } }; markdown: string; check_run: { head_sha: string; name: string } };
+      expect(parsed.brief.commits).toMatchObject([{ sha: head, subject: "two" }]);
+      expect(parsed.brief.selection.kind).toBe("all"); // a.txt has no graph node
+      expect(parsed.markdown.startsWith("<!-- blastline:test-impact -->\n")).toBe(true);
+      expect(parsed.markdown).toContain("PR #7");
+      expect(parsed.check_run).toMatchObject({ name: "blastline", head_sha: head });
+      const missing = call("blastline_brief", { repo }) as { result: { isError: boolean } };
+      expect(missing.result.isError).toBe(true);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it("flags missing repo and unknown tools as tool errors", () => {

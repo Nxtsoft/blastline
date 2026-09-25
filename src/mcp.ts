@@ -1,6 +1,10 @@
+import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { buildBrief } from "./brief.js";
 import { runCheck } from "./check.js";
+import { renderBrief, renderCheckRun } from "./comment.js";
 import { runSelection } from "./run.js";
+import type { RunOptions } from "./run.js";
 
 /**
  * Minimal MCP server over stdio: newline-delimited JSON-RPC 2.0 implementing
@@ -40,6 +44,21 @@ const CHECK_INPUT_SCHEMA = {
   required: ["repo", "symbol"],
 } as const;
 
+const BRIEF_INPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    ...TOOL_INPUT_SCHEMA.properties,
+    range: { type: "string", description: "git range <base>..<head> (required: the brief lists its commits)" },
+    change_context: { type: "string", description: "path to cgraph change-context JSON: symbol changes and removed-symbol claims" },
+    previous: { type: "string", description: "path to the previously posted comment; its embedded snapshot gives the since-push delta" },
+    annotations: { type: "number", description: "check-run annotations on the highest-reach changed lines (default and ceiling 50)" },
+    head_sha: { type: "string", description: "commit to name as the head in links and the check run when the range ends elsewhere" },
+    repo_url: { type: "string", description: "https://github.com/<owner>/<repo>: paths become blob links" },
+    pr: { type: "number", description: "pull request number, shown in the summary" },
+  },
+  required: ["repo", "range"],
+} as const;
+
 const TOOLS = [
   {
     name: "blastline_tests",
@@ -63,6 +82,15 @@ const TOOLS = [
       "verdict=no-static-callers is NOT 'safe to delete': dynamic dispatch, reflection, and macros are invisible to the graph.",
     inputSchema: CHECK_INPUT_SCHEMA,
   },
+  {
+    name: "blastline_brief",
+    description:
+      "The PR brief for a range, before you push it: what each commit did (from its Entire checkpoint: first prompt line, " +
+      "agent, model, files touched, test commands run; never the transcript), symbol changes from cgraph change-context, " +
+      "reach, and claims checked against the graph (refuted | partial | consistent, never verified). " +
+      "Returns {brief, markdown, check_run}; check_run is the Checks API body the Action posts.",
+    inputSchema: BRIEF_INPUT_SCHEMA,
+  },
 ];
 
 interface JsonRpcRequest {
@@ -80,12 +108,54 @@ function ok(id: number | string | null, result: unknown): JsonRpcResponse {
   return { jsonrpc: "2.0", id, result };
 }
 
+const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+
+function selectionOptions(repo: string, args: Record<string, unknown>): RunOptions {
+  return {
+    repo,
+    ...(typeof args["range"] === "string" && { range: args["range"] }),
+    ...(typeof args["diff"] === "string" && { diffText: args["diff"] }),
+    ...(typeof args["graph_path"] === "string" && { graphPath: args["graph_path"] }),
+    ...(typeof args["base_graph_path"] === "string" && { baseGraphPath: args["base_graph_path"] }),
+    ...(Array.isArray(args["ignore"]) && { ignore: args["ignore"] as string[] }),
+    ...(typeof args["min_density"] === "number" && { minDensity: args["min_density"] }),
+    ...(typeof args["min_test_reachability"] === "number" && { minTestReachability: args["min_test_reachability"] }),
+    ...(typeof args["expected_content_root"] === "string" && { expectedContentRoot: args["expected_content_root"] }),
+    ...(args["daemon_verify"] === true && { daemonVerify: true }),
+    ...(typeof args["max_files"] === "number" && { maxFiles: args["max_files"] }),
+  };
+}
+
 function callTool(name: string, args: Record<string, unknown>): unknown {
-  if (name !== "blastline_tests" && name !== "blastline_blast" && name !== "blastline_check") {
+  if (name !== "blastline_tests" && name !== "blastline_blast" && name !== "blastline_check" && name !== "blastline_brief") {
     return { content: [{ type: "text", text: `unknown tool: ${name}` }], isError: true };
   }
   if (typeof args["repo"] !== "string") {
     return { content: [{ type: "text", text: "repo (string) is required" }], isError: true };
+  }
+  if (name === "blastline_brief") {
+    if (typeof args["range"] !== "string") {
+      return { content: [{ type: "text", text: "range (string) is required" }], isError: true };
+    }
+    const brief = buildBrief({
+      ...selectionOptions(args["repo"], args),
+      range: args["range"],
+      ...(typeof args["change_context"] === "string" && { changeContextFile: args["change_context"] }),
+      ...(typeof args["previous"] === "string" && { previousFile: args["previous"] }),
+      ...(typeof args["annotations"] === "number" && { annotations: args["annotations"] }),
+    });
+    const headSha = typeof args["head_sha"] === "string" ? args["head_sha"] : brief.headSha;
+    const markdown = renderBrief(brief, {
+      range: args["range"],
+      repo: args["repo"],
+      version: VERSION,
+      ...(brief.baseSha !== undefined && { baseSha: brief.baseSha }),
+      ...(headSha !== undefined && { headSha }),
+      ...(typeof args["repo_url"] === "string" && { repoUrl: args["repo_url"].replace(/\/$/, "") }),
+      ...(typeof args["pr"] === "number" && { prNumber: args["pr"] }),
+    });
+    const payload = { brief, markdown, check_run: renderCheckRun(brief, markdown, headSha ?? brief.snapshot.head) };
+    return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
   }
   if (name === "blastline_check") {
     if (typeof args["symbol"] !== "string") {
@@ -102,19 +172,7 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
     });
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
-  const selection = runSelection({
-    repo: args["repo"],
-    ...(typeof args["range"] === "string" && { range: args["range"] }),
-    ...(typeof args["diff"] === "string" && { diffText: args["diff"] }),
-    ...(typeof args["graph_path"] === "string" && { graphPath: args["graph_path"] }),
-    ...(typeof args["base_graph_path"] === "string" && { baseGraphPath: args["base_graph_path"] }),
-    ...(Array.isArray(args["ignore"]) && { ignore: args["ignore"] as string[] }),
-    ...(typeof args["min_density"] === "number" && { minDensity: args["min_density"] }),
-    ...(typeof args["min_test_reachability"] === "number" && { minTestReachability: args["min_test_reachability"] }),
-    ...(typeof args["expected_content_root"] === "string" && { expectedContentRoot: args["expected_content_root"] }),
-    ...(args["daemon_verify"] === true && { daemonVerify: true }),
-    ...(typeof args["max_files"] === "number" && { maxFiles: args["max_files"] }),
-  });
+  const selection = runSelection(selectionOptions(args["repo"], args));
   const payload =
     selection.kind === "all"
       ? { kind: "all", reasons: selection.reasons }

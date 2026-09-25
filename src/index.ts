@@ -1,5 +1,9 @@
-export { COMMENT_MARKER, renderComment } from "./comment.js";
-export type { CommentContext } from "./comment.js";
+export { buildBrief, parseChangeContext, resolveRange, snapshotIn } from "./brief.js";
+export type { Brief, BriefOptions, BriefSnapshot, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
+export { checkpointFor, checkpointTrailer } from "./checkpoint.js";
+export type { Checkpoint } from "./checkpoint.js";
+export { COMMENT_MARKER, renderBrief, renderCheckRun, renderComment } from "./comment.js";
+export type { CheckRun, CommentContext } from "./comment.js";
 export { renderFigure, renderMermaid } from "./figure.js";
 export type { FigureOptions, FigureTheme } from "./figure.js";
 export { isTestPath, testFiles } from "./detect.js";
