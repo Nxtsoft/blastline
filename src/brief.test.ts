@@ -229,6 +229,9 @@ describe("buildBrief", () => {
     expect(b.review?.owners.agentCommits).toBe(0);
     expect(brief().unchecked).toContain("reviewed by: no `--reviews` given, so the row names owners only");
     expect(brief({ author: "taylorg009" }).review?.reviews).toBeUndefined();
+    // the fixture's commits are by the same git identity that wrote every file, so nothing is unfamiliar
+    expect(b.review?.unfamiliar).toBeUndefined();
+    expect(b.review?.owners.perFile.map((f) => f.path)).toEqual(["src/lib.test.ts", "src/lib.ts", "src/use.ts"]);
     expect(brief({ author: "taylorg009", reviews: [] }).review?.reviews).toEqual([]);
     expect(reviewsIn('[{"user":{"login":"a"},"state":"APPROVED"},{"login":"b","state":"COMMENTED"},{"state":"X"}]')).toEqual([{ login: "a", state: "APPROVED" }, { login: "b", state: "COMMENTED" }]);
   });

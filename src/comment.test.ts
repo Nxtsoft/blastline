@@ -426,7 +426,7 @@ describe("reviewEffort", () => {
 });
 
 describe("renderBrief: reviewed-by row", () => {
-  const owners = { files: 4, commits: 15, agentCommits: 6, authors: [{ name: "Ada", commits: 12, files: 4 }, { name: "Bo", commits: 3, files: 1 }] };
+  const owners = { files: 4, commits: 15, agentCommits: 6, authors: [{ name: "Ada", commits: 12, files: 4 }, { name: "Bo", commits: 3, files: 1 }], perFile: [] };
   it("says when nobody but the author has looked, and names who last changed the reached code", () => {
     const md = renderBrief({ ...brief, review: { author: "taylorg009", reviews: [], owners } }, ctx);
     expect(md).toContain("| Reviewed by | no reviewer other than the author (taylorg009) so far · the 4 changed and reached files were last changed by Ada (12 commits in 4 files), Bo (3 commits in 1 file) |");
@@ -439,6 +439,11 @@ describe("renderBrief: reviewed-by row", () => {
     const md = renderBrief({ ...brief, review: { reviews: [], owners: { files: 2, commits: 0, agentCommits: 5, authors: [] } } }, ctx);
     expect(md).toContain("| Reviewed by | no review so far · no human commit in the 2 changed or reached files before this range (5 agent commits set aside) |");
     expect(renderBrief({ ...brief, review: { owners: { files: 0, commits: 0, agentCommits: 0, authors: [] } } }, ctx)).not.toContain("| Reviewed by |");
+  });
+
+  it("names the files the change's humans have never committed to", () => {
+    const md = renderBrief({ ...brief, review: { author: "taylorg009", reviews: [], owners, unfamiliar: { names: ["Taylor"], files: ["src/impact.ts", "src/mapping.ts", "src/graph.ts", "src/x.ts"], of: 6 } } }, ctx);
+    expect(md).toContain("· Taylor has no prior commit in 4 of the 6 files this change touches or reaches: `src/impact.ts`, `src/mapping.ts`, `src/graph.ts`, +1 |");
   });
 
   it("never claims nobody has looked when reviews were not fetched: with the author alone the row names owners only", () => {

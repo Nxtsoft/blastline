@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.6
+
+The Reviewed-by row names what the change reaches that its own humans have never touched.
+
+- When the range has human-authored commits (by git name, agent-authored ones set aside), the row adds `<names> has no prior commit in N of the M files this change touches or reaches: …`, from the same history the owners come from; files the range adds are not counted. `unfamiliarTo` in `src/owners.ts`; `review.unfamiliar` in `--json`; `owners.perFile` lists each file's human authors.
+- Absent when the range has no human-authored commit to name, or when every file has one of theirs.
+
 ## 0.14.3
 
 The brief says who has looked at the change and who knows the code it reaches.
