@@ -178,6 +178,7 @@ if (command === "mcp") {
           ...runOptions(),
           range,
           ...(saved !== undefined && { selection: JSON.parse(readFileSync(saved, "utf8")) as Selection }),
+          ...(opt("head-sha") !== undefined && { headSha: opt("head-sha") as string }),
           ...(opt("change-context") !== undefined && { changeContextFile: opt("change-context") as string }),
           ...(opt("previous") !== undefined && { previousFile: opt("previous") as string }),
           ...(opt("annotations") !== undefined && { annotations: Number(opt("annotations")) }),
