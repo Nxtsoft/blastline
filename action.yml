@@ -271,6 +271,9 @@ runs:
       env:
         RANGE: ${{ steps.range.outputs.range }}
         INPUT_REPO: ${{ inputs.repo-path }}
+        INPUT_ROOT: ${{ inputs.graph-root }}
+        INPUT_BASE_GRAPH: ${{ inputs.base-graph-path }}
+        AUTO_BASE_GRAPH: ${{ steps.basegraph.outputs.path }}
       run: |
         set -euo pipefail
         repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
@@ -283,6 +286,17 @@ runs:
             || ! git -C "$repo" worktree add -q --detach "$base_src" "$base_sha"; then
             echo "::warning::blastline: cannot check out the range's base for change-context (needs fetch-depth: 0)"
             exit 0
+          fi
+        fi
+        # The same checkout gives the base graph the removed-symbol claims
+        # and deletion mapping need, unless the consumer supplied one.
+        if [ -z "${INPUT_BASE_GRAPH:-}" ] && [ -z "${AUTO_BASE_GRAPH:-}" ]; then
+          base_out="$RUNNER_TEMP/blastline-turnkey-base-graph"
+          mkdir -p "$base_out"
+          if cgraph --root "$base_src/$INPUT_ROOT" --out "$base_out" && [ -f "$base_out/graph.json" ]; then
+            echo "base_graph=$base_out/graph.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::blastline: could not build the base graph; removed-symbol claims are not checked"
           fi
         fi
         diff="$RUNNER_TEMP/blastline-range.diff"
@@ -310,6 +324,7 @@ runs:
         INPUT_GRAPH: ${{ steps.graphpath.outputs.path }}
         INPUT_BASE_GRAPH: ${{ inputs.base-graph-path }}
         AUTO_BASE_GRAPH: ${{ steps.basegraph.outputs.path }}
+        TURNKEY_BASE_GRAPH: ${{ steps.changecontext.outputs.base_graph }}
         INPUT_IGNORE: ${{ inputs.ignore }}
         INPUT_MIN_DENSITY: ${{ inputs.min-density }}
       run: |
@@ -318,6 +333,7 @@ runs:
         repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
         base_graph="$INPUT_BASE_GRAPH"
         [ -z "$base_graph" ] && base_graph="${AUTO_BASE_GRAPH:-}"
+        [ -z "$base_graph" ] && base_graph="${TURNKEY_BASE_GRAPH:-}"
         args=(tests "$range" --repo "$repo" --json)
         [ -n "$INPUT_GRAPH" ] && args+=(--graph "$INPUT_GRAPH")
         [ -n "$base_graph" ] && args+=(--base-graph "$base_graph")
