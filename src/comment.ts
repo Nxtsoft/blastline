@@ -93,6 +93,50 @@ function byImpact(a: ChangedFileImpact, b: ChangedFileImpact): number {
   return b.tests.length - a.tests.length || b.reaches.length - a.reaches.length || a.path.localeCompare(b.path);
 }
 
+/** A changed file the test walk selected directly: its own path is among its reached tests. */
+function isTestFile(f: ChangedFileImpact): boolean {
+  return f.tests.some((t) => t.endsWith(`/${f.path}`) || t === f.path);
+}
+
+/**
+ * The order to read the changed files in: the widest change first, and a
+ * changed file that another changed file reaches (it depends on that change)
+ * right after the file it depends on, marked with it, so the reviewer meets a
+ * cause before its dependents. Test files, selected directly, come last.
+ * Reviewers comment less on each file the further down a list it sits
+ * (Rahman, Codabux, Roy 2026: about 8.7% lower odds per extra file), so the
+ * order carries the reach, not the alphabet.
+ */
+export function readingOrder(mapped: ChangedFileImpact[], repo: string): { file: ChangedFileImpact; after?: ChangedFileImpact }[] {
+  const code = [...mapped].filter((f) => !isTestFile(f)).sort(byImpact);
+  const tests = [...mapped].filter(isTestFile).sort(byImpact);
+  const placed = new Set<ChangedFileImpact>();
+  const out: { file: ChangedFileImpact; after?: ChangedFileImpact }[] = [];
+  const place = (f: ChangedFileImpact, after?: ChangedFileImpact): void => {
+    if (placed.has(f)) return;
+    placed.add(f);
+    out.push(after ? { file: f, after } : { file: f });
+    const reached = new Set(f.reaches.map((r) => relativeTo(repo, r.file)));
+    for (const dependent of code) if (!placed.has(dependent) && reached.has(dependent.path)) place(dependent, f);
+  };
+  for (const f of code) place(f);
+  for (const f of tests) place(f);
+  return out;
+}
+
+/**
+ * A coarse tier for how much reviewing the change asks for, from what the
+ * graph already measured: `high` from 20 dependents or 10 mapped files, `low`
+ * under 5 dependents and 4 files, `medium` between. Fixed thresholds, stated
+ * next to the numbers they come from; structure predicts review effort better
+ * than the change's own description (Minh et al., MSR'26).
+ */
+export function reviewEffort(dependents: number, mappedFiles: number): "low" | "medium" | "high" {
+  if (dependents >= 20 || mappedFiles >= 10) return "high";
+  if (dependents < 5 && mappedFiles < 4) return "low";
+  return "medium";
+}
+
 function symbolsCell(symbols: string[], limit = 3): string {
   if (symbols.length === 0) return "whole file";
   const shown = symbols.slice(0, limit).map(code).join(", ");
@@ -108,7 +152,7 @@ function ignoredRows(files: ChangedFileImpact[]): string[] {
     .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
     .map(([top, paths]) => {
       const what = paths.length === 1 ? code(paths[0] as string) : `${plural(paths.length, "file")} under ${code(top === "." ? "the repo root" : `${top}/`)}`;
-      return `| ${cell(what)} | ignored by policy | | 0 |`;
+      return `| | ${cell(what)} | ignored by policy | | 0 |`;
     });
 }
 
@@ -167,7 +211,7 @@ function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolCha
   const summaryRows = [
     `| Changed | ${changedCell} |`,
     `| Tests reached | **${n}** of ${selection.testsTotal} ${bar(n, selection.testsTotal)} ${percent(n, selection.testsTotal)} of the suite |`,
-    `| Downstream code | ${plural(reachedFiles.size, "file")}, ${plural(selection.blast.length, "dependent")} |`,
+    `| Downstream code | ${plural(reachedFiles.size, "file")}, ${plural(selection.blast.length, "dependent")} · review effort ${reviewEffort(selection.blast.length, mapped.length)} |`,
   ];
 
   const figure =
@@ -185,15 +229,16 @@ function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolCha
 
   const prefix = sharedDir(mapped.map((f) => f.path));
   const short = (rel: string): string => (prefix && rel.startsWith(prefix) ? rel.slice(prefix.length) : rel);
-  const isTestFile = (f: ChangedFileImpact): boolean => f.tests.some((t) => t.endsWith(`/${f.path}`) || t === f.path);
+  let position = 0;
   const perFile = [
-    `| Changed file | ${symbols ? "Change" : "Symbols touched"} | Reaches | Tests |`,
-    "|---|---|---:|---:|",
-    ...[...mapped].sort(byImpact).map((f) => {
+    `| Read | Changed file | ${symbols ? "Change" : "Symbols touched"} | Reaches | Tests |`,
+    "|---|---|---|---:|---:|",
+    ...readingOrder(mapped, ctx.repo).map(({ file: f, after }) => {
+      const read = after ? `with ${code(short(after.path))}` : String(++position);
       const name = links.path(f.path, short(f.path)) + (f.status === "added" ? " (new)" : f.status === "deleted" ? " (deleted)" : "");
       const what = isTestFile(f) ? "test code, selected directly" : symbols ? changeCell(f.path, symbols, f.symbols) : symbolsCell(f.symbols);
       const reaches = f.reaches.length === 0 ? "" : plural(f.reaches.length, "file");
-      return `| ${cell(name)} | ${cell(what)} | ${reaches} | ${f.tests.length} |`;
+      return `| ${read} | ${cell(name)} | ${cell(what)} | ${reaches} | ${f.tests.length} |`;
     }),
     ...ignoredRows(ignored),
   ].join("\n");
