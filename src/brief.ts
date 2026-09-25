@@ -484,7 +484,10 @@ function prose(text: string): string {
 
 /**
  * The names a narrative sets in code font, kept when they can be checked:
- * one token or path per span, no shas, versions, flags, ranges or commands.
+ * one token or repo-relative path per span; no shas, versions, flags, ranges
+ * or commands, and no absolute or home path (`/Applications`, `~/.config`) or
+ * bare extension (`.pkg`), which name a place on a machine or a kind of file,
+ * never something the diff could carry.
  */
 function codeNames(text: string): string[] {
   const names: string[] = [];
@@ -492,6 +495,7 @@ function codeNames(text: string): string[] {
     const span = m[1]!.trim();
     if (/\s/.test(span) || span.startsWith("-") || span.includes("..") || span.includes("@") || span.includes("://")) continue;
     if (/^[0-9a-f]{7,40}$/i.test(span) || /^v?\d+(?:\.\d+)+/.test(span) || !/[A-Za-z]/.test(span)) continue;
+    if (/^(?:\/|~\/?)/.test(span) || /^\.[A-Za-z0-9]+$/.test(span)) continue;
     names.push(span);
   }
   return [...new Set(names)];
@@ -515,7 +519,7 @@ export function narrativeClaims(narratives: Narrative[], files: ChangedFile[], s
   const lines = files.flatMap((f) => [...(f.added ?? []), ...(f.removed ?? [])]);
   const basenames = new Set([...changedPaths].map((p) => p.slice(p.lastIndexOf("/") + 1)));
   const inDiff = (name: string): boolean => {
-    if (isPath(name)) return changedPaths.has(name) || [...changedPaths].some((p) => p.endsWith(`/${name}`)) || basenames.has(name);
+    if (isPath(name)) return changedPaths.has(name) || [...changedPaths].some((p) => p.endsWith(`/${name}`)) || basenames.has(name) || lines.some((line) => line.includes(name));
     const tokens = name.match(/[A-Za-z_$][\w$]*/g) ?? [];
     return tokens.some((t) => labels.has(t) || basenames.has(t) || lines.some((line) => new RegExp(`(?<![\\w$])${t.replace(/\$/g, "\\$")}(?![\\w$])`).test(line)));
   };
