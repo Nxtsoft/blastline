@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { DEFAULT_SESSIONS_DB } from "./sessions.js";
-import { buildBrief } from "./brief.js";
+import { buildBrief, reviewsIn } from "./brief.js";
 import { runCheck } from "./check.js";
 import { renderBrief, renderCheckRun } from "./comment.js";
 import { runSelection } from "./run.js";
@@ -52,6 +52,8 @@ const BRIEF_INPUT_SCHEMA = {
     range: { type: "string", description: "git range <base>..<head> (required: the brief lists its commits)" },
     change_context: { type: "string", description: "path to cgraph change-context JSON: symbol changes and removed-symbol claims" },
     previous: { type: "string", description: "path to the previously posted comment; its embedded snapshot gives the since-push delta" },
+    author: { type: "string", description: "the PR author's login; with reviews, the Reviewed-by row says whether anyone else has looked" },
+    reviews: { type: "array", items: { type: "object", properties: { login: { type: "string" }, state: { type: "string" } } }, description: "the PR's reviews (login, state), any order" },
     narrative: { type: "string", description: "the PR body text, checked with each commit message against the diff: phantom names in code font, changed code never named, placeholder text" },
     annotations: { type: "number", description: "check-run annotations on the highest-reach changed lines (default and ceiling 50)" },
     head_sha: { type: "string", description: "commit to name as the head in links and the check run when the range ends elsewhere" },
@@ -147,6 +149,8 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       range: args["range"],
       ...(typeof args["change_context"] === "string" && { changeContextFile: args["change_context"] }),
       ...(typeof args["previous"] === "string" && { previousFile: args["previous"] }),
+      ...(typeof args["author"] === "string" && { author: args["author"] }),
+      ...(Array.isArray(args["reviews"]) && { reviews: reviewsIn(JSON.stringify(args["reviews"])) }),
       ...(typeof args["narrative"] === "string" && { narrative: args["narrative"] }),
       ...(typeof args["annotations"] === "number" && { annotations: args["annotations"] }),
       ...(typeof args["head_sha"] === "string" && { headSha: args["head_sha"] }),

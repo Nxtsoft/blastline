@@ -463,6 +463,8 @@ runs:
         BASE_GRAPH: ${{ steps.select.outputs.base_graph }}
         CHANGE_CONTEXT: ${{ steps.changecontext.outputs.path }}
         PREVIOUS: ${{ steps.existing.outputs.previous }}
+        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        GH_TOKEN: ${{ inputs.github-token }}
         PR_BODY: ${{ github.event.pull_request.body }}
         PR_EVENT: ${{ github.event_name == 'pull_request' }}
       run: |
@@ -472,6 +474,16 @@ runs:
         [ -n "${BASE_GRAPH:-}" ] && args+=(--base-graph "$BASE_GRAPH")
         [ -n "${CHANGE_CONTEXT:-}" ] && args+=(--change-context "$CHANGE_CONTEXT")
         [ -n "${PREVIOUS:-}" ] && args+=(--previous "$PREVIOUS")
+        # Who has looked: the PR's reviews, so the Reviewed-by row can say when
+        # nobody but the author has. A token that cannot list them leaves the
+        # row to name owners only.
+        if [ -n "${PR_AUTHOR:-}" ]; then
+          args+=(--author "$PR_AUTHOR")
+          if [ -n "${GH_TOKEN:-}" ] && [ -n "${PR_NUMBER:-}" ] \
+            && gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" --jq '[.[] | {login: .user.login, state: .state}]' > blastline-reviews.json 2>/dev/null; then
+            args+=(--reviews blastline-reviews.json)
+          fi
+        fi
         # The PR body is a claim like any other: an empty one is a placeholder,
         # a name in code font the diff does not carry is a phantom change.
         if [ "${PR_EVENT:-false}" = "true" ]; then
