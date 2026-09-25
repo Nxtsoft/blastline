@@ -447,3 +447,23 @@ describe("renderBrief: reviewed-by row", () => {
     expect(md).not.toContain("no reviewer other than the author");
   });
 });
+
+describe("renderBrief: concurrent PRs row", () => {
+  it("names each meeting point, symbols first, and omits the row when there is none", () => {
+    const md = renderBrief(
+      {
+        ...brief,
+        concurrent: [
+          { number: 38, head: "3".repeat(40), changesReached: [{ path: "src/comment.ts", symbols: ["renderClaims", "intentRow", "third"] }], reachesChanged: [], bothChange: [] },
+          { number: 39, head: "4".repeat(40), changesReached: [], reachesChanged: ["src/lib.ts"], bothChange: ["src/lib.ts"] },
+          { number: 40, head: "5".repeat(40), changesReached: [{ path: "src/a.ts", symbols: [] }, { path: "src/b.ts", symbols: [] }, { path: "src/c.ts", symbols: [] }], reachesChanged: [], bothChange: [] },
+        ],
+      },
+      ctx,
+    );
+    expect(md).toContain(
+      "| Concurrent PRs | #38 changes `renderClaims` (`src/comment.ts`), `intentRow` (`src/comment.ts`), which this PR reaches · #39 also changes `src/lib.ts`; reaches `src/lib.ts`, which this PR changes · #40 changes `src/a.ts`, `src/b.ts`, +1, which this PR reaches |",
+    );
+    expect(renderBrief({ ...brief, concurrent: [] }, ctx)).not.toContain("| Concurrent PRs |");
+  });
+});

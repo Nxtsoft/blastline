@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { changedDeclarationClaims, declares, narrativeClaims, buildBrief, commandRuns, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
+import { changedDeclarationClaims, declares, narrativeClaims, buildBrief, commandRuns, concurrentPrs, othersIn, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
 import { parseUnifiedDiff } from "./diff.js";
 import { loadGraph } from "./graph.js";
 import { checkpointRef } from "./checkpoint.js";
@@ -233,6 +233,31 @@ describe("buildBrief", () => {
     expect(reviewsIn('[{"user":{"login":"a"},"state":"APPROVED"},{"login":"b","state":"COMMENTED"},{"state":"X"}]')).toEqual([{ login: "a", state: "APPROVED" }, { login: "b", state: "COMMENTED" }]);
   });
 
+  it("names the open PRs whose brief meets this one, and embeds what the next brief needs to meet it", () => {
+    const b = brief();
+    expect(b.snapshot.changed).toEqual(["src/lib.test.ts", "src/lib.ts"]);
+    expect(b.snapshot.symbols).toContain("src/lib.ts:emit");
+    expect(b.unchecked).toContain("concurrent PRs: no `--others` given");
+    const comment = (snapshot: object): string => `<!-- blastline:test-impact -->\n${SNAPSHOT_MARKER}${JSON.stringify(snapshot)} -->\n### PR brief`;
+    const others = [
+      { number: 7, body: comment({ head: "7".repeat(40), commits: 1, files: 1, tests: 1, reached: ["src/lib.ts"], changed: ["src/use.ts"], symbols: ["src/use.ts:use"] }) },
+      { number: 8, body: comment({ head: "8".repeat(40), commits: 1, files: 1, tests: 0, reached: [], changed: ["src/lib.ts"], symbols: ["src/lib.ts:parse"] }) },
+      { number: 9, body: comment({ head: "9".repeat(40), commits: 1, files: 1, tests: 0, reached: ["docs/x.md"], changed: ["README.md"], symbols: [] }) },
+      { number: 10, body: comment({ head: "a".repeat(40), commits: 1, files: 1, tests: 0, reached: ["src/lib.ts"] }) },
+      { number: 11, body: "no brief here" },
+    ];
+    const c = brief({ others }).concurrent;
+    expect(c).toEqual([
+      { number: 7, head: "7".repeat(40), changesReached: [{ path: "src/use.ts", symbols: ["use"] }], reachesChanged: ["src/lib.ts"], bothChange: [] },
+      { number: 8, head: "8".repeat(40), changesReached: [], reachesChanged: [], bothChange: ["src/lib.ts"] },
+    ]);
+    const none = brief({ others: [others[2]!, others[4]!] });
+    expect(none.concurrent).toEqual([]);
+    expect(none.unchecked).toContain("concurrent PRs: none of the 1 open PR with a brief touches what this PR changes or reaches");
+    expect(othersIn('[{"number":3,"body":"x"},{"number":"4","body":"y"},{"body":"z"}]')).toEqual([{ number: 3, body: "x" }]);
+    expect(concurrentPrs({ head: "h", commits: 0, files: 0, tests: 0, reached: [] }, others)).toEqual([]);
+  });
+
   it("refutes a removal the base graph still sees callers for, in files the diff did not touch", () => {
     const removed = brief().claims.find((c) => c.claim.startsWith("`helper` removed"));
     expect(removed).toEqual({
@@ -321,7 +346,7 @@ describe("buildBrief", () => {
 
   it("reports the delta since the snapshot embedded in the previous comment", () => {
     const first = buildBrief({ repo, range: `${base}..${libCommit}`, graphPath: headGraph, minDensity: 0 });
-    expect(first.snapshot).toEqual({ head: libCommit, commits: 1, files: 1, tests: 2, reached: ["src/use.ts"] });
+    expect(first.snapshot).toMatchObject({ head: libCommit, commits: 1, files: 1, tests: 2, reached: ["src/use.ts"], changed: ["src/lib.ts"] });
     const previous = join(repo, "previous.md");
     writeFileSync(previous, `<!-- blastline:test-impact -->\n${SNAPSHOT_MARKER}${JSON.stringify(first.snapshot)} -->\n### old brief\n`);
     expect(snapshotIn(readFileSync(previous, "utf8"))).toEqual(first.snapshot);

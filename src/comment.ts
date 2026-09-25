@@ -527,6 +527,24 @@ function reviewedRow(brief: Brief): string | undefined {
   return parts.length === 0 ? undefined : `| Reviewed by | ${parts.join(" · ")} |`;
 }
 
+/** Open PRs whose brief meets this one, each with the meeting point that matters most first. */
+function concurrentRow(brief: Brief): string | undefined {
+  const prs = brief.concurrent;
+  if (!prs || prs.length === 0) return undefined;
+  const files = (paths: string[]): string => `${paths.slice(0, 2).map(code).join(", ")}${paths.length > 2 ? `, +${paths.length - 2}` : ""}`;
+  const parts = prs.slice(0, 3).map((p) => {
+    const bits: string[] = [];
+    if (p.changesReached.length > 0) {
+      const named = p.changesReached.flatMap((c) => c.symbols.slice(0, 2).map((s) => `${code(s)} (${code(c.path)})`));
+      bits.push(`changes ${named.length > 0 ? named.slice(0, 2).join(", ") : files(p.changesReached.map((c) => c.path))}, which this PR reaches`);
+    }
+    if (p.bothChange.length > 0) bits.push(`also changes ${files(p.bothChange)}`);
+    if (p.reachesChanged.length > 0) bits.push(`reaches ${files(p.reachesChanged)}, which this PR changes`);
+    return `#${p.number} ${bits.join("; ")}`;
+  });
+  return `| Concurrent PRs | ${parts.join(" · ")}${prs.length > 3 ? `, +${prs.length - 3}` : ""} |`;
+}
+
 function symbolsRow(brief: Brief): string | undefined {
   const cc = brief.changeContext;
   if (!cc) return undefined;
@@ -597,6 +615,7 @@ export function renderBrief(brief: Brief, ctx: CommentContext): string {
       "|---|---|",
       intentRow(brief),
       reviewedRow(brief),
+      concurrentRow(brief),
       symbolsRow(brief),
       sinceRow(brief),
       "",
@@ -615,6 +634,7 @@ export function renderBrief(brief: Brief, ctx: CommentContext): string {
     ...p.summaryRows,
     intentRow(brief),
     reviewedRow(brief),
+    concurrentRow(brief),
     symbolsRow(brief),
     sinceRow(brief),
     ctx.baseSha ? `| Compared against | base ${code(shortSha(ctx.baseSha))} |` : undefined,

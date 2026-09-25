@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.5
+
+The brief names the other open PRs it meets, before merge time does.
+
+- A **Concurrent PRs** Summary row: each open PR whose brief meets this one, with what it changes that this PR's code reaches (the changed symbols named), files both change, and what this PR changes that its code reaches. `concurrentPrs` in `src/brief.ts` intersects the snapshots; `brief.concurrent` in `--json`.
+- The snapshot every brief embeds now carries `changed` (the mapped changed files) and `symbols` (`path:label` from change-context), so the next brief on any PR can meet it. A brief older than 0.14.5 has no changed set and is skipped.
+- `blastline brief --others <file>` (`[{number, body}]`, the other PRs' brief comments); `others` on `blastline_brief` over MCP; the Action collects the newest 30 open PRs' briefs with the token it has. Without it the footer says so; with it and no meeting point, the footer says how many briefs were read.
+
 ## 0.14.3
 
 The brief says who has looked at the change and who knows the code it reaches.

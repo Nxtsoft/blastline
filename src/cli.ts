@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { buildBrief, resolveRange, reviewsIn } from "./brief.js";
+import { buildBrief, othersIn, resolveRange, reviewsIn } from "./brief.js";
 import { runCheck } from "./check.js";
 import { renderBrief, renderCheckRun, renderComment } from "./comment.js";
 import { checkpointRef, checkpointTrailer } from "./checkpoint.js";
@@ -68,6 +68,8 @@ comment and figure options:
 brief options:
   --change-context <file>  cgraph change-context JSON: the Symbols row, the Change column, removed-symbol claims
   --previous <file>    the previously posted comment; its embedded snapshot gives the "since push" row
+  --others <file>      the other open PRs' brief comments as [{number, body}]; the Concurrent PRs row names the ones
+                       whose changes this PR reaches, that reach what this PR changes, or that change the same files
   --author <login>     the PR author; with --reviews, the Reviewed-by row says whether anyone else has looked
   --reviews <file>     the PR's reviews as GitHub's reviews API lists them (user.login, state), any order
   --narrative <file>   the PR body, checked with each commit message against the diff: a name in code font
@@ -233,6 +235,7 @@ if (command === "mcp") {
           ...(opt("head-sha") !== undefined && { headSha: opt("head-sha") as string }),
           ...(opt("change-context") !== undefined && { changeContextFile: opt("change-context") as string }),
           ...(opt("previous") !== undefined && { previousFile: opt("previous") as string }),
+          ...(opt("others") !== undefined && { others: othersIn(readFileSync(opt("others") as string, "utf8")) }),
           ...(opt("author") !== undefined && { author: opt("author") as string }),
           ...(opt("reviews") !== undefined && { reviews: reviewsIn(readFileSync(opt("reviews") as string, "utf8")) }),
           ...(opt("narrative") !== undefined && { narrative: readFileSync(opt("narrative") as string, "utf8") }),
