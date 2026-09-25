@@ -450,6 +450,9 @@ describe("renderBrief: why column", () => {
     expect(md).toContain("| 1 | `src/lib.ts` | `parse` changed, `helper` removed, `emit` added | turn 7: Inline helper into parse so the walk has one entry point.; turn 9: Emit the count as a string for the comment. | 1 file | 2 |");
     expect(md).toContain("| | 2 files under `docs/` | ignored by policy | | | 0 |");
     expect(renderBrief(brief, ctx)).toContain("| Read | Changed file | Change | Reaches | Tests |");
+  });
+});
+
 describe("renderBrief: reviewed-by row", () => {
   const owners = { files: 4, commits: 15, agentCommits: 6, authors: [{ name: "Ada", commits: 12, files: 4 }, { name: "Bo", commits: 3, files: 1 }] };
   it("says when nobody but the author has looked, and names who last changed the reached code", () => {
