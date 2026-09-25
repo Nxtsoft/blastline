@@ -38,6 +38,8 @@ export interface WriteOptions {
    */
   trailer?: boolean;
   now?: Date;
+  /** environment for the git processes; defaults to the current process's */
+  env?: NodeJS.ProcessEnv;
 }
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -69,11 +71,11 @@ function git(repo: string, args: string[], input?: string, env?: NodeJS.ProcessE
  * there is one; otherwise a fixed blastline identity, so a CI runner or a
  * fresh agent machine without git config can still write the ref.
  */
-function identity(repo: string): NodeJS.ProcessEnv {
-  const email = execFileSync("git", ["-C", repo, "config", "--get", "--default", "", "user.email"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  if (email !== "" || process.env["GIT_COMMITTER_EMAIL"]) return process.env;
+function identity(repo: string, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const email = execFileSync("git", ["-C", repo, "config", "--get", "--default", "", "user.email"], { encoding: "utf8", env: base, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  if (email !== "" || base["GIT_COMMITTER_EMAIL"]) return base;
   const fixed = { GIT_AUTHOR_NAME: "blastline", GIT_AUTHOR_EMAIL: "blastline@checkpoint", GIT_COMMITTER_NAME: "blastline", GIT_COMMITTER_EMAIL: "blastline@checkpoint" };
-  return { ...process.env, ...fixed };
+  return { ...base, ...fixed };
 }
 
 function blob(repo: string, content: string): string {
@@ -97,9 +99,10 @@ function compactRecord(agent: string, version: string, ts: string, command: stri
   });
 }
 
+/** Paths the commit changed against its first parent (a merge lists what it brought in; a root commit lists everything). */
 function filesTouched(repo: string, sha: string): string[] {
-  const out = git(repo, ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha]);
-  return out === "" ? [] : out.split("\n");
+  const out = git(repo, ["show", "--format=", "--name-only", "-m", "--first-parent", sha]);
+  return out === "" ? [] : out.split("\n").filter((l) => l !== "");
 }
 
 function isPushed(repo: string, sha: string): boolean {
@@ -149,17 +152,18 @@ export function writeCheckpoint(repo: string, sha: string, intent: CommitIntent 
     ],
   };
 
+  const transcriptBytes = transcript === "" ? "" : transcript + "\n";
   const inner = tree(repo, [
-    { name: "content_hash.txt", kind: "blob", oid: blob(repo, `sha256:${createHash("sha256").update(transcript).digest("hex")}\n`) },
+    { name: "content_hash.txt", kind: "blob", oid: blob(repo, `sha256:${createHash("sha256").update(transcriptBytes).digest("hex")}`) },
     { name: "metadata.json", kind: "blob", oid: blob(repo, JSON.stringify(sessionMeta, null, 2) + "\n") },
     { name: "prompt.txt", kind: "blob", oid: blob(repo, prompt + "\n") },
-    { name: "transcript.jsonl", kind: "blob", oid: blob(repo, transcript === "" ? "" : transcript + "\n") },
+    { name: "transcript.jsonl", kind: "blob", oid: blob(repo, transcriptBytes) },
   ]);
   const root = tree(repo, [
     { name: "0", kind: "tree", oid: inner },
     { name: "metadata.json", kind: "blob", oid: blob(repo, JSON.stringify(metadata, null, 2) + "\n") },
   ]);
-  const env = identity(repo);
+  const env = identity(repo, opts.env ?? process.env);
   const commit = git(repo, ["commit-tree", root, "-m", `checkpoint ${id} for ${sha.slice(0, 7)}`], undefined, env);
   git(repo, ["update-ref", ref, commit]);
 

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,7 +64,37 @@ describe("writeCheckpoint", () => {
     expect(g("show", `${out.ref}:0/prompt.txt`)).toBe("Three things in parallel now: confirm the follow-up commit state.");
     const record = JSON.parse(g("show", `${out.ref}:0/transcript.jsonl`));
     expect(record.content[0]).toEqual({ type: "tool_use", name: "Bash", input: { command: "NODE_DISABLE_COMPILE_CACHE=1 bunx vitest run src/figure.test.ts" } });
-    expect(g("show", `${out.ref}:0/content_hash.txt`)).toMatch(/^sha256:[0-9a-f]{64}$/);
+    const transcriptBytes = execFileSync("git", ["-C", r, "cat-file", "blob", `${out.ref}:0/transcript.jsonl`]);
+    const hashBytes = execFileSync("git", ["-C", r, "cat-file", "blob", `${out.ref}:0/content_hash.txt`]);
+    expect(hashBytes.toString()).toBe(`sha256:${createHash("sha256").update(transcriptBytes).digest("hex")}`);
+    expect(hashBytes.length).toBe(71);
+  });
+
+  it("signs the checkpoint commit with a fixed identity when git has none, and with the repo's when it has one", () => {
+    const { repo: r, sha, g } = repo();
+    const bare = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } as NodeJS.ProcessEnv;
+    for (const k of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]) delete bare[k];
+    const anon = writeCheckpoint(r, sha, intent(sha), { version: "0.13.0", trailer: true, env: bare });
+    expect(g("log", "-1", "--format=%ae %ce", anon.ref)).toBe("blastline@checkpoint blastline@checkpoint");
+    expect(g("log", "-1", "--format=%ce", "HEAD")).toBe("blastline@checkpoint");
+    g("config", "user.email", "dev@example.test");
+    g("config", "user.name", "dev");
+    const named = writeCheckpoint(r, g("rev-parse", "HEAD"), intent(sha), { version: "0.13.0", env: bare });
+    expect(g("log", "-1", "--format=%ae", named.ref)).toBe("dev@example.test");
+  });
+
+  it("lists a merge commit's combined files instead of nothing", () => {
+    const { repo: r, g } = repo();
+    g("checkout", "-q", "-b", "side", "HEAD~1");
+    writeFileSync(join(r, "side.ts"), "export const s = 1;\n");
+    g("add", "side.ts");
+    g("commit", "-q", "-m", "feat: side");
+    g("checkout", "-q", "main");
+    g("merge", "-q", "--no-ff", "-m", "merge side", "side");
+    const merge = g("rev-parse", "HEAD");
+    expect(g("rev-list", "--parents", "-1", merge).split(" ")).toHaveLength(3);
+    const out = writeCheckpoint(r, merge, undefined, { version: "0.13.0" });
+    expect(JSON.parse(g("show", `${out.ref}:metadata.json`)).files_touched).toEqual(["side.ts"]);
   });
 
   it("writes the ref but leaves the commit alone when it is already on a remote or is not HEAD", () => {
