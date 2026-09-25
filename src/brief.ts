@@ -367,48 +367,52 @@ export function buildBrief(o: BriefOptions): Brief {
   }
   const byPath = new Map<string, ChangedFileImpact>(selection.kind === "subset" ? selection.files.map((f) => [f.path, f]) : []);
   const sessions = o.sessionsDb === undefined ? undefined : new SessionsIndex(o.sessionsDb);
-  const commits: CommitBrief[] = shaList.map((sha) => {
-    const subject = git("log", "-1", "--format=%s", sha).trim();
-    const files = git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", sha).split("\n").filter(Boolean);
-    const checkpointId = checkpointTrailer(repo, sha);
-    const checkpoint =
-      checkpointId !== undefined ? checkpointFor(repo, sha) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files);
-    if (checkpointId !== undefined && checkpoint === undefined) {
-      const present = (() => {
-        try {
-          git("rev-parse", "--verify", "--quiet", `${checkpointRef(checkpointId)}^{commit}`);
-          return true;
-        } catch {
-          return false;
-        }
-      })();
-      unchecked.push(
-        present
-          ? `checkpoint \`${checkpointId}\` for \`${shortSha(sha)}\`: its ref is present but not in Entire's layout, so it was not read`
-          : `checkpoint \`${checkpointId}\` for \`${shortSha(sha)}\`: its ref is not in this repository (push refs/entire/checkpoints/*)`,
-      );
-    }
-    const impacts = files.map((f) => byPath.get(f)).filter((f): f is ChangedFileImpact => f !== undefined && f.disposition === "mapped");
-    const reached = new Set<string>();
-    const tests = new Set<string>();
-    for (const f of impacts) {
-      for (const r of f.reaches) reached.add(r.file);
-      for (const t of f.tests) tests.add(t);
-    }
-    const reachingTests = [...tests].sort().map((t) => relativeTo(repo, t));
-    const ranReachingTests = checkpoint ? reachingTests.filter((t) => checkpoint.testCommands.some((c) => commandRuns(c, t))) : [];
-    return {
-      sha,
-      subject,
-      ...(checkpointId !== undefined && { checkpointId }),
-      ...(checkpoint !== undefined && { checkpoint }),
-      files,
-      reach: { files: reached.size, tests: reachingTests.length },
-      reachingTests,
-      ranReachingTests,
-    };
-  });
-  sessions?.close();
+  let commits: CommitBrief[];
+  try {
+    commits = shaList.map((sha) => {
+      const subject = git("log", "-1", "--format=%s", sha).trim();
+      const files = git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", sha).split("\n").filter(Boolean);
+      const checkpointId = checkpointTrailer(repo, sha);
+      const checkpoint =
+        checkpointId !== undefined ? checkpointFor(repo, sha) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files);
+      if (checkpointId !== undefined && checkpoint === undefined) {
+        const present = (() => {
+          try {
+            git("rev-parse", "--verify", "--quiet", `${checkpointRef(checkpointId)}^{commit}`);
+            return true;
+          } catch {
+            return false;
+          }
+        })();
+        unchecked.push(
+          present
+            ? `checkpoint \`${checkpointId}\` for \`${shortSha(sha)}\`: its ref is present but not in Entire's layout, so it was not read`
+            : `checkpoint \`${checkpointId}\` for \`${shortSha(sha)}\`: its ref is not in this repository (push refs/entire/checkpoints/*)`,
+        );
+      }
+      const impacts = files.map((f) => byPath.get(f)).filter((f): f is ChangedFileImpact => f !== undefined && f.disposition === "mapped");
+      const reached = new Set<string>();
+      const tests = new Set<string>();
+      for (const f of impacts) {
+        for (const r of f.reaches) reached.add(r.file);
+        for (const t of f.tests) tests.add(t);
+      }
+      const reachingTests = [...tests].sort().map((t) => relativeTo(repo, t));
+      const ranReachingTests = checkpoint ? reachingTests.filter((t) => checkpoint.testCommands.some((c) => commandRuns(c, t))) : [];
+      return {
+        sha,
+        subject,
+        ...(checkpointId !== undefined && { checkpointId }),
+        ...(checkpoint !== undefined && { checkpoint }),
+        files,
+        reach: { files: reached.size, tests: reachingTests.length },
+        reachingTests,
+        ranReachingTests,
+      };
+    });
+  } finally {
+    sessions?.close();
+  }
 
   const claims: ClaimCheck[] = [];
   if (changeContext !== undefined && changeContext.symbols.some((s) => s.status.startsWith("deleted"))) {

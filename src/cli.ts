@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { buildBrief, resolveRange } from "./brief.js";
 import { runCheck } from "./check.js";
 import { renderBrief, renderCheckRun, renderComment } from "./comment.js";
-import { checkpointTrailer } from "./checkpoint.js";
+import { checkpointRef, checkpointTrailer } from "./checkpoint.js";
 import { writeCheckpoint } from "./checkpoint-write.js";
 import { renderFigure, renderMermaid } from "./figure.js";
 import { DEFAULT_SESSIONS_DB, SessionsIndex, fleetIntent } from "./sessions.js";
@@ -111,17 +111,28 @@ if (command === "mcp") {
   if (argv[1] !== "write") fail(`blastline: unknown checkpoint action "${argv[1] ?? ""}" (only "write")\n\n${USAGE}`);
   const repo = resolve(opt("repo") ?? process.cwd());
   const commit = opt("commit") ?? "HEAD";
+  const json = argv.includes("--json");
   const existing = checkpointTrailer(repo, commit);
   if (existing !== undefined) {
-    console.error(`blastline checkpoint: ${commit} already carries Entire-Checkpoint: ${existing}; nothing written`);
+    if (json) console.log(JSON.stringify({ id: existing, ref: checkpointRef(existing), commit, trailerWritten: false, written: false }, null, 2));
+    else console.error(`blastline checkpoint: ${commit} already carries Entire-Checkpoint: ${existing}; nothing written`);
     process.exit(0);
   }
-  const index = new SessionsIndex(opt("sessions-db") ?? DEFAULT_SESSIONS_DB);
-  const intent = fleetIntent(index, repo, commit);
-  index.close();
-  const written = writeCheckpoint(repo, commit, intent, { version: VERSION, trailer: !argv.includes("--no-trailer") });
-  if (argv.includes("--json")) {
-    console.log(JSON.stringify({ ...written, intent: intent ?? null }, null, 2));
+  let intent;
+  let written;
+  try {
+    const index = new SessionsIndex(opt("sessions-db") ?? DEFAULT_SESSIONS_DB);
+    try {
+      intent = fleetIntent(index, repo, commit);
+    } finally {
+      index.close();
+    }
+    written = writeCheckpoint(repo, commit, intent, { version: VERSION, trailer: !argv.includes("--no-trailer") });
+  } catch (e) {
+    fail(`blastline checkpoint: ${(e as Error).message}`);
+  }
+  if (json) {
+    console.log(JSON.stringify({ ...written, written: true, intent: intent ?? null }, null, 2));
     process.exit(0);
   }
   console.log(`wrote ${written.ref}`);
@@ -203,8 +214,15 @@ if (command === "mcp") {
 
   if (command === "comment" || command === "figure" || command === "brief") {
     if (command === "brief" && range === undefined) fail("blastline brief: provide <base>..<head>\n\n" + USAGE);
+    const tryBrief = (o: Parameters<typeof buildBrief>[0]) => {
+      try {
+        return buildBrief(o);
+      } catch (e) {
+        return fail(`blastline brief: ${(e as Error).message}`);
+      }
+    };
     const brief = command === "brief" && range !== undefined
-      ? buildBrief({
+      ? tryBrief({
           ...runOptions(),
           range,
           ...(saved !== undefined && { selection: JSON.parse(readFileSync(saved, "utf8")) as Selection }),

@@ -118,8 +118,10 @@ afterAll(() => {
 
 describe("promptLine", () => {
   it("skips the agents-cli worktree preamble and returns the first line the human wrote, capped at 200", () => {
-    const preamble = "You are in a git worktree of Nxtsoft/blastline on branch pr-brief (base main).\nCommit with a pathspec.\n\n";
+    const preamble = "You are in a git worktree of Nxtsoft/blastline on branch pr-brief (base main). Do exactly these steps.\n\n";
     expect(promptLine(preamble + "Ship the PR brief.\nThen open the PR.")).toBe("Ship the PR brief.");
+    // the preamble is one line; without a blank line after it the next line still wins
+    expect(promptLine("You are in a git worktree of X on branch y.\nShip the PR brief.")).toBe("Ship the PR brief.");
     expect(promptLine("Plain prompt first line\nsecond")).toBe("Plain prompt first line");
     expect(promptLine("\n\n  indented after blanks\n")).toBe("indented after blanks");
     expect(promptLine(preamble)).toBe("");

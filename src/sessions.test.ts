@@ -97,6 +97,18 @@ describe("SessionsIndex", () => {
     idx.close();
   });
 
+  it("matches a touched child directory of a path that JSON escapes, and names a missing index", () => {
+    const dir = mkdtempSync(join(tmpdir(), "blastline-sessions-"));
+    const path = fixtureDb(dir, "/elsewhere");
+    const db = new DatabaseSync(path);
+    db.prepare(`insert into sessions values (?,?,?,?,?,?,?,?,?,?)`).run("00000000-quoted", "claude", null, "/home/x", "2026-09-24T16:00:00.000Z", "2026-09-24T17:00:00.000Z", null, null, "", JSON.stringify(['/work/we"ird\\path/src']));
+    db.close();
+    const idx = new SessionsIndex(path);
+    expect(idx.sessionsAt('/work/we"ird\\path', "2026-09-24T16:23:46.000Z").map((s) => s.id)).toEqual(["00000000-quoted"]);
+    idx.close();
+    expect(() => new SessionsIndex(join(dir, "missing.db"))).toThrow(/no fleet session index at .*missing\.db/);
+  });
+
   it("picks the narration step whose window contains the time, and flags the nearest earlier one otherwise", () => {
     const dir = mkdtempSync(join(tmpdir(), "blastline-sessions-"));
     const idx = new SessionsIndex(fixtureDb(dir, "/work/blastline"));
