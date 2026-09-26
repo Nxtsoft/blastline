@@ -378,9 +378,9 @@ export function symbolReasonsIn(transcript: string, symbols: SymbolAt[], content
 export interface Windows {
   /** Everything after the previous checkpoint of the same session: where an edit's reason is looked for. */
   sinceWindow: string;
-  /** Inside that, from the turn in which the commit's files were first worked on: where the narration comes from. */
+  /** Inside that, from the commit's own turn: where the narration comes from. */
   stepWindow: string;
-  /** From that turn, whatever an earlier commit read of it: where the test runs come from, so every commit of one turn carries the turn's runs. */
+  /** The commit's own turn whole, whatever an earlier commit read of it: where the test runs come from, so every commit of one turn carries the turn's runs. */
   turnWindow: string;
   /** Non-blank lines in the whole transcript. */
   lines: number;
@@ -445,11 +445,13 @@ function worksOn(block: NonNullable<TranscriptRecord["content"]>[number], files:
  * starts. `sinceWindow` skips what the previous checkpoint of the same
  * session read (`read`), when this transcript extends that snapshot: its
  * first `read.lines` lines hash to `read.hash`. Otherwise the transcript is
- * this checkpoint's own and is read whole. `turnWindow` starts at the last
- * prompt a person typed before the first tool call that works on one of
- * `files`, so a session's earlier, unrelated turns do not count; `stepWindow`
- * starts the same way inside `sinceWindow`, so the narration is the new
- * part's own turn. Lines that are not JSON are kept; every reader skips them.
+ * this checkpoint's own and is read whole. The commit's own turn starts at
+ * the last prompt a person typed before its first tool call that works on
+ * one of `files` inside the new part, or before the new part when it holds
+ * none (a commit the same step made). `turnWindow` is that turn whole, so a
+ * run the turn made before an earlier commit still counts and a run from an
+ * earlier turn does not; `stepWindow` is the turn's part inside
+ * `sinceWindow`. Lines that are not JSON are kept; every reader skips them.
  */
 export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[]): Windows {
   const lines = transcript.split("\n").filter((line) => line.trim() !== "");
@@ -462,16 +464,11 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   });
   const extended = read !== undefined && read.lines <= lines.length && transcriptHash(lines.slice(0, read.lines)) === read.hash;
   const sinceStart = extended ? read.lines : 0;
-  // The turn that first worked on the files, searched from `from`: back from that tool call to the last prompt a person typed.
-  const turnFrom = (from: number): number => {
-    const firstWork = records.findIndex((r, i) => i >= from && r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
-    if (firstWork === -1) return from;
-    let turn = firstWork;
-    while (turn > from && !(records[turn] !== undefined && humanTurn(records[turn]!))) turn--;
-    return turn;
-  };
-  const turnStart = turnFrom(0);
-  const stepStart = turnFrom(sinceStart);
+  // The commit's own turn: back from its first work on the files inside the new part (or from the part's start) to the last prompt a person typed.
+  const firstWork = records.findIndex((r, i) => i >= sinceStart && r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
+  let turnStart = firstWork === -1 ? sinceStart : firstWork;
+  while (turnStart > 0 && !(records[turnStart] !== undefined && humanTurn(records[turnStart]!))) turnStart--;
+  const stepStart = Math.max(sinceStart, turnStart);
   return {
     sinceWindow: lines.slice(sinceStart).join("\n"),
     stepWindow: lines.slice(stepStart).join("\n"),

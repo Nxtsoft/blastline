@@ -218,6 +218,7 @@ const CUMULATIVE = [
 ];
 const CUMULATIVE_C = [
   ...CUMULATIVE,
+  rec("user", stamp(29), [user("the bot's autofix broke the page key; put the router-driven one back")]),
   rec("assistant", stamp(30), [text("All checks pass on the tip, but CodeRabbit pushed one more autofix. Reviewing it before merging.")]),
   rec("assistant", stamp(31), [bash("git revert --no-edit HEAD")]),
 ];
@@ -346,9 +347,9 @@ describe("checkpointFor on the branch backend", () => {
     expect(c?.narration).toEqual({ started: "All checks pass on the tip, but CodeRabbit pushed one more autofix. Reviewing it before merging.", ended: "", texts: 1, tools: 1 });
     expect(c?.sameStepAs).toBeUndefined();
     expect(c?.prompt).toBe("");
-    expect(c?.sessions).toEqual([{ id: SESSION, lines: 12, hash: HASH_C }]);
-    // Its file was first worked on in the earlier turn, so that turn's run counts; the session's first, unrelated turn does not.
-    expect(c?.testCommands).toEqual(["bunx vitest run src/round-size.test.ts"]);
+    expect(c?.sessions).toEqual([{ id: SESSION, lines: 13, hash: HASH_C }]);
+    // A later turn's commit does not inherit an earlier turn's run: its own turn ran nothing.
+    expect(c?.testCommands).toEqual([]);
   });
 
   it("still extends a snapshot whose last tool call gained its result since, as Entire fills results in later", () => {
@@ -357,7 +358,7 @@ describe("checkpointFor on the branch backend", () => {
     expect(transcriptHash(withoutResult)).toBe(transcriptHash(CUMULATIVE));
     const w = windowsOf(CUMULATIVE_C.join("\n"), { sha: "a", lines: 10, hash: transcriptHash(withoutResult) }, ["src/round-size.ts"]);
     expect(w.extended).toBe(true);
-    expect(w.sinceWindow.split("\n")).toHaveLength(2);
+    expect(w.sinceWindow.split("\n")).toHaveLength(3);
   });
 
   it("reads a transcript whole when it does not extend what the previous checkpoint read, whatever the counts say", () => {
@@ -375,16 +376,16 @@ describe("checkpointFor on the branch backend", () => {
   });
 
   it("bounds each session of a two-session checkpoint by its own snapshot, and is the same step only when every session's part is empty", () => {
-    const d = checkpointFor(repo, commitTwoSessions, [], new Map([[SESSION, { sha: commitC, lines: 12, hash: HASH_C }]]), ["src/round-size.ts"]);
+    const d = checkpointFor(repo, commitTwoSessions, [], new Map([[SESSION, { sha: commitC, lines: 13, hash: HASH_C }]]), ["src/round-size.ts"]);
     const other = [rec("user", stamp(20), [user("in the other session")]), rec("assistant", stamp(21), [text("Other session at work."), bash("bunx vitest run src/other.test.ts")])];
     expect(d?.sessions).toEqual([
-      { id: SESSION, lines: 12, hash: HASH_C },
+      { id: SESSION, lines: 13, hash: HASH_C },
       { id: OTHER, lines: 2, hash: transcriptHash(other) },
     ]);
     expect(d?.narration).toEqual({ started: "Other session at work.", ended: "", texts: 1, tools: 1 });
-    expect(d?.testCommands).toEqual(["bunx vitest run src/round-size.test.ts", "bunx vitest run src/other.test.ts"]);
+    expect(d?.testCommands).toEqual(["bunx vitest run src/other.test.ts"]);
     expect(d?.sameStepAs).toBeUndefined();
-    const again = checkpointFor(repo, commitTwoSessions, [], new Map([[SESSION, { sha: commitC, lines: 12, hash: HASH_C }], [OTHER, { sha: commitC, lines: 2, hash: transcriptHash(other) }]]), ["src/round-size.ts"]);
+    const again = checkpointFor(repo, commitTwoSessions, [], new Map([[SESSION, { sha: commitC, lines: 13, hash: HASH_C }], [OTHER, { sha: commitC, lines: 2, hash: transcriptHash(other) }]]), ["src/round-size.ts"]);
     expect(again?.sameStepAs).toBe(commitC);
   });
 
