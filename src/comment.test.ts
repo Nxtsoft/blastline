@@ -225,7 +225,7 @@ const brief: Brief = {
         model: "claude-sonnet-5",
         prompt: "Remove helper from src/lib.ts and inline it into parse; add emit.",
         narration: { started: "Inlining helper into parse and adding emit beside it.", ended: "Tests pass; committing.", texts: 3, tools: 5 },
-        sessions: [{ id: "3c0c80c7", lines: 40 }],
+        sessions: [{ id: "3c0c80c7", lines: 40, hash: "0".repeat(64) }],
         filesTouched: ["src/lib.ts"],
         testCommands: ["bunx vitest run src/a.test.ts"],
         source: "entire",

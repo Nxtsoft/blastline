@@ -164,7 +164,7 @@ describe("localCheckpoint", () => {
       model: "claude-fable-5-1",
       prompt: "let's do some work on blastline",
       narration: { started: "Three things in parallel now: confirm the follow-up commit state, produce run evidence for its PR.", ended: "", texts: 1, tools: 0 },
-      sessions: [{ id: "7182303c-7ae6-4e9a-a0f3-fb7230b71749", lines: 0 }],
+      sessions: [{ id: "7182303c-7ae6-4e9a-a0f3-fb7230b71749", lines: 0, hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }],
       filesTouched: ["a.ts"],
       testCommands: ["NODE_DISABLE_COMPILE_CACHE=1 bunx vitest run src/figure.test.ts"],
       source: "sessions.db",

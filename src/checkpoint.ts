@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 /**
  * The reviewable subset of an Entire checkpoint (github.com/entireio/cli): the
@@ -53,18 +54,29 @@ export interface CheckpointSession {
   id: string;
   /** Non-blank lines in the compact transcript. */
   lines: number;
+  /** sha256 of those lines, so the next checkpoint of the session can tell whether its transcript extends this one. */
+  hash: string;
+}
+
+/** What one earlier checkpoint read of a session: the commit, and the transcript's lines and hash. */
+export interface ReadSession {
+  sha: string;
+  lines: number;
+  hash: string;
 }
 
 /**
- * What earlier checkpoints in a range already read, per session id: the
- * commit and how many transcript lines. Entire's branch backend snapshots one
- * cumulative transcript per session at each checkpoint, and each snapshot is
- * a prefix of the next (probed on turing-webapp: checkpoint 3886c609f481's
- * 224 lines are the first 224 of d3d8ea5b0e29's 249), so the lines after the
- * previous snapshot are exactly this checkpoint's part. The snapshot's
- * `created_at` is not a boundary: records stamped after it are in it.
+ * What earlier checkpoints in a range already read, per session id. Entire's
+ * branch backend snapshots one cumulative transcript per session at each
+ * checkpoint, and each snapshot is a prefix of the next (probed on
+ * turing-webapp: checkpoint 3886c609f481's 224 lines are the first 224 of
+ * d3d8ea5b0e29's 249), so the lines after the previous snapshot are exactly
+ * this checkpoint's part. The snapshot's `created_at` is not a boundary:
+ * records stamped after it are in it. A writer that stores one transcript
+ * per commit (`blastline checkpoint write`) extends nothing, which the hash
+ * tells, and its transcript is read whole.
  */
-export type ReadSessions = Map<string, { sha: string; lines: number }>;
+export type ReadSessions = Map<string, ReadSession>;
 
 /**
  * What the agent said in the part of the compact transcript that belongs to
@@ -370,6 +382,15 @@ export interface Windows {
   stepWindow: string;
   /** Non-blank lines in the whole transcript. */
   lines: number;
+  /** sha256 of those lines. */
+  hash: string;
+  /** Whether the transcript extends what the previous checkpoint read, so that part was skipped. */
+  extended: boolean;
+}
+
+/** sha256 of a transcript's non-blank lines, joined by newlines. */
+export function transcriptHash(lines: string[]): string {
+  return createHash("sha256").update(lines.join("\n")).digest("hex");
 }
 
 /** Whether a user record carries text a person typed (`typedByPerson`). */
@@ -400,14 +421,16 @@ function worksOn(block: NonNullable<TranscriptRecord["content"]>[number], files:
 /**
  * The records of a compact transcript that belong to one checkpoint. The
  * transcript ends where this checkpoint was made; the question is where it
- * starts. `sinceWindow` skips the first `read` lines, the previous checkpoint
- * of the same session's snapshot (see `ReadSessions`). `stepWindow` starts at
- * the later of that and the last prompt a person typed before the first tool
- * call that works on one of `files`, so a session's earlier, unrelated turns
- * do not read as this commit's intent. Lines that are not JSON are kept;
- * every reader skips them.
+ * starts. `sinceWindow` skips what the previous checkpoint of the same
+ * session read (`read`), when this transcript extends that snapshot: its
+ * first `read.lines` lines hash to `read.hash`. Otherwise the transcript is
+ * this checkpoint's own and is read whole. `stepWindow` starts at the later
+ * of that and the last prompt a person typed before the first tool call that
+ * works on one of `files`, so a session's earlier, unrelated turns do not
+ * read as this commit's intent. Lines that are not JSON are kept; every
+ * reader skips them.
  */
-export function windowsOf(transcript: string, read: number, files: string[]): Windows {
+export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[]): Windows {
   const lines = transcript.split("\n").filter((line) => line.trim() !== "");
   const records = lines.map((line): TranscriptRecord | undefined => {
     try {
@@ -416,7 +439,8 @@ export function windowsOf(transcript: string, read: number, files: string[]): Wi
       return undefined;
     }
   });
-  const sinceStart = Math.min(read, lines.length);
+  const extended = read !== undefined && read.lines <= lines.length && transcriptHash(lines.slice(0, read.lines)) === read.hash;
+  const sinceStart = extended ? read.lines : 0;
   let stepStart = sinceStart;
   const firstEdit = records.findIndex((r, i) => i >= sinceStart && r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
   if (firstEdit !== -1) {
@@ -424,7 +448,7 @@ export function windowsOf(transcript: string, read: number, files: string[]): Wi
     while (turn > sinceStart && !(records[turn] !== undefined && humanTurn(records[turn]!))) turn--;
     stepStart = turn;
   }
-  return { sinceWindow: lines.slice(sinceStart).join("\n"), stepWindow: lines.slice(stepStart).join("\n"), lines: lines.length };
+  return { sinceWindow: lines.slice(sinceStart).join("\n"), stepWindow: lines.slice(stepStart).join("\n"), lines: lines.length, hash: transcriptHash(lines), extended };
 }
 
 /** What the agent said in a compact transcript: its first and last text, and how much it did. A line that is not JSON is skipped. */
@@ -525,9 +549,9 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     for (let i = 0; i < sessionCount; i++) {
       const sessionId = (i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata)).session_id ?? "";
       const before = sessionId === "" ? undefined : read.get(sessionId);
-      if (before !== undefined) readBefore++;
-      const { sinceWindow, stepWindow, lines } = windowsOf(show(`${i}/transcript.jsonl`), before?.lines ?? 0, files);
-      sessions.push({ id: sessionId, lines });
+      const { sinceWindow, stepWindow, lines, hash, extended } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
+      if (extended) readBefore++;
+      sessions.push({ id: sessionId, lines, hash });
       for (const c of testCommandsIn(stepWindow)) testCommands.add(c);
       for (const r of symbolReasonsIn(sinceWindow, symbols, contents)) reasons.set(`${r.path}\0${r.label}`, r);
       const n = narrationIn(stepWindow);
@@ -539,6 +563,7 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
       };
     }
     if (narration.ended === narration.started) narration.ended = "";
+    // The same step: every session's transcript extends what an earlier commit read, and nothing came after.
     const sameStep = readBefore > 0 && readBefore === sessions.length && narration.texts === 0 && narration.tools === 0 ? read.get(sessions[0]!.id)?.sha : undefined;
     return {
       id,

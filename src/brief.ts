@@ -677,7 +677,7 @@ export function buildBrief(o: BriefOptions): Brief {
       const own = (changeContext?.symbols ?? []).filter((s) => files.includes(s.path)).map((s) => ({ path: s.path, label: s.label, ...rangeOf(s) }));
       const checkpoint =
         checkpointId !== undefined ? checkpointFor(repo, sha, own, read, files) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files, own);
-      for (const s of checkpoint?.sessions ?? []) if (s.id !== "") read.set(s.id, { sha, lines: s.lines });
+      for (const s of checkpoint?.sessions ?? []) if (s.id !== "" && s.lines > 0) read.set(s.id, { sha, lines: s.lines, hash: s.hash });
       // Only for a commit with no trailer at all: a dangling trailer stays "not fetched", which names the fix (push the checkpoints).
       const provenance = checkpointId === undefined && checkpoint === undefined ? provenanceOf(repo, sha) : undefined;
       if (checkpointId !== undefined && checkpoint === undefined) {
