@@ -338,6 +338,15 @@ describe("checkpointFor on the branch backend", () => {
     expect(c?.sessions).toEqual([{ id: SESSION, lines: 12, hash: HASH_C }]);
   });
 
+  it("still extends a snapshot whose last tool call gained its result since, as Entire fills results in later", () => {
+    // Real shape: 0ec8874549e6's last record is the commit's Bash call without `result`; 5cc9e7709e27 carries the same record with it.
+    const withoutResult = [...CUMULATIVE.slice(0, 8), rec("assistant", stamp(10), [{ id: "b", type: "tool_use", name: "Bash", input: { command: "bunx vitest run src/round-size.test.ts" } }]), CUMULATIVE[9]!];
+    expect(transcriptHash(withoutResult)).toBe(transcriptHash(CUMULATIVE));
+    const w = windowsOf(CUMULATIVE_C.join("\n"), { sha: "a", lines: 10, hash: transcriptHash(withoutResult) }, ["src/round-size.ts"]);
+    expect(w.extended).toBe(true);
+    expect(w.sinceWindow.split("\n")).toHaveLength(2);
+  });
+
   it("reads a transcript whole when it does not extend what the previous checkpoint read, whatever the counts say", () => {
     // A writer that stores one transcript per commit (blastline checkpoint write): the same session id, a different, shorter transcript.
     const c = checkpointFor(repo, commitC, [], new Map([[SESSION, { sha: commitB, lines: 10, hash: transcriptHash(["{}"]) }]]), ["src/round-size.ts"]);

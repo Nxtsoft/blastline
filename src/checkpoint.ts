@@ -388,9 +388,27 @@ export interface Windows {
   extended: boolean;
 }
 
-/** sha256 of a transcript's non-blank lines, joined by newlines. */
+/**
+ * sha256 over the identity of a transcript's non-blank lines: each record's
+ * type, stamp and id, not its text. A snapshot's last record can be a tool
+ * call whose `result` arrives in the next snapshot (probed on turing-webapp:
+ * 0ec8874549e6's line 191 gains `result` in 5cc9e7709e27), so the text of a
+ * prefix changes while its records do not. A line that is not JSON counts as
+ * itself.
+ */
 export function transcriptHash(lines: string[]): string {
-  return createHash("sha256").update(lines.join("\n")).digest("hex");
+  const hash = createHash("sha256");
+  for (const line of lines) {
+    let key = line;
+    try {
+      const r = JSON.parse(line) as TranscriptRecord & { id?: unknown; ts?: unknown };
+      key = `${r.type ?? ""}\0${typeof r.ts === "string" ? r.ts : ""}\0${typeof r.id === "string" ? r.id : ""}`;
+    } catch {
+      // not JSON: the line itself is its identity
+    }
+    hash.update(key).update("\n");
+  }
+  return hash.digest("hex");
 }
 
 /** Whether a user record carries text a person typed (`typedByPerson`). */
