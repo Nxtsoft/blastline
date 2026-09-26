@@ -81,7 +81,8 @@ brief options:
                        session index (~/.agents/.history/sessions/sessions.db); nothing leaves the machine
   --sessions-db <path> that index, when it is not at the default path
   brief reads each commit's Entire-Checkpoint trailer (refs/entire/checkpoints/* or the branch entire/checkpoints/v1) and shows only the
-  first prompt line, agent, model, files touched and the test commands run; never the transcript.
+  first line a person typed, the agent's first and last line in the commit's part of the transcript, agent,
+  model, files touched and the test runners run; never tool output or the raw transcript.
 
 Selection is a safe superset: "run at least these." Any file the graph cannot
 vouch for fails open to ALL, with the reason printed. Subsets carry the graph's

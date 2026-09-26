@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CHECKPOINT_BRANCH, agentForAddress, checkpointFor, checkpointPlace, checkpointPlaces, checkpointPushHint, checkpointRef, checkpointTrailer, editNames, narrationIn, promptLine, provenanceOf, symbolReasonsIn, testCommandsIn, windowsOf, writtenWithin } from "./checkpoint.js";
+import { CHECKPOINT_BRANCH, agentForAddress, checkpointFor, checkpointPlace, checkpointPlaces, checkpointPushHint, checkpointRef, checkpointTrailer, editNames, narrationIn, promptLine, provenanceOf, symbolReasonsIn, testCommandsIn, typedByPerson, windowsOf, writtenWithin } from "./checkpoint.js";
 
 // src/testdata/checkpoint-ref/ is the tree of a real Entire 0.11.2 checkpoint
 // (ref refs/entire/checkpoints/H5/01M3AY9296319GSPWRKXGHXMH5, written for
@@ -170,6 +170,16 @@ describe("promptLine on a turn with several prompts", () => {
     expect(promptLine(prompt)).toBe("revert the autofix and keep the router-driven page key");
     expect(promptLine("<task-notification>\n<summary>x</summary>\n</task-notification>\n")).toBe("");
   });
+
+  it("skips a skill's instructions, which Claude Code injects as a prompt, the same way the transcript walk does", () => {
+    // Real shape from checkpoint 89624f0f372c on turing-webapp (path shortened).
+    const skill = "Base directory for this skill: /Users/x/.claude/plugins/cache/superset/skills/page\n\n# Page\n\nWrite a page.";
+    expect(typedByPerson(skill)).toBe(false);
+    expect(promptLine(skill)).toBe("");
+    expect(promptLine(`${skill}\n\n---\n\npublish the closure sweep as a page`)).toBe("publish the closure sweep as a page");
+    expect(typedByPerson("  ")).toBe(false);
+    expect(typedByPerson("fix the cap")).toBe(true);
+  });
 });
 
 // Entire 0.10.0 branch backend: 12-hex ids, one shared branch, <first two>/<rest>/ directories.
@@ -237,14 +247,20 @@ function writeBranchCheckpoint(id: string, files: Record<string, string>): void 
   git("update-ref", ref, git("commit-tree", tree, "-m", `Checkpoint: ${id}`));
 }
 
-function branchFiles(id: string, createdAt: string, transcript: string[], prompt: string): Record<string, string> {
+function branchFiles(id: string, createdAt: string, transcript: string[], prompt: string, second?: { session: string; transcript: string[] }): Record<string, string> {
+  const dir = `/${id.slice(0, 2)}/${id.slice(2)}`;
+  const meta = (i: number, session: string): string =>
+    JSON.stringify({ cli_version: "0.10.0", checkpoint_id: id, session_id: session, created_at: createdAt, agent: "Claude Code", model: "claude-fable-5-1", turn_id: "268aecc82583", compact_transcript_start: 0, files_touched: [] });
+  const sessions = [{ metadata: `${dir}/0/metadata.json`, transcript: `${dir}/0/full.jsonl` }];
+  if (second) sessions.push({ metadata: `${dir}/1/metadata.json`, transcript: `${dir}/1/full.jsonl` });
   return {
-    "metadata.json": JSON.stringify({ cli_version: "0.10.0", checkpoint_id: id, strategy: "manual-commit", branch: "turing-126", checkpoints_count: 3, files_touched: null, sessions: [{ metadata: `/${id.slice(0, 2)}/${id.slice(2)}/0/metadata.json`, transcript: `/${id.slice(0, 2)}/${id.slice(2)}/0/full.jsonl` }] }),
-    "0/metadata.json": JSON.stringify({ cli_version: "0.10.0", checkpoint_id: id, session_id: SESSION, created_at: createdAt, agent: "Claude Code", model: "claude-fable-5-1", turn_id: "268aecc82583", compact_transcript_start: 0, files_touched: [] }),
+    "metadata.json": JSON.stringify({ cli_version: "0.10.0", checkpoint_id: id, strategy: "manual-commit", branch: "turing-126", checkpoints_count: 3, files_touched: null, sessions }),
+    "0/metadata.json": meta(0, SESSION),
     "0/prompt.txt": prompt,
     "0/transcript.jsonl": transcript.join("\n") + "\n",
     "0/content_hash.txt": "x",
     "0/full.jsonl": RAW_SENTINEL,
+    ...(second && { "1/metadata.json": meta(1, second.session), "1/prompt.txt": "", "1/transcript.jsonl": second.transcript.join("\n") + "\n", "1/full.jsonl": RAW_SENTINEL }),
   };
 }
 
@@ -253,14 +269,20 @@ describe("checkpointFor on the branch backend", () => {
   let commitB: string;
   let commitC: string;
   let commitMissing: string;
+  let commitTwoSessions: string;
+  const HEX_D = "89624f0f372c";
+  const OTHER = "1dd6ba8f-0000-4000-8000-000000000000";
   beforeAll(() => {
-    writeBranchCheckpoint(HEX_A, branchFiles(HEX_A, stamp(12), CUMULATIVE, NOTIFICATION_PROMPT + "\n---\n\nnow give the round-size cap one home\n"));
-    writeBranchCheckpoint(HEX_B, branchFiles(HEX_B, stamp(13), CUMULATIVE, NOTIFICATION_PROMPT));
-    writeBranchCheckpoint(HEX_C, branchFiles(HEX_C, stamp(32), CUMULATIVE_C, NOTIFICATION_PROMPT));
+    // Real Entire 0.10.0 shape: created_at precedes the snapshot's last records, so time is no boundary; line counts are.
+    writeBranchCheckpoint(HEX_A, branchFiles(HEX_A, stamp(9), CUMULATIVE, NOTIFICATION_PROMPT + "\n---\n\nnow give the round-size cap one home\n"));
+    writeBranchCheckpoint(HEX_B, branchFiles(HEX_B, stamp(10), CUMULATIVE, NOTIFICATION_PROMPT));
+    writeBranchCheckpoint(HEX_C, branchFiles(HEX_C, stamp(30), CUMULATIVE_C, NOTIFICATION_PROMPT));
+    writeBranchCheckpoint(HEX_D, branchFiles(HEX_D, stamp(31), CUMULATIVE_C, NOTIFICATION_PROMPT, { session: OTHER, transcript: [rec("user", stamp(20), [user("in the other session")]), rec("assistant", stamp(21), [text("Other session at work."), bash("bunx vitest run src/other.test.ts")])] }));
     commitA = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 8;\n", `refactor(round-size): one home\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEntire-Checkpoint: ${HEX_A}\n`);
     commitB = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 8;\nexport const ROUND_SIZE_MIN = 1;\n", `feat(luna): page key\n\nEntire-Checkpoint: ${HEX_B}\n`);
     commitC = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 8;\n", `revert(luna): keep the router-driven page key\n\nEntire-Checkpoint: ${HEX_C}\n`);
     commitMissing = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 9;\n", "fix: gate\n\nEntire-Checkpoint: 0123456789ab\n");
+    commitTwoSessions = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 10;\n", `fix: two sessions\n\nEntire-Checkpoint: ${HEX_D}\n`);
   });
 
   it("accepts a 12-hex trailer and names the shared branch as its place, local branch first", () => {
@@ -277,15 +299,14 @@ describe("checkpointFor on the branch backend", () => {
   });
 
   it("reads the checkpoint from the branch: the turn that first edited the commit's files gives the narration and the tests, not the session's earlier turns", () => {
-    const cp = checkpointFor(repo, commitA, [], undefined, ["src/round-size.ts"]);
+    const cp = checkpointFor(repo, commitA, [], new Map(), ["src/round-size.ts"]);
     expect(cp).toMatchObject({
       id: HEX_A,
       agent: "Claude Code",
       model: "claude-fable-5-1",
-      sessionId: SESSION,
-      createdAt: stamp(12),
       prompt: "now give the round-size cap one home",
       narration: { started: "I'll start by reading the ticket, then set up a worktree off dev.", ended: "The path in my notes had a hyphen where the real path has a slash.", texts: 2, tools: 2 },
+      sessions: [{ id: SESSION, lines: 10 }],
       testCommands: ["bunx vitest run src/round-size.test.ts"],
       source: "entire",
     });
@@ -295,31 +316,47 @@ describe("checkpointFor on the branch backend", () => {
   });
 
   it("reads the whole transcript when the commit's files were never edited by a tool and no previous checkpoint bounds it", () => {
-    const cp = checkpointFor(repo, commitA, [], undefined, ["src/other.ts"]);
+    const cp = checkpointFor(repo, commitA, [], new Map(), ["src/other.ts"]);
     expect(cp?.narration.started).toBe("Here are the five tickets.");
     expect(cp?.testCommands).toEqual(["bunx vitest run src/tickets.test.ts", "bunx vitest run src/round-size.test.ts"]);
   });
 
-  it("starts after the previous checkpoint of the same session, and says so when that leaves nothing", () => {
-    const previous = { sha: commitA, sessionId: SESSION, createdAt: stamp(12) };
-    const b = checkpointFor(repo, commitB, [], previous, ["src/round-size.ts"]);
+  it("reads only the lines after the previous checkpoint of the same session, and says so when that leaves nothing", () => {
+    const read = new Map([[SESSION, { sha: commitA, lines: 10 }]]);
+    const b = checkpointFor(repo, commitB, [], read, ["src/round-size.ts"]);
     expect(b?.narration).toEqual({ started: "", ended: "", texts: 0, tools: 0 });
     expect(b?.sameStepAs).toBe(commitA);
     expect(b?.testCommands).toEqual([]);
-    const c = checkpointFor(repo, commitC, [], { sha: commitB, sessionId: SESSION, createdAt: stamp(13) }, ["src/round-size.ts"]);
+    expect(b?.sessions).toEqual([{ id: SESSION, lines: 10 }]);
+    // The last record of A's snapshot is stamped after A's created_at; a time boundary would hand it to C as well.
+    const c = checkpointFor(repo, commitC, [], new Map([[SESSION, { sha: commitB, lines: 10 }]]), ["src/round-size.ts"]);
     expect(c?.narration).toEqual({ started: "All checks pass on the tip, but CodeRabbit pushed one more autofix. Reviewing it before merging.", ended: "", texts: 1, tools: 1 });
     expect(c?.sameStepAs).toBeUndefined();
     expect(c?.prompt).toBe("");
+    expect(c?.sessions).toEqual([{ id: SESSION, lines: 12 }]);
   });
 
-  it("ignores a previous checkpoint from another session", () => {
-    const b = checkpointFor(repo, commitB, [], { sha: commitA, sessionId: "other", createdAt: stamp(12) }, ["src/round-size.ts"]);
+  it("ignores what was read of another session", () => {
+    const b = checkpointFor(repo, commitB, [], new Map([["other", { sha: commitA, lines: 10 }]]), ["src/round-size.ts"]);
     expect(b?.narration.started).toBe("I'll start by reading the ticket, then set up a worktree off dev.");
     expect(b?.sameStepAs).toBeUndefined();
   });
 
+  it("bounds each session of a two-session checkpoint by its own count, and is the same step only when every session's part is empty", () => {
+    const d = checkpointFor(repo, commitTwoSessions, [], new Map([[SESSION, { sha: commitC, lines: 12 }]]), ["src/round-size.ts"]);
+    expect(d?.sessions).toEqual([
+      { id: SESSION, lines: 12 },
+      { id: OTHER, lines: 2 },
+    ]);
+    expect(d?.narration).toEqual({ started: "Other session at work.", ended: "", texts: 1, tools: 1 });
+    expect(d?.testCommands).toEqual(["bunx vitest run src/other.test.ts"]);
+    expect(d?.sameStepAs).toBeUndefined();
+    const again = checkpointFor(repo, commitTwoSessions, [], new Map([[SESSION, { sha: commitC, lines: 12 }], [OTHER, { sha: commitC, lines: 2 }]]), ["src/round-size.ts"]);
+    expect(again?.sameStepAs).toBe(commitC);
+  });
+
   it("finds a symbol's reason in the since-window even when the narration window starts later", () => {
-    const cp = checkpointFor(repo, commitA, [{ path: "src/round-size.ts", label: "ROUND_SIZE_MAX" }], undefined, ["src/round-size.ts"]);
+    const cp = checkpointFor(repo, commitA, [{ path: "src/round-size.ts", label: "ROUND_SIZE_MAX" }], new Map(), ["src/round-size.ts"]);
     expect(cp?.reasons).toEqual([{ path: "src/round-size.ts", label: "ROUND_SIZE_MAX", turn: 4, why: "I'll start by reading the ticket, then set up a worktree off dev." }]);
   });
 
@@ -332,7 +369,9 @@ describe("checkpointFor on the branch backend", () => {
 describe("windowsOf and narrationIn", () => {
   it("keeps an unstamped transcript whole and counts texts and tool calls", () => {
     const t = [JSON.stringify({ type: "assistant", content: [text("a"), bash("ls")] }), "not json", JSON.stringify({ type: "assistant", content: [text("b")] })].join("\n");
-    expect(windowsOf(t, "2026-01-01T00:00:00Z", ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t });
+    expect(windowsOf(t, 0, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, lines: 3 });
+    expect(windowsOf(t, 2, ["x.ts"]).sinceWindow).toBe(JSON.stringify({ type: "assistant", content: [text("b")] }));
+    expect(windowsOf(t, 9, ["x.ts"]).stepWindow).toBe("");
     expect(narrationIn(t)).toEqual({ started: "a", ended: "b", texts: 2, tools: 1 });
   });
 
@@ -345,14 +384,14 @@ describe("windowsOf and narrationIn", () => {
       rec("user", stamp(5), [user("Base directory for this skill: /x/.claude/skills/git-worktree")]),
       rec("assistant", stamp(6), [bash("python3 - <<'EOF'\nedit('app/lib/use-round-size.ts', [])\nEOF")]),
     ].join("\n");
-    const w = windowsOf(t, undefined, ["app/(protected)/lib/use-round-size.ts"]);
+    const w = windowsOf(t, 0, ["app/(protected)/lib/use-round-size.ts"]);
     expect(w.stepWindow.split("\n")).toHaveLength(4);
     expect(narrationIn(w.stepWindow).started).toBe("editing with a script");
   });
 
   it("does not walk back past a harness notification into an earlier human turn", () => {
     const t = [rec("user", stamp(1), [user("first ask")]), rec("assistant", stamp(2), [text("on it")]), rec("user", stamp(3), [user("<task-notification>x</task-notification>")]), rec("assistant", stamp(4), [edit("a.ts", "x")])].join("\n");
-    expect(windowsOf(t, undefined, ["a.ts"]).stepWindow.split("\n")).toHaveLength(4);
+    expect(windowsOf(t, 0, ["a.ts"]).stepWindow.split("\n")).toHaveLength(4);
   });
 });
 
@@ -369,11 +408,10 @@ describe("checkpointFor", () => {
       commit: commitWithRef,
       agent: "Claude Code",
       model: "claude-sonnet-5",
-      sessionId: "3c0c80c7-265b-42aa-9f37-58a615449010",
-      createdAt: "2026-09-25T00:08:41.607595272Z",
       prompt:
         "In this repo (cwd), edit src/comment.ts: change the doc comment line directly above the exported COMMENT_MARKER constant to read exactly: /** First line of every comment: the Action finds the existing",
       narration: { started: "Commit sha: `14074f79e3aa14b9bf7d5d476ec119aeb2bae6e3`", ended: "", texts: 1, tools: 3 },
+      sessions: [{ id: "3c0c80c7-265b-42aa-9f37-58a615449010", lines: 5 }],
       filesTouched: ["src/comment.ts"],
       testCommands: [],
       source: "entire",

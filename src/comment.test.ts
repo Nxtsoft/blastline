@@ -223,10 +223,9 @@ const brief: Brief = {
         commit: "1".repeat(40),
         agent: "Claude Code",
         model: "claude-sonnet-5",
-        sessionId: "3c0c80c7",
-        createdAt: "2026-09-25T00:08:41Z",
         prompt: "Remove helper from src/lib.ts and inline it into parse; add emit.",
         narration: { started: "Inlining helper into parse and adding emit beside it.", ended: "Tests pass; committing.", texts: 3, tools: 5 },
+        sessions: [{ id: "3c0c80c7", lines: 40 }],
         filesTouched: ["src/lib.ts"],
         testCommands: ["bunx vitest run src/a.test.ts"],
         source: "entire",
@@ -405,6 +404,13 @@ describe("renderBrief: the Intent cell of a checkpointed commit", () => {
     expect(md).toContain("| `vitest` (1) |");
     expect(md).not.toContain("\n## Summary");
     expect(md).not.toContain("gh pr create");
+  });
+
+  it("closes a code span a cut left open, so the markup after it survives", () => {
+    const started = "Renaming `" + "x".repeat(130) + "` everywhere";
+    const line = row({ narration: { started, ended: "Done.", texts: 2, tools: 1 } });
+    expect(line).toContain("`…<br><sub>then: Done.</sub>");
+    expect((line.match(/`/g) ?? []).length % 2).toBe(0);
   });
 
   it("shows the first line alone when the agent's last line is the same", () => {
