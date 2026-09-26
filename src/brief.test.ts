@@ -194,7 +194,7 @@ describe("buildBrief", () => {
     const [lib, test] = b.commits;
     expect(lib?.checkpoint?.source).toBe("entire");
     expect(test?.checkpointId).toBeUndefined();
-    expect(test?.checkpoint).toMatchObject({ id: "", agent: "codex", model: "gpt-6-astra", source: "sessions.db", sessionId: "11111111-local", prompt: "cover emit with a test", narration: { started: "Adding the emit test and running the lib suite.", ended: "", texts: 1, tools: 0 }, filesTouched: ["src/lib.test.ts"], testCommands: ["bunx vitest run src/lib.test.ts"] });
+    expect(test?.checkpoint).toMatchObject({ id: "", agent: "codex", model: "gpt-6-astra", source: "sessions.db", sessions: [{ id: "11111111-local", lines: 0, hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }], prompt: "cover emit with a test", narration: { started: "Adding the emit test and running the lib suite.", ended: "", texts: 1, tools: 0 }, filesTouched: ["src/lib.test.ts"], testCommands: ["bunx vitest run src/lib.test.ts"] });
     expect(test?.ranReachingTests).toEqual(["src/lib.test.ts"]);
     expect(brief().commits[1]?.checkpoint).toBeUndefined();
   });
