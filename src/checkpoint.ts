@@ -378,7 +378,7 @@ export function symbolReasonsIn(transcript: string, symbols: SymbolAt[], content
 export interface Windows {
   /** Everything after the previous checkpoint of the same session: where an edit's reason is looked for. */
   sinceWindow: string;
-  /** The later of that and the turn in which the commit's files were first worked on: where the narration comes from. */
+  /** Inside that, from the turn in which the commit's files were first worked on: where the narration comes from. */
   stepWindow: string;
   /** From that turn, whatever an earlier commit read of it: where the test runs come from, so every commit of one turn carries the turn's runs. */
   turnWindow: string;
@@ -448,8 +448,8 @@ function worksOn(block: NonNullable<TranscriptRecord["content"]>[number], files:
  * this checkpoint's own and is read whole. `turnWindow` starts at the last
  * prompt a person typed before the first tool call that works on one of
  * `files`, so a session's earlier, unrelated turns do not count; `stepWindow`
- * is the later of that and `sinceWindow`. Lines that are not JSON are kept;
- * every reader skips them.
+ * starts the same way inside `sinceWindow`, so the narration is the new
+ * part's own turn. Lines that are not JSON are kept; every reader skips them.
  */
 export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[]): Windows {
   const lines = transcript.split("\n").filter((line) => line.trim() !== "");
@@ -462,14 +462,16 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   });
   const extended = read !== undefined && read.lines <= lines.length && transcriptHash(lines.slice(0, read.lines)) === read.hash;
   const sinceStart = extended ? read.lines : 0;
-  let turnStart = sinceStart;
-  const firstWork = records.findIndex((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
-  if (firstWork !== -1) {
+  // The turn that first worked on the files, searched from `from`: back from that tool call to the last prompt a person typed.
+  const turnFrom = (from: number): number => {
+    const firstWork = records.findIndex((r, i) => i >= from && r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
+    if (firstWork === -1) return from;
     let turn = firstWork;
-    while (turn > 0 && !(records[turn] !== undefined && humanTurn(records[turn]!))) turn--;
-    turnStart = turn;
-  }
-  const stepStart = Math.max(sinceStart, turnStart);
+    while (turn > from && !(records[turn] !== undefined && humanTurn(records[turn]!))) turn--;
+    return turn;
+  };
+  const turnStart = turnFrom(0);
+  const stepStart = turnFrom(sinceStart);
   return {
     sinceWindow: lines.slice(sinceStart).join("\n"),
     stepWindow: lines.slice(stepStart).join("\n"),
