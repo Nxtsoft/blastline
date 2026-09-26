@@ -456,7 +456,7 @@ export function renderComment(selection: Selection, ctx: CommentContext): string
 function runnersOf(commands: string[]): string {
   const counts = new Map<string, number>();
   for (const command of commands) {
-    const runner = TEST_RUNNER.exec(command)?.[1] ?? "test";
+    const runner = TEST_RUNNER.exec(command)![1]!;
     counts.set(runner, (counts.get(runner) ?? 0) + 1);
   }
   return [...counts.entries()].map(([runner, n]) => `${code(runner)} (${n})`).join(", ");
@@ -470,7 +470,12 @@ function runnersOf(commands: string[]): string {
  * and model.
  */
 function intentCell(cp: Checkpoint, links: Links): string {
-  const truncate = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+  // A cut inside a code span would leave a backtick to pair with one in the next line and swallow the markup between.
+  const truncate = (s: string, n: number): string => {
+    if (s.length <= n) return s;
+    const cut = s.slice(0, n - 1);
+    return `${cut}${(cut.match(/`/g)?.length ?? 0) % 2 === 1 ? "`" : ""}…`;
+  };
   const who = cp.model ? ` <sub>${cp.agent ? `${cp.agent} · ` : ""}${cp.model}</sub>` : "";
   if (cp.sameStepAs !== undefined) return `_same step as ${links.commit(cp.sameStepAs)}_${who}`;
   const n = cp.narration;

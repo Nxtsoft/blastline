@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 /**
  * The reviewable subset of an Entire checkpoint (github.com/entireio/cli): the
@@ -15,15 +16,13 @@ export interface Checkpoint {
   agent: string;
   /** `0/metadata.json.model`, e.g. "claude-sonnet-5". */
   model: string;
-  /** `0/metadata.json.session_id`; "" when the writer set none. */
-  sessionId: string;
-  /** `0/metadata.json.created_at`, ISO; "" when the writer set none. */
-  createdAt: string;
-  /** The first line a human wrote in `0/prompt.txt`, at most 200 characters. */
+  /** The first line a person typed in `0/prompt.txt`, at most 200 characters. */
   prompt: string;
-  /** What the agent said in the transcript window that ends at this checkpoint. */
+  /** What the agent said in the part of the compact transcript that belongs to this checkpoint. */
   narration: Narration;
-  /** Set by the brief when the window since the previous checkpoint of the same session holds no text and no tool call: the commit that step also produced. */
+  /** Each session in the checkpoint: its id and how many lines its compact transcript had, so the next checkpoint of that session reads only what came after. */
+  sessions: CheckpointSession[];
+  /** When every session's part is empty: the earlier commit in the range whose checkpoint already read this transcript, so the same step produced both. */
   sameStepAs?: string;
   /** `metadata.json.files_touched`, repo-relative. */
   filesTouched: string[];
@@ -49,12 +48,40 @@ export interface SymbolReason {
   why: string;
 }
 
+/** One session of a checkpoint, as `<i>/metadata.json` and `<i>/transcript.jsonl` describe it. */
+export interface CheckpointSession {
+  /** `session_id`; "" when the writer set none. */
+  id: string;
+  /** Non-blank lines in the compact transcript. */
+  lines: number;
+  /** sha256 of those lines, so the next checkpoint of the session can tell whether its transcript extends this one. */
+  hash: string;
+}
+
+/** What one earlier checkpoint read of a session: the commit, and the transcript's lines and hash. */
+export interface ReadSession {
+  sha: string;
+  lines: number;
+  hash: string;
+}
+
+/**
+ * What earlier checkpoints in a range already read, per session id. Entire's
+ * branch backend snapshots one cumulative transcript per session at each
+ * checkpoint, and each snapshot is a prefix of the next (probed on
+ * turing-webapp: checkpoint 3886c609f481's 224 lines are the first 224 of
+ * d3d8ea5b0e29's 249), so the lines after the previous snapshot are exactly
+ * this checkpoint's part. The snapshot's `created_at` is not a boundary:
+ * records stamped after it are in it. A writer that stores one transcript
+ * per commit (`blastline checkpoint write`) extends nothing, which the hash
+ * tells, and its transcript is read whole.
+ */
+export type ReadSessions = Map<string, ReadSession>;
+
 /**
  * What the agent said in the part of the compact transcript that belongs to
- * one checkpoint. Entire's branch backend keeps one cumulative transcript per
- * session, so the brief windows it between consecutive checkpoints of the
- * same session; the ref backend writes one per commit, so the window is all
- * of it.
+ * one checkpoint: the lines after the previous checkpoint of the same session
+ * in the range; the ref backend writes one transcript per commit, so all of it.
  */
 export interface Narration {
   /** First line of the agent's first text in the window, at most 200 characters; "" when the window has none. */
@@ -152,13 +179,24 @@ function git(repo: string, args: string[]): string {
 }
 
 /**
+ * Whether prompt text was typed by a person. The harness delivers its own
+ * text as prompts too: a tag (`<task-notification>`, `<system-reminder>`) or
+ * a skill's instructions, which Claude Code injects starting "Base directory
+ * for this skill:". A slash command's expanded body is not told apart; it
+ * carries no mark in the compact transcript.
+ */
+export function typedByPerson(text: string): boolean {
+  const first = text.trim();
+  return first !== "" && !first.startsWith("<") && !first.startsWith("Base directory for this skill:");
+}
+
+/**
  * The line of a prompt that states the intent, capped at 200 characters.
  * `0/prompt.txt` holds every prompt of the turn, separated by `---` lines. A
- * prompt that starts with a tag (`<task-notification>`, `<system-reminder>`)
- * was delivered by the harness, not typed by a person, and is skipped whole;
- * so is the preamble a session launched through `agents run` starts with
- * ("You are in a git worktree of <repo> on branch <b>…", one line). The
- * reviewer sees the first line a human wrote.
+ * prompt the harness delivered (`typedByPerson`) is skipped whole; so is the
+ * preamble a session launched through `agents run` starts with ("You are in
+ * a git worktree of <repo> on branch <b>…", one line). The reviewer sees the
+ * first line a person typed.
  */
 export function promptLine(prompt: string): string {
   for (const block of prompt.split(/^---\s*$/m)) {
@@ -167,7 +205,7 @@ export function promptLine(prompt: string): string {
       .map((l) => l.trim())
       .filter((l) => l !== "" && !l.startsWith("You are in a git worktree of "));
     const first = lines[0];
-    if (first === undefined || first.startsWith("<")) continue;
+    if (first === undefined || !typedByPerson(first)) continue;
     return first.slice(0, 200);
   }
   return "";
@@ -222,14 +260,11 @@ interface SessionMetadata {
   agent?: string;
   model?: string;
   session_id?: string;
-  created_at?: string;
 }
 
 /** One record of the compact transcript: a turn with its content blocks. */
 interface TranscriptRecord {
   type?: string;
-  /** ISO time of the turn; Entire 0.10.0 and later stamp every record. */
-  ts?: string;
   content?: {
     type?: string;
     name?: string;
@@ -343,20 +378,45 @@ export function symbolReasonsIn(transcript: string, symbols: SymbolAt[], content
 export interface Windows {
   /** Everything after the previous checkpoint of the same session: where an edit's reason is looked for. */
   sinceWindow: string;
-  /** From the turn in which the commit's files were first edited: where the narration and the test runs come from. */
+  /** Inside that, from the commit's own turn: where the narration comes from. */
   stepWindow: string;
+  /** The commit's own turn whole, whatever an earlier commit read of it: where the test runs come from, so every commit of one turn carries the turn's runs. */
+  turnWindow: string;
+  /** Non-blank lines in the whole transcript. */
+  lines: number;
+  /** sha256 of those lines. */
+  hash: string;
+  /** Whether the transcript extends what the previous checkpoint read, so that part was skipped. */
+  extended: boolean;
 }
 
 /**
- * Whether a user record carries text a person typed. The harness delivers
- * its own text as user records too: a tag (`<task-notification>`,
- * `<system-reminder>`), or a skill's instructions, which Claude Code injects
- * starting "Base directory for this skill:".
+ * sha256 over the identity of a transcript's non-blank lines: each record's
+ * type, stamp and id, not its text. A snapshot's last record can be a tool
+ * call whose `result` arrives in the next snapshot (probed on turing-webapp:
+ * 0ec8874549e6's line 191 gains `result` in 5cc9e7709e27), so the text of a
+ * prefix changes while its records do not. A line that is not JSON counts as
+ * itself.
  */
+export function transcriptHash(lines: string[]): string {
+  const hash = createHash("sha256");
+  for (const line of lines) {
+    let key = line;
+    try {
+      const r = JSON.parse(line) as TranscriptRecord & { id?: unknown; ts?: unknown };
+      // A record without an id (blastline's own writer) is its text: two of them a second apart must not look alike.
+      key = typeof r.id === "string" ? `${r.type ?? ""}\0${typeof r.ts === "string" ? r.ts : ""}\0${r.id}` : line;
+    } catch {
+      // not JSON: the line itself is its identity
+    }
+    hash.update(key).update("\n");
+  }
+  return hash.digest("hex");
+}
+
+/** Whether a user record carries text a person typed (`typedByPerson`). */
 function humanTurn(record: TranscriptRecord): boolean {
-  if (record.type !== "user") return false;
-  const text = record.content?.find((c) => typeof c.text === "string")?.text?.trim() ?? "";
-  return text !== "" && !text.startsWith("<") && !text.startsWith("Base directory for this skill:");
+  return record.type === "user" && typedByPerson(record.content?.find((c) => typeof c.text === "string")?.text ?? "");
 }
 
 /**
@@ -380,18 +440,20 @@ function worksOn(block: NonNullable<TranscriptRecord["content"]>[number], files:
 }
 
 /**
- * The records of a compact transcript that belong to one checkpoint. Entire's
- * branch backend keeps one cumulative transcript per session and snapshots it
- * at each checkpoint, so the transcript ends where this checkpoint was made
- * and the question is where it starts. `sinceWindow` starts after `since`,
- * the previous checkpoint of the same session (a record without a stamp is
- * kept, so an unstamped transcript is read whole). `stepWindow` starts at the
- * later of that and the last prompt a person typed before the first tool call
- * that works on one of `files`, so a session's earlier, unrelated turns do
- * not read as this commit's intent. Lines that are not JSON are kept; every
- * reader skips them.
+ * The records of a compact transcript that belong to one checkpoint. The
+ * transcript ends where this checkpoint was made; the question is where it
+ * starts. `sinceWindow` skips what the previous checkpoint of the same
+ * session read (`read`), when this transcript extends that snapshot: its
+ * first `read.lines` lines hash to `read.hash`. Otherwise the transcript is
+ * this checkpoint's own and is read whole. The commit's own turn starts at
+ * the last prompt a person typed before its first tool call that works on
+ * one of `files` inside the new part, or before the new part when it holds
+ * none (a commit the same step made). `turnWindow` is that turn whole, so a
+ * run the turn made before an earlier commit still counts and a run from an
+ * earlier turn does not; `stepWindow` is the turn's part inside
+ * `sinceWindow`. Lines that are not JSON are kept; every reader skips them.
  */
-export function windowsOf(transcript: string, since: string | undefined, files: string[]): Windows {
+export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[]): Windows {
   const lines = transcript.split("\n").filter((line) => line.trim() !== "");
   const records = lines.map((line): TranscriptRecord | undefined => {
     try {
@@ -400,19 +462,21 @@ export function windowsOf(transcript: string, since: string | undefined, files: 
       return undefined;
     }
   });
-  let sinceStart = 0;
-  if (since !== undefined) {
-    const first = records.findIndex((r) => r === undefined || typeof r.ts !== "string" || r.ts > since);
-    sinceStart = first === -1 ? lines.length : first;
-  }
-  let stepStart = sinceStart;
-  const firstEdit = records.findIndex((r, i) => i >= sinceStart && r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
-  if (firstEdit !== -1) {
-    let turn = firstEdit;
-    while (turn > sinceStart && !(records[turn] !== undefined && humanTurn(records[turn]!))) turn--;
-    stepStart = turn;
-  }
-  return { sinceWindow: lines.slice(sinceStart).join("\n"), stepWindow: lines.slice(stepStart).join("\n") };
+  const extended = read !== undefined && read.lines <= lines.length && transcriptHash(lines.slice(0, read.lines)) === read.hash;
+  const sinceStart = extended ? read.lines : 0;
+  // The commit's own turn: back from its first work on the files inside the new part (or from the part's start) to the last prompt a person typed.
+  const firstWork = records.findIndex((r, i) => i >= sinceStart && r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
+  let turnStart = firstWork === -1 ? sinceStart : firstWork;
+  while (turnStart > 0 && !(records[turnStart] !== undefined && humanTurn(records[turnStart]!))) turnStart--;
+  const stepStart = Math.max(sinceStart, turnStart);
+  return {
+    sinceWindow: lines.slice(sinceStart).join("\n"),
+    stepWindow: lines.slice(stepStart).join("\n"),
+    turnWindow: lines.slice(turnStart).join("\n"),
+    lines: lines.length,
+    hash: transcriptHash(lines),
+    extended,
+  };
 }
 
 /** What the agent said in a compact transcript: its first and last text, and how much it did. A line that is not JSON is skipped. */
@@ -462,13 +526,6 @@ export function testCommandsIn(transcript: string): string[] {
   return [...seen];
 }
 
-/** The checkpoint that came before this one in the same brief: where its window starts. */
-export interface PreviousCheckpoint {
-  sha: string;
-  sessionId: string;
-  createdAt: string;
-}
-
 /**
  * Resolve a commit's `Entire-Checkpoint:` trailer to its checkpoint and
  * return the allowlisted subset. Undefined when the commit has no trailer,
@@ -480,9 +537,9 @@ export interface PreviousCheckpoint {
  * `symbols` are the changed symbols the brief already knows; the transcript's
  * edits are matched to them and their text is searched, never shown.
  *
- * `previous` is the brief's previous checkpoint and `files` what the commit
- * changed; `windowsOf` uses them to read this commit's part of a cumulative
- * transcript, not the whole session's.
+ * `read` is what earlier checkpoints in the range already read per session
+ * and `files` what the commit changed; `windowsOf` uses them to read this
+ * commit's part of a cumulative transcript, not the whole session's.
  *
  * The paths read are Entire's layout, spelled out here: `<i>/metadata.json`,
  * `<i>/prompt.txt` and `<i>/transcript.jsonl` per session, `metadata.json` at
@@ -490,7 +547,7 @@ export interface PreviousCheckpoint {
  * `metadata.json` also lists per-session paths; those are not followed, so no
  * checkpoint can point this reader at `<i>/full.jsonl`.
  */
-export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] = [], previous?: PreviousCheckpoint, files: string[] = []): Checkpoint | undefined {
+export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] = [], read: ReadSessions = new Map(), files: string[] = []): Checkpoint | undefined {
   const id = checkpointTrailer(repo, commit);
   if (id === undefined) return undefined;
   const place = checkpointPlace(repo, id);
@@ -500,12 +557,11 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     const meta = JSON.parse(show("metadata.json")) as CheckpointMetadata;
     const sessionCount = Math.max(1, meta.sessions?.length ?? 1);
     const session = JSON.parse(show("0/metadata.json")) as SessionMetadata;
-    const sessionId = session.session_id ?? "";
-    const createdAt = session.created_at ?? "";
-    const since = previous !== undefined && previous.sessionId !== "" && previous.sessionId === sessionId ? previous.createdAt : undefined;
     const prompt = promptLine(show("0/prompt.txt"));
     const testCommands = new Set<string>();
     let narration: Narration = { started: "", ended: "", texts: 0, tools: 0 };
+    const sessions: CheckpointSession[] = [];
+    let readBefore = 0;
     const reasons = new Map<string, SymbolReason>();
     const committed = new Map<string, string | undefined>();
     const contents = (path: string): string | undefined => {
@@ -519,23 +575,33 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
       return committed.get(path);
     };
     for (let i = 0; i < sessionCount; i++) {
-      const { sinceWindow, stepWindow } = windowsOf(show(`${i}/transcript.jsonl`), since, files);
-      for (const c of testCommandsIn(stepWindow)) testCommands.add(c);
+      const sessionId = (i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata)).session_id ?? "";
+      const before = sessionId === "" ? undefined : read.get(sessionId);
+      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
+      if (extended) readBefore++;
+      sessions.push({ id: sessionId, lines, hash });
+      for (const c of testCommandsIn(turnWindow)) testCommands.add(c);
       for (const r of symbolReasonsIn(sinceWindow, symbols, contents)) reasons.set(`${r.path}\0${r.label}`, r);
       const n = narrationIn(stepWindow);
-      if (i === 0) narration = n;
-      else narration = { started: narration.started || n.started, ended: n.ended || narration.ended, texts: narration.texts + n.texts, tools: narration.tools + n.tools };
+      narration = {
+        started: narration.started || n.started,
+        ended: n.texts > 0 ? n.ended || n.started : narration.ended,
+        texts: narration.texts + n.texts,
+        tools: narration.tools + n.tools,
+      };
     }
+    if (narration.ended === narration.started) narration.ended = "";
+    // The same step: every session's transcript extends what an earlier commit read, and nothing came after.
+    const sameStep = readBefore > 0 && readBefore === sessions.length && narration.texts === 0 && narration.tools === 0 ? read.get(sessions[0]!.id)?.sha : undefined;
     return {
       id,
       commit: git(repo, ["rev-parse", `${commit}^{commit}`]).trim(),
       agent: session.agent ?? "",
       model: session.model ?? "",
-      sessionId,
-      createdAt,
       prompt,
       narration,
-      ...(since !== undefined && previous !== undefined && narration.texts === 0 && narration.tools === 0 && { sameStepAs: previous.sha }),
+      sessions,
+      ...(sameStep !== undefined && { sameStepAs: sameStep }),
       filesTouched: meta.files_touched ?? [],
       testCommands: [...testCommands],
       source: meta.source ?? "entire",

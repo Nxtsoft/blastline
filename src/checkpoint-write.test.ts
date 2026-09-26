@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { refFor, ulid, writeCheckpoint } from "./checkpoint-write.js";
+import { checkpointFor } from "./checkpoint.js";
 import type { CommitIntent } from "./sessions.js";
 
 const ENV = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@x", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@x" };
@@ -39,6 +40,26 @@ describe("ulid", () => {
     expect(a).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(a.slice(0, 10) < b.slice(0, 10)).toBe(true);
     expect(refFor("01M3AY9296319GSPWRKXGHXMH5")).toBe("refs/entire/checkpoints/H5/01M3AY9296319GSPWRKXGHXMH5");
+  });
+});
+
+describe("writeCheckpoint read back by checkpointFor", () => {
+  it("reads each commit's own transcript whole: two commits of one session do not read as one step", () => {
+    const { repo: r, sha: first, g } = repo();
+    const one = writeCheckpoint(r, first, { ...intent(first), testCommands: ["bunx vitest run a.test.ts", "bunx vitest run b.test.ts"] }, { version: "0.15.0", trailer: true });
+    writeFileSync(join(r, "src.ts"), "export const a = 3;\n");
+    g("add", "src.ts");
+    g("commit", "-q", "-m", "fix: again");
+    const second = g("rev-parse", "HEAD");
+    const two = writeCheckpoint(r, second, { ...intent(second), testCommands: ["bunx vitest run c.test.ts"] }, { version: "0.15.0", trailer: true });
+    const cp1 = checkpointFor(r, one.commit, [], new Map(), ["src.ts"]);
+    expect(cp1?.testCommands).toEqual(["bunx vitest run a.test.ts", "bunx vitest run b.test.ts"]);
+    const read = new Map(cp1!.sessions.map((s) => [s.id, { sha: one.commit, lines: s.lines, hash: s.hash }]));
+    const cp2 = checkpointFor(r, two.commit, [], read, ["src.ts"]);
+    expect(cp2?.testCommands).toEqual(["bunx vitest run c.test.ts"]);
+    expect(cp2?.sameStepAs).toBeUndefined();
+    expect(cp2?.narration.started).toBe("");
+    expect(cp2?.prompt).toBe("Three things in parallel now: confirm the follow-up commit state.");
   });
 });
 
