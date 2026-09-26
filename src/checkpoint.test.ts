@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agentForAddress, checkpointFor, checkpointRef, checkpointTrailer, editNames, promptLine, provenanceOf, symbolReasonsIn, testCommandsIn, writtenWithin } from "./checkpoint.js";
+import { CHECKPOINT_BRANCH, agentForAddress, checkpointFor, checkpointPlace, checkpointPlaces, checkpointPushHint, checkpointRef, checkpointTrailer, editNames, narrationIn, promptLine, provenanceOf, symbolReasonsIn, testCommandsIn, windowsOf, writtenWithin } from "./checkpoint.js";
 
 // src/testdata/checkpoint-ref/ is the tree of a real Entire 0.11.2 checkpoint
 // (ref refs/entire/checkpoints/H5/01M3AY9296319GSPWRKXGHXMH5, written for
@@ -149,6 +149,213 @@ describe("promptLine", () => {
   });
 });
 
+describe("promptLine on a turn with several prompts", () => {
+  it("skips a prompt the harness delivered (a tag) and the --- separators, and returns the first line a person typed", () => {
+    const prompt = [
+      "<task-notification>",
+      "<task-id>bocrjw2de</task-id>",
+      "<summary>Background command completed</summary>",
+      "</task-notification>",
+      "",
+      "---",
+      "",
+      "<system-reminder>keep going</system-reminder>",
+      "",
+      "---",
+      "",
+      "You are in a git worktree of turing-webapp on branch x",
+      "revert the autofix and keep the router-driven page key",
+      "second line",
+    ].join("\n");
+    expect(promptLine(prompt)).toBe("revert the autofix and keep the router-driven page key");
+    expect(promptLine("<task-notification>\n<summary>x</summary>\n</task-notification>\n")).toBe("");
+  });
+});
+
+// Entire 0.10.0 branch backend: 12-hex ids, one shared branch, <first two>/<rest>/ directories.
+const HEX_A = "c892ec03a62e";
+const HEX_B = "782a9bbcae1b";
+const HEX_C = "dd54cfcde765";
+const SESSION = "0d2e1746-ad6a-45c2-a9c8-371131273a49";
+const stamp = (n: number): string => `2026-09-26T02:${String(n).padStart(2, "0")}:00.000Z`;
+const rec = (type: string, ts: string, content: object[], extra: object = {}): string => JSON.stringify({ v: 1, agent: "claude-code", cli_version: "0.10.0", type, ts, content, ...extra });
+const text = (t: string): object => ({ type: "text", text: t });
+const user = (t: string): object => ({ id: "u", text: t });
+const edit = (path: string, s: string): object => ({ id: "e", type: "tool_use", name: "Edit", input: { file_path: `/Users/x/wt/${path}`, old_string: "a", new_string: s }, result: { output: "SECRET", status: "success" } });
+const bash = (cmd: string): object => ({ id: "b", type: "tool_use", name: "Bash", input: { command: cmd }, result: { output: "SECRET", status: "success" } });
+// One cumulative session transcript, as the branch backend snapshots it: an unrelated turn, then the turn that made commit A, then the turn that made commit C.
+const CUMULATIVE = [
+  rec("user", stamp(1), [user("can you look at the list of tickets")]),
+  rec("assistant", stamp(2), [text("Here are the five tickets.")]),
+  rec("assistant", stamp(3), [bash("bunx vitest run src/tickets.test.ts")]),
+  rec("user", stamp(5), [user("<task-notification>done</task-notification>")]),
+  rec("user", stamp(6), [user("now give the round-size cap one home")]),
+  rec("assistant", stamp(7), [text("I'll start by reading the ticket, then set up a worktree off dev.\nSecond line.")]),
+  rec("user", stamp(8), [user("<task-notification>ci green</task-notification>")]),
+  rec("assistant", stamp(9), [edit("src/round-size.ts", "export const ROUND_SIZE_MAX = 8;")]),
+  rec("assistant", stamp(10), [bash("bunx vitest run src/round-size.test.ts")]),
+  rec("assistant", stamp(11), [text("The path in my notes had a hyphen where the real path has a slash.")]),
+];
+const CUMULATIVE_C = [
+  ...CUMULATIVE,
+  rec("assistant", stamp(30), [text("All checks pass on the tip, but CodeRabbit pushed one more autofix. Reviewing it before merging.")]),
+  rec("assistant", stamp(31), [bash("git revert --no-edit HEAD")]),
+];
+const NOTIFICATION_PROMPT = "<task-notification>\n<summary>CI checks landing</summary>\n</task-notification>\n\n---\n\n<task-notification>\n<summary>again</summary>\n</task-notification>\n";
+
+/** Write a branch-backend checkpoint into the tree of origin's entire/checkpoints/v1, keeping what is already there. */
+function writeBranchCheckpoint(id: string, files: Record<string, string>): void {
+  const ref = `refs/remotes/origin/${CHECKPOINT_BRANCH}`;
+  const existing = (() => {
+    try {
+      return git("ls-tree", "-r", ref)
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => l.split("\t") as [string, string]);
+    } catch {
+      return [];
+    }
+  })();
+  const entries = new Map<string, string>(existing.map(([mode, path]) => [path, mode]));
+  for (const [p, c] of Object.entries(files)) entries.set(`${id.slice(0, 2)}/${id.slice(2)}/${p}`, `100644 blob ${blob(c)}`);
+  const treeOf = (paths: [string, string][]): string => {
+    const dirs = new Map<string, [string, string][]>();
+    const leaves: string[] = [];
+    for (const [path, mode] of paths) {
+      const slash = path.indexOf("/");
+      if (slash === -1) leaves.push(`${mode}\t${path}`);
+      else {
+        const dir = path.slice(0, slash);
+        if (!dirs.has(dir)) dirs.set(dir, []);
+        dirs.get(dir)!.push([path.slice(slash + 1), mode]);
+      }
+    }
+    for (const [dir, inner] of dirs) leaves.push(`040000 tree ${treeOf(inner)}\t${dir}`);
+    return execFileSync("git", ["-C", repo, "mktree"], { input: leaves.join("\n") + "\n", encoding: "utf8" }).trim();
+  };
+  const tree = treeOf([...entries.entries()]);
+  git("update-ref", ref, git("commit-tree", tree, "-m", `Checkpoint: ${id}`));
+}
+
+function branchFiles(id: string, createdAt: string, transcript: string[], prompt: string): Record<string, string> {
+  return {
+    "metadata.json": JSON.stringify({ cli_version: "0.10.0", checkpoint_id: id, strategy: "manual-commit", branch: "turing-126", checkpoints_count: 3, files_touched: null, sessions: [{ metadata: `/${id.slice(0, 2)}/${id.slice(2)}/0/metadata.json`, transcript: `/${id.slice(0, 2)}/${id.slice(2)}/0/full.jsonl` }] }),
+    "0/metadata.json": JSON.stringify({ cli_version: "0.10.0", checkpoint_id: id, session_id: SESSION, created_at: createdAt, agent: "Claude Code", model: "claude-fable-5-1", turn_id: "268aecc82583", compact_transcript_start: 0, files_touched: [] }),
+    "0/prompt.txt": prompt,
+    "0/transcript.jsonl": transcript.join("\n") + "\n",
+    "0/content_hash.txt": "x",
+    "0/full.jsonl": RAW_SENTINEL,
+  };
+}
+
+describe("checkpointFor on the branch backend", () => {
+  let commitA: string;
+  let commitB: string;
+  let commitC: string;
+  let commitMissing: string;
+  beforeAll(() => {
+    writeBranchCheckpoint(HEX_A, branchFiles(HEX_A, stamp(12), CUMULATIVE, NOTIFICATION_PROMPT + "\n---\n\nnow give the round-size cap one home\n"));
+    writeBranchCheckpoint(HEX_B, branchFiles(HEX_B, stamp(13), CUMULATIVE, NOTIFICATION_PROMPT));
+    writeBranchCheckpoint(HEX_C, branchFiles(HEX_C, stamp(32), CUMULATIVE_C, NOTIFICATION_PROMPT));
+    commitA = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 8;\n", `refactor(round-size): one home\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEntire-Checkpoint: ${HEX_A}\n`);
+    commitB = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 8;\nexport const ROUND_SIZE_MIN = 1;\n", `feat(luna): page key\n\nEntire-Checkpoint: ${HEX_B}\n`);
+    commitC = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 8;\n", `revert(luna): keep the router-driven page key\n\nEntire-Checkpoint: ${HEX_C}\n`);
+    commitMissing = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 9;\n", "fix: gate\n\nEntire-Checkpoint: 0123456789ab\n");
+  });
+
+  it("accepts a 12-hex trailer and names the shared branch as its place, local branch first", () => {
+    expect(checkpointTrailer(repo, commitA)).toBe(HEX_A);
+    expect(checkpointPlaces(HEX_A)).toEqual([
+      { ref: "refs/heads/entire/checkpoints/v1", prefix: "c8/92ec03a62e/" },
+      { ref: "refs/remotes/origin/entire/checkpoints/v1", prefix: "c8/92ec03a62e/" },
+    ]);
+    expect(checkpointPlaces(ID)).toEqual([{ ref: checkpointRef(ID), prefix: "" }]);
+    expect(checkpointPlace(repo, HEX_A)).toEqual({ ref: "refs/remotes/origin/entire/checkpoints/v1", prefix: "c8/92ec03a62e/" });
+    expect(checkpointPlace(repo, "0123456789ab")).toBeUndefined();
+    expect(checkpointPushHint(HEX_A)).toBe("push the branch entire/checkpoints/v1");
+    expect(checkpointPushHint(ID)).toBe("push refs/entire/checkpoints/*");
+  });
+
+  it("reads the checkpoint from the branch: the turn that first edited the commit's files gives the narration and the tests, not the session's earlier turns", () => {
+    const cp = checkpointFor(repo, commitA, [], undefined, ["src/round-size.ts"]);
+    expect(cp).toMatchObject({
+      id: HEX_A,
+      agent: "Claude Code",
+      model: "claude-fable-5-1",
+      sessionId: SESSION,
+      createdAt: stamp(12),
+      prompt: "now give the round-size cap one home",
+      narration: { started: "I'll start by reading the ticket, then set up a worktree off dev.", ended: "The path in my notes had a hyphen where the real path has a slash.", texts: 2, tools: 2 },
+      testCommands: ["bunx vitest run src/round-size.test.ts"],
+      source: "entire",
+    });
+    expect(cp?.sameStepAs).toBeUndefined();
+    expect(JSON.stringify(cp)).not.toContain("SECRET");
+    expect(JSON.stringify(cp)).not.toContain("RAW-TRANSCRIPT");
+  });
+
+  it("reads the whole transcript when the commit's files were never edited by a tool and no previous checkpoint bounds it", () => {
+    const cp = checkpointFor(repo, commitA, [], undefined, ["src/other.ts"]);
+    expect(cp?.narration.started).toBe("Here are the five tickets.");
+    expect(cp?.testCommands).toEqual(["bunx vitest run src/tickets.test.ts", "bunx vitest run src/round-size.test.ts"]);
+  });
+
+  it("starts after the previous checkpoint of the same session, and says so when that leaves nothing", () => {
+    const previous = { sha: commitA, sessionId: SESSION, createdAt: stamp(12) };
+    const b = checkpointFor(repo, commitB, [], previous, ["src/round-size.ts"]);
+    expect(b?.narration).toEqual({ started: "", ended: "", texts: 0, tools: 0 });
+    expect(b?.sameStepAs).toBe(commitA);
+    expect(b?.testCommands).toEqual([]);
+    const c = checkpointFor(repo, commitC, [], { sha: commitB, sessionId: SESSION, createdAt: stamp(13) }, ["src/round-size.ts"]);
+    expect(c?.narration).toEqual({ started: "All checks pass on the tip, but CodeRabbit pushed one more autofix. Reviewing it before merging.", ended: "", texts: 1, tools: 1 });
+    expect(c?.sameStepAs).toBeUndefined();
+    expect(c?.prompt).toBe("");
+  });
+
+  it("ignores a previous checkpoint from another session", () => {
+    const b = checkpointFor(repo, commitB, [], { sha: commitA, sessionId: "other", createdAt: stamp(12) }, ["src/round-size.ts"]);
+    expect(b?.narration.started).toBe("I'll start by reading the ticket, then set up a worktree off dev.");
+    expect(b?.sameStepAs).toBeUndefined();
+  });
+
+  it("finds a symbol's reason in the since-window even when the narration window starts later", () => {
+    const cp = checkpointFor(repo, commitA, [{ path: "src/round-size.ts", label: "ROUND_SIZE_MAX" }], undefined, ["src/round-size.ts"]);
+    expect(cp?.reasons).toEqual([{ path: "src/round-size.ts", label: "ROUND_SIZE_MAX", turn: 4, why: "I'll start by reading the ticket, then set up a worktree off dev." }]);
+  });
+
+  it("reports the id but no checkpoint when the branch does not hold it", () => {
+    expect(checkpointTrailer(repo, commitMissing)).toBe("0123456789ab");
+    expect(checkpointFor(repo, commitMissing)).toBeUndefined();
+  });
+});
+
+describe("windowsOf and narrationIn", () => {
+  it("keeps an unstamped transcript whole and counts texts and tool calls", () => {
+    const t = [JSON.stringify({ type: "assistant", content: [text("a"), bash("ls")] }), "not json", JSON.stringify({ type: "assistant", content: [text("b")] })].join("\n");
+    expect(windowsOf(t, "2026-01-01T00:00:00Z", ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t });
+    expect(narrationIn(t)).toEqual({ started: "a", ended: "b", texts: 2, tools: 1 });
+  });
+
+  it("starts the step at the prompt before a Bash command that names the file, when no edit tool touched it", () => {
+    const t = [
+      rec("user", stamp(1), [user("first ask")]),
+      rec("assistant", stamp(2), [text("on it"), bash("cat -n src/index.ts")]),
+      rec("user", stamp(3), [user("now the cap")]),
+      rec("assistant", stamp(4), [text("editing with a script")]),
+      rec("user", stamp(5), [user("Base directory for this skill: /x/.claude/skills/git-worktree")]),
+      rec("assistant", stamp(6), [bash("python3 - <<'EOF'\nedit('app/lib/use-round-size.ts', [])\nEOF")]),
+    ].join("\n");
+    const w = windowsOf(t, undefined, ["app/(protected)/lib/use-round-size.ts"]);
+    expect(w.stepWindow.split("\n")).toHaveLength(4);
+    expect(narrationIn(w.stepWindow).started).toBe("editing with a script");
+  });
+
+  it("does not walk back past a harness notification into an earlier human turn", () => {
+    const t = [rec("user", stamp(1), [user("first ask")]), rec("assistant", stamp(2), [text("on it")]), rec("user", stamp(3), [user("<task-notification>x</task-notification>")]), rec("assistant", stamp(4), [edit("a.ts", "x")])].join("\n");
+    expect(windowsOf(t, undefined, ["a.ts"]).stepWindow.split("\n")).toHaveLength(4);
+  });
+});
+
 describe("checkpointRef", () => {
   it("shards by the last two characters of the id, as Entire does", () => {
     expect(checkpointRef(ID)).toBe("refs/entire/checkpoints/H5/01M3AY9296319GSPWRKXGHXMH5");
@@ -162,8 +369,11 @@ describe("checkpointFor", () => {
       commit: commitWithRef,
       agent: "Claude Code",
       model: "claude-sonnet-5",
+      sessionId: "3c0c80c7-265b-42aa-9f37-58a615449010",
+      createdAt: "2026-09-25T00:08:41.607595272Z",
       prompt:
         "In this repo (cwd), edit src/comment.ts: change the doc comment line directly above the exported COMMENT_MARKER constant to read exactly: /** First line of every comment: the Action finds the existing",
+      narration: { started: "Commit sha: `14074f79e3aa14b9bf7d5d476ec119aeb2bae6e3`", ended: "", texts: 1, tools: 3 },
       filesTouched: ["src/comment.ts"],
       testCommands: [],
       source: "entire",

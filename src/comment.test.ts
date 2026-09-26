@@ -223,7 +223,10 @@ const brief: Brief = {
         commit: "1".repeat(40),
         agent: "Claude Code",
         model: "claude-sonnet-5",
+        sessionId: "3c0c80c7",
+        createdAt: "2026-09-25T00:08:41Z",
         prompt: "Remove helper from src/lib.ts and inline it into parse; add emit.",
+        narration: { started: "Inlining helper into parse and adding emit beside it.", ended: "Tests pass; committing.", texts: 3, tools: 5 },
         filesTouched: ["src/lib.ts"],
         testCommands: ["bunx vitest run src/a.test.ts"],
         source: "entire",
@@ -287,7 +290,7 @@ describe("renderBrief: subset", () => {
     expect(md).toContain("#### What each commit did");
     expect(md).toContain("| Commit | Intent | Files | Reaches | Ran before push |");
     expect(md).toContain(
-      "| [`1111111`](https://github.com/o/r/commit/" + "1".repeat(40) + ") refactor(lib): inline helper, add emit | Remove helper from src/lib.ts and inline it into parse; add emit. <sub>Claude Code · claude-sonnet-5</sub> | 1 file | 1 file, 2 tests | 1 of 2 reaching tests |",
+      "| [`1111111`](https://github.com/o/r/commit/" + "1".repeat(40) + ") refactor(lib): inline helper, add emit | Inlining helper into parse and adding emit beside it.<br><sub>then: Tests pass; committing.</sub> <sub>Claude Code · claude-sonnet-5</sub> | 1 file | 1 file, 2 tests | 1 of 2 reaching tests |",
     );
     expect(md).toContain("docs: guide | _no checkpoint_ | 2 files |  |  |");
     expect(md).toContain("chore: unpushed checkpoint | _checkpoint `01M3AY9296319GSPWRKXGHXZZZ` not fetched_ | 1 file | 1 file, 2 tests |  |");
@@ -364,6 +367,48 @@ describe("renderCheckRun", () => {
     expect(run.output.summary).not.toContain("<!-- ");
     expect(run.output.text).toContain("#### What each commit did");
     expect(run.output.annotations).toEqual(brief.annotations);
+  });
+});
+
+describe("renderBrief: the Intent cell of a checkpointed commit", () => {
+  const row = (checkpoint: Partial<CommitBrief["checkpoint"]> & object): string => {
+    const one: Brief = {
+      ...brief,
+      commits: [
+        {
+          sha: "9".repeat(40),
+          subject: "feat: x",
+          checkpointId: "dd54cfcde765",
+          checkpoint: { ...brief.commits[0]!.checkpoint!, id: "dd54cfcde765", commit: "9".repeat(40), reasons: [], ...checkpoint },
+          files: ["src/x.ts"],
+          reach: { files: 0, tests: 0 },
+          reachingTests: [],
+          ranReachingTests: [],
+        },
+      ],
+    };
+    return renderBrief(one, { ...ctx, repoUrl: "https://github.com/o/r" }).split("\n").find((l) => l.startsWith("| [`9999999`]"))!;
+  };
+
+  it("says which earlier commit the same step produced, instead of repeating its narration", () => {
+    expect(row({ sameStepAs: "8".repeat(40), narration: { started: "", ended: "", texts: 0, tools: 0 } })).toContain("| _same step as [`8888888`](https://github.com/o/r/commit/" + "8".repeat(40) + ")_ <sub>Claude Code · claude-sonnet-5</sub> |");
+  });
+
+  it("falls back to the human's prompt when the agent said nothing, and says so when there is no prompt either", () => {
+    expect(row({ narration: { started: "", ended: "", texts: 0, tools: 3 } })).toContain("| Remove helper from src/lib.ts and inline it into parse; add emit. <sub>Claude Code · claude-sonnet-5</sub> |");
+    expect(row({ prompt: "", narration: { started: "", ended: "", texts: 0, tools: 3 } })).toContain("| _no narration, 3 tool calls_ <sub>Claude Code · claude-sonnet-5</sub> |");
+    expect(row({ prompt: "", narration: { started: "", ended: "", texts: 0, tools: 0 } })).toContain("| _no narration_ <sub>Claude Code · claude-sonnet-5</sub> |");
+  });
+
+  it("names the runners and how often, never the commands (which carry machine paths), when no reaching test exists", () => {
+    const md = renderBrief({ ...brief, commits: [{ ...brief.commits[0]!, reachingTests: [], ranReachingTests: [], checkpoint: { ...brief.commits[0]!.checkpoint!, testCommands: ["gh pr create --body-file - <<'EOF'\n## Summary\nran bunx vitest run\nEOF"] } }] }, ctx);
+    expect(md).toContain("| `vitest` (1) |");
+    expect(md).not.toContain("\n## Summary");
+    expect(md).not.toContain("gh pr create");
+  });
+
+  it("shows the first line alone when the agent's last line is the same", () => {
+    expect(row({ narration: { started: "Reverting the autofix.", ended: "", texts: 1, tools: 1 } })).toContain("| Reverting the autofix. <sub>Claude Code · claude-sonnet-5</sub> |");
   });
 });
 

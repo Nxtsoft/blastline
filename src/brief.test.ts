@@ -194,7 +194,7 @@ describe("buildBrief", () => {
     const [lib, test] = b.commits;
     expect(lib?.checkpoint?.source).toBe("entire");
     expect(test?.checkpointId).toBeUndefined();
-    expect(test?.checkpoint).toMatchObject({ id: "", agent: "codex", model: "gpt-6-astra", source: "sessions.db", prompt: "Adding the emit test and running the lib suite.", filesTouched: ["src/lib.test.ts"], testCommands: ["bunx vitest run src/lib.test.ts"] });
+    expect(test?.checkpoint).toMatchObject({ id: "", agent: "codex", model: "gpt-6-astra", source: "sessions.db", sessionId: "11111111-local", prompt: "cover emit with a test", narration: { started: "Adding the emit test and running the lib suite.", ended: "", texts: 1, tools: 0 }, filesTouched: ["src/lib.test.ts"], testCommands: ["bunx vitest run src/lib.test.ts"] });
     expect(test?.ranReachingTests).toEqual(["src/lib.test.ts"]);
     expect(brief().commits[1]?.checkpoint).toBeUndefined();
   });
@@ -332,7 +332,7 @@ describe("buildBrief", () => {
     const b = buildBrief({ repo, range: `${base}..${dangling}`, graphPath: headGraph, minDensity: 0 });
     expect(b.commits.at(-1)).toMatchObject({ sha: dangling, checkpointId: "01M3AY9296319GSPWRKXGHXZZZ" });
     expect(b.commits.at(-1)?.checkpoint).toBeUndefined();
-    expect(b.unchecked).toContain(`checkpoint \`01M3AY9296319GSPWRKXGHXZZZ\` for \`${dangling.slice(0, 7)}\`: its ref is not in this repository (push refs/entire/checkpoints/*)`);
+    expect(b.unchecked).toContain(`checkpoint \`01M3AY9296319GSPWRKXGHXZZZ\` for \`${dangling.slice(0, 7)}\`: it is not in this repository (push refs/entire/checkpoints/*)`);
   });
 
   it("names what it could not check instead of staying silent", () => {

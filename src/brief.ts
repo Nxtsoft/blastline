@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { checkCallers } from "./check.js";
-import type { Checkpoint, Provenance } from "./checkpoint.js";
-import { checkpointFor, checkpointRef, checkpointTrailer, provenanceOf } from "./checkpoint.js";
+import type { Checkpoint, PreviousCheckpoint, Provenance } from "./checkpoint.js";
+import { checkpointFor, checkpointPlace, checkpointPushHint, checkpointTrailer, provenanceOf } from "./checkpoint.js";
 import type { Owners } from "./owners.js";
 import { agentCommit, ownersOf, unfamiliarTo } from "./owners.js";
 import { SessionsIndex, localCheckpoint } from "./sessions.js";
@@ -668,28 +668,23 @@ export function buildBrief(o: BriefOptions): Brief {
   const sessions = o.sessionsDb === undefined ? undefined : new SessionsIndex(o.sessionsDb);
   let commits: CommitBrief[];
   try {
+    // The previous commit's checkpoint bounds this one's transcript window when both came from one session.
+    let previous: PreviousCheckpoint | undefined;
     commits = shaList.map((sha) => {
       const subject = git("log", "-1", "--format=%s", sha).trim();
       const files = git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", sha).split("\n").filter(Boolean);
       const checkpointId = checkpointTrailer(repo, sha);
       const own = (changeContext?.symbols ?? []).filter((s) => files.includes(s.path)).map((s) => ({ path: s.path, label: s.label, ...rangeOf(s) }));
       const checkpoint =
-        checkpointId !== undefined ? checkpointFor(repo, sha, own) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files, own);
-      // Only for a commit with no trailer at all: a dangling trailer stays "not fetched", which names the fix (push the refs).
+        checkpointId !== undefined ? checkpointFor(repo, sha, own, previous, files) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files, own);
+      if (checkpoint !== undefined && checkpoint.createdAt !== "") previous = { sha, sessionId: checkpoint.sessionId, createdAt: checkpoint.createdAt };
+      // Only for a commit with no trailer at all: a dangling trailer stays "not fetched", which names the fix (push the checkpoints).
       const provenance = checkpointId === undefined && checkpoint === undefined ? provenanceOf(repo, sha) : undefined;
       if (checkpointId !== undefined && checkpoint === undefined) {
-        const present = (() => {
-          try {
-            git("rev-parse", "--verify", "--quiet", `${checkpointRef(checkpointId)}^{commit}`);
-            return true;
-          } catch {
-            return false;
-          }
-        })();
         unchecked.push(
-          present
-            ? `checkpoint \`${checkpointId}\` for \`${shortSha(sha)}\`: its ref is present but not in Entire's layout, so it was not read`
-            : `checkpoint \`${checkpointId}\` for \`${shortSha(sha)}\`: its ref is not in this repository (push refs/entire/checkpoints/*)`,
+          checkpointPlace(repo, checkpointId) !== undefined
+            ? `checkpoint \`${checkpointId}\` for \`${shortSha(sha)}\`: it is present but not in Entire's layout, so it was not read`
+            : `checkpoint \`${checkpointId}\` for \`${shortSha(sha)}\`: it is not in this repository (${checkpointPushHint(checkpointId)})`,
         );
       }
       const impacts = files.map((f) => byPath.get(f)).filter((f): f is ChangedFileImpact => f !== undefined && f.disposition === "mapped");
