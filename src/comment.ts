@@ -1,4 +1,5 @@
-import type { SymbolReason } from "./checkpoint.js";
+import type { Checkpoint, SymbolReason } from "./checkpoint.js";
+import { TEST_RUNNER } from "./checkpoint.js";
 import type { Brief, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
 import { SNAPSHOT_MARKER } from "./brief.js";
 import { relativeTo, sharedDir } from "./paths.js";
@@ -451,13 +452,43 @@ export function renderComment(selection: Selection, ctx: CommentContext): string
   return selection.kind === "all" ? renderAll(selection, ctx) : renderSubset(selection, ctx);
 }
 
+/** The test runners a list of commands invoked, with how often: `vitest (3), bun test (1)`. A command's text is never shown; it carries machine paths. */
+function runnersOf(commands: string[]): string {
+  const counts = new Map<string, number>();
+  for (const command of commands) {
+    const runner = TEST_RUNNER.exec(command)?.[1] ?? "test";
+    counts.set(runner, (counts.get(runner) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([runner, n]) => `${code(runner)} (${n})`).join(", ");
+}
+
+/**
+ * The Intent cell of a checkpointed commit: what the agent said in the
+ * transcript window that ends at the checkpoint (its first line, then its
+ * last when that differs), or the human's prompt when it said nothing; a
+ * commit produced by the same step as an earlier one says so; then the agent
+ * and model.
+ */
+function intentCell(cp: Checkpoint, links: Links): string {
+  const truncate = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+  const who = cp.model ? ` <sub>${cp.agent ? `${cp.agent} · ` : ""}${cp.model}</sub>` : "";
+  if (cp.sameStepAs !== undefined) return `_same step as ${links.commit(cp.sameStepAs)}_${who}`;
+  const n = cp.narration;
+  if (n.started === "") {
+    if (cp.prompt !== "") return `${cell(truncate(cp.prompt, 120))}${who}`;
+    return `_no narration${n.tools > 0 ? `, ${plural(n.tools, "tool call")}` : ""}_${who}`;
+  }
+  const then = n.ended === "" ? "" : `<br><sub>then: ${cell(truncate(n.ended, 120))}</sub>`;
+  return `${cell(truncate(n.started, 120))}${then}${who}`;
+}
+
 /** The commit table: what each commit intended (its checkpoint), touched, reaches, and ran before the push. */
 function commitTable(commits: CommitBrief[], links: Links): string {
   const truncate = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
   const rows = commits.map((c) => {
     const cp = c.checkpoint;
     const intent = cp
-      ? `${cell(truncate(cp.prompt, 120))}${cp.model ? ` <sub>${cp.agent ? `${cp.agent} · ` : ""}${cp.model}</sub>` : ""}`
+      ? intentCell(cp, links)
       : c.checkpointId !== undefined
         ? `_checkpoint ${code(c.checkpointId)} not fetched_`
         : c.provenance
@@ -470,7 +501,7 @@ function commitTable(commits: CommitBrief[], links: Links): string {
       : cp.testCommands.length === 0
         ? "no test runner"
         : c.reachingTests.length === 0
-          ? cell(cp.testCommands.map(code).join(", "))
+          ? runnersOf(cp.testCommands)
           : `${c.ranReachingTests.length} of ${plural(c.reachingTests.length, "reaching test")}`;
     return `| ${links.commit(c.sha)} ${cell(truncate(c.subject, 60))} | ${intent} | ${files} | ${reach} | ${ran} |`;
   });

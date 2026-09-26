@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.0
+
+The brief reads Entire's branch backend, and the Intent cell says what the agent said, not who signed the commit.
+
+- A commit whose `Entire-Checkpoint:` trailer carries a 12-character id (Entire's branch backend, the default for a repository enabled before 0.10.0) is resolved to `<first two>/<rest>/` on the branch `entire/checkpoints/v1`, read from the local branch or origin's; the Action fetches that branch beside the per-checkpoint refs. Before, the trailer did not match, and every such commit fell through to `claude-code by Co-authored-by`: on Turing-Labs-AI/turing-webapp PR 621, ten of twelve commits, each with a full checkpoint on the remote.
+- The Intent cell shows the first line of the agent's first text in the turn that produced the commit and, when it differs, its last (`then: …`), then the agent and model. The branch backend snapshots one cumulative transcript per session, so `windowsOf` in `src/checkpoint.ts` starts at the later of the previous checkpoint of the same session in the range and the last prompt a person typed before the first edit of one of the commit's files; the test commands and the reaching tests that ran come from the same window. A commit whose window holds nothing says `same step as <sha>`.
+- `promptLine` skips a prompt the harness delivered (a block starting with `<`, such as `<task-notification>`) and the `---` separators Entire writes between a turn's prompts, so the fallback prompt is the first line a person typed. On an orchestrated session it used to be `<task-notification>`.
+- `Checkpoint` gains `sessionId`, `createdAt`, `narration` (`started`, `ended`, `texts`, `tools`) and `sameStepAs`; `checkpointFor` takes the previous checkpoint and the commit's files. The footer's unread-checkpoint line names the push that brings a missing checkpoint: the refs, or the branch.
+
 ## 0.14.8
 
 A path in code font matches a changed line whole, not as a substring.

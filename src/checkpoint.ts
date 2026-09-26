@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
  * output, session paths and pasted user context; nothing here reads it.
  */
 export interface Checkpoint {
-  /** The ULID from the commit's `Entire-Checkpoint:` trailer. */
+  /** The id from the commit's `Entire-Checkpoint:` trailer: a 26-character ULID (ref backend) or 12 hex characters (branch backend). */
   id: string;
   /** Full sha of the commit that carries the trailer. */
   commit: string;
@@ -15,8 +15,16 @@ export interface Checkpoint {
   agent: string;
   /** `0/metadata.json.model`, e.g. "claude-sonnet-5". */
   model: string;
-  /** First line of `0/prompt.txt`, at most 200 characters. */
+  /** `0/metadata.json.session_id`; "" when the writer set none. */
+  sessionId: string;
+  /** `0/metadata.json.created_at`, ISO; "" when the writer set none. */
+  createdAt: string;
+  /** The first line a human wrote in `0/prompt.txt`, at most 200 characters. */
   prompt: string;
+  /** What the agent said in the transcript window that ends at this checkpoint. */
+  narration: Narration;
+  /** Set by the brief when the window since the previous checkpoint of the same session holds no text and no tool call: the commit that step also produced. */
+  sameStepAs?: string;
   /** `metadata.json.files_touched`, repo-relative. */
   filesTouched: string[];
   /** Bash tool calls in the compact transcript whose command names a test runner. */
@@ -41,7 +49,41 @@ export interface SymbolReason {
   why: string;
 }
 
-const TRAILER = /^Entire-Checkpoint:\s*([0-9A-Z]{26})\s*$/m;
+/**
+ * What the agent said in the part of the compact transcript that belongs to
+ * one checkpoint. Entire's branch backend keeps one cumulative transcript per
+ * session, so the brief windows it between consecutive checkpoints of the
+ * same session; the ref backend writes one per commit, so the window is all
+ * of it.
+ */
+export interface Narration {
+  /** First line of the agent's first text in the window, at most 200 characters; "" when the window has none. */
+  started: string;
+  /** First line of the agent's last text in the window when it differs from `started`; "" otherwise. */
+  ended: string;
+  /** Assistant text blocks in the window. */
+  texts: number;
+  /** Tool calls in the window. */
+  tools: number;
+}
+
+/**
+ * The two id shapes Entire writes: a 26-character ULID under the ref backend
+ * (the default since 0.10.0), 12 hex characters under the branch backend that
+ * a repository enabled before 0.10.0 keeps until `entire doctor
+ * migrate-checkpoints`.
+ */
+const TRAILER = /^Entire-Checkpoint:\s*([0-9A-Z]{26}|[0-9a-f]{12})\s*$/m;
+
+/** The shared branch the branch backend writes every checkpoint to, as `<first two>/<rest>/` directories. */
+export const CHECKPOINT_BRANCH = "entire/checkpoints/v1";
+
+/** Where a checkpoint's six files may sit: a ref, and the directory inside its tree. */
+export interface CheckpointPlace {
+  ref: string;
+  /** "" for a ref that is the checkpoint, `dd/54cfcde765/` on the shared branch. */
+  prefix: string;
+}
 
 /**
  * Who made a commit when no checkpoint says: the marks the agents' own
@@ -110,17 +152,25 @@ function git(repo: string, args: string[]): string {
 }
 
 /**
- * The line of a prompt that states the intent, capped at 200 characters: the
- * first non-blank line that is not the harness preamble a session launched
- * through `agents run` starts with ("You are in a git worktree of <repo> on
- * branch <b>…", one line), so the reviewer sees the first line the human wrote.
+ * The line of a prompt that states the intent, capped at 200 characters.
+ * `0/prompt.txt` holds every prompt of the turn, separated by `---` lines. A
+ * prompt that starts with a tag (`<task-notification>`, `<system-reminder>`)
+ * was delivered by the harness, not typed by a person, and is skipped whole;
+ * so is the preamble a session launched through `agents run` starts with
+ * ("You are in a git worktree of <repo> on branch <b>…", one line). The
+ * reviewer sees the first line a human wrote.
  */
 export function promptLine(prompt: string): string {
-  const line = prompt
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) => l !== "" && !l.startsWith("You are in a git worktree of "));
-  return (line ?? "").slice(0, 200);
+  for (const block of prompt.split(/^---\s*$/m)) {
+    const lines = block
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l !== "" && !l.startsWith("You are in a git worktree of "));
+    const first = lines[0];
+    if (first === undefined || first.startsWith("<")) continue;
+    return first.slice(0, 200);
+  }
+  return "";
 }
 
 /** The checkpoint id a commit's trailer names, or undefined when it carries none. */
@@ -128,9 +178,37 @@ export function checkpointTrailer(repo: string, commit: string): string | undefi
   return TRAILER.exec(git(repo, ["log", "-1", "--format=%B", commit]))?.[1];
 }
 
-/** Where Entire stores a checkpoint: sharded by the last two characters of its id. */
+/** Where Entire's ref backend stores a checkpoint: sharded by the last two characters of its ULID. */
 export function checkpointRef(id: string): string {
   return `refs/entire/checkpoints/${id.slice(-2)}/${id}`;
+}
+
+/**
+ * Where a checkpoint may sit, by the shape of its id: a ULID names one ref; a
+ * 12-hex id names a directory on the shared branch, which is read from the
+ * local branch first and then from origin's (what the Action fetches).
+ */
+export function checkpointPlaces(id: string): CheckpointPlace[] {
+  if (id.length === 26) return [{ ref: checkpointRef(id), prefix: "" }];
+  const prefix = `${id.slice(0, 2)}/${id.slice(2)}/`;
+  return [`refs/heads/${CHECKPOINT_BRANCH}`, `refs/remotes/origin/${CHECKPOINT_BRANCH}`].map((ref) => ({ ref, prefix }));
+}
+
+/** The first place whose tree holds the checkpoint's `metadata.json`, or undefined when none in this repository does. */
+export function checkpointPlace(repo: string, id: string): CheckpointPlace | undefined {
+  return checkpointPlaces(id).find((place) => {
+    try {
+      git(repo, ["cat-file", "-e", `${place.ref}:${place.prefix}metadata.json`]);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** What the reader can say when a trailer's checkpoint is missing: which push brings it. */
+export function checkpointPushHint(id: string): string {
+  return id.length === 26 ? "push refs/entire/checkpoints/*" : `push the branch ${CHECKPOINT_BRANCH}`;
 }
 
 interface CheckpointMetadata {
@@ -143,11 +221,15 @@ interface CheckpointMetadata {
 interface SessionMetadata {
   agent?: string;
   model?: string;
+  session_id?: string;
+  created_at?: string;
 }
 
 /** One record of the compact transcript: a turn with its content blocks. */
 interface TranscriptRecord {
   type?: string;
+  /** ISO time of the turn; Entire 0.10.0 and later stamp every record. */
+  ts?: string;
   content?: {
     type?: string;
     name?: string;
@@ -257,6 +339,109 @@ export function symbolReasonsIn(transcript: string, symbols: SymbolAt[], content
   return [...reasons.values()];
 }
 
+/** The parts of a cumulative transcript one checkpoint may read. */
+export interface Windows {
+  /** Everything after the previous checkpoint of the same session: where an edit's reason is looked for. */
+  sinceWindow: string;
+  /** From the turn in which the commit's files were first edited: where the narration and the test runs come from. */
+  stepWindow: string;
+}
+
+/**
+ * Whether a user record carries text a person typed. The harness delivers
+ * its own text as user records too: a tag (`<task-notification>`,
+ * `<system-reminder>`), or a skill's instructions, which Claude Code injects
+ * starting "Base directory for this skill:".
+ */
+function humanTurn(record: TranscriptRecord): boolean {
+  if (record.type !== "user") return false;
+  const text = record.content?.find((c) => typeof c.text === "string")?.text?.trim() ?? "";
+  return text !== "" && !text.startsWith("<") && !text.startsWith("Base directory for this skill:");
+}
+
+/**
+ * Whether a tool call works on one of `files`: an edit tool by its path, a
+ * Bash command by naming the file's basename in its text (an agent that edits
+ * through a script or `sed` never calls an edit tool). A basename is not a
+ * path, so a common one (`index.ts`) can match an earlier turn's command and
+ * start the window early; the previous checkpoint still bounds it.
+ */
+function worksOn(block: NonNullable<TranscriptRecord["content"]>[number], files: string[]): boolean {
+  if (block.type !== "tool_use" || block.name === undefined) return false;
+  if (EDIT_TOOLS.has(block.name)) {
+    const path = block.input?.file_path;
+    return typeof path === "string" && files.some((f) => path === f || path.endsWith(`/${f}`));
+  }
+  if (block.name === "Bash") {
+    const command = block.input?.command;
+    return typeof command === "string" && files.some((f) => command.includes(f.slice(f.lastIndexOf("/") + 1)));
+  }
+  return false;
+}
+
+/**
+ * The records of a compact transcript that belong to one checkpoint. Entire's
+ * branch backend keeps one cumulative transcript per session and snapshots it
+ * at each checkpoint, so the transcript ends where this checkpoint was made
+ * and the question is where it starts. `sinceWindow` starts after `since`,
+ * the previous checkpoint of the same session (a record without a stamp is
+ * kept, so an unstamped transcript is read whole). `stepWindow` starts at the
+ * later of that and the last prompt a person typed before the first tool call
+ * that works on one of `files`, so a session's earlier, unrelated turns do
+ * not read as this commit's intent. Lines that are not JSON are kept; every
+ * reader skips them.
+ */
+export function windowsOf(transcript: string, since: string | undefined, files: string[]): Windows {
+  const lines = transcript.split("\n").filter((line) => line.trim() !== "");
+  const records = lines.map((line): TranscriptRecord | undefined => {
+    try {
+      return JSON.parse(line) as TranscriptRecord;
+    } catch {
+      return undefined;
+    }
+  });
+  let sinceStart = 0;
+  if (since !== undefined) {
+    const first = records.findIndex((r) => r === undefined || typeof r.ts !== "string" || r.ts > since);
+    sinceStart = first === -1 ? lines.length : first;
+  }
+  let stepStart = sinceStart;
+  const firstEdit = records.findIndex((r, i) => i >= sinceStart && r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
+  if (firstEdit !== -1) {
+    let turn = firstEdit;
+    while (turn > sinceStart && !(records[turn] !== undefined && humanTurn(records[turn]!))) turn--;
+    stepStart = turn;
+  }
+  return { sinceWindow: lines.slice(sinceStart).join("\n"), stepWindow: lines.slice(stepStart).join("\n") };
+}
+
+/** What the agent said in a compact transcript: its first and last text, and how much it did. A line that is not JSON is skipped. */
+export function narrationIn(transcript: string): Narration {
+  let started = "";
+  let ended = "";
+  let texts = 0;
+  let tools = 0;
+  for (const line of transcript.split("\n")) {
+    if (line.trim() === "") continue;
+    let record: TranscriptRecord;
+    try {
+      record = JSON.parse(line) as TranscriptRecord;
+    } catch {
+      continue;
+    }
+    if (record.type !== "assistant") continue;
+    for (const block of record.content ?? []) {
+      if (block.type === "tool_use") tools++;
+      if (block.type !== "text" || typeof block.text !== "string" || block.text.trim() === "") continue;
+      texts++;
+      const first = promptLine(block.text);
+      if (started === "") started = first;
+      ended = first;
+    }
+  }
+  return { started, ended: ended === started ? "" : ended, texts, tools };
+}
+
 /** The Bash commands in a compact transcript that run a test runner, in order, deduplicated. A line that is not JSON is skipped. */
 export function testCommandsIn(transcript: string): string[] {
   const seen = new Set<string>();
@@ -277,33 +462,50 @@ export function testCommandsIn(transcript: string): string[] {
   return [...seen];
 }
 
+/** The checkpoint that came before this one in the same brief: where its window starts. */
+export interface PreviousCheckpoint {
+  sha: string;
+  sessionId: string;
+  createdAt: string;
+}
+
 /**
- * Resolve a commit's `Entire-Checkpoint:` trailer to its checkpoint ref and
+ * Resolve a commit's `Entire-Checkpoint:` trailer to its checkpoint and
  * return the allowlisted subset. Undefined when the commit has no trailer,
- * names a checkpoint whose ref is not in this repository (the refs are pushed
+ * names a checkpoint that is not in this repository (checkpoints are pushed
  * separately from the branch; `checkpointTrailer` still reports the id so the
- * brief can say the ref is missing rather than that there was no checkpoint),
- * or names one whose files cannot be read or parsed. Never throws.
+ * brief can say it is missing rather than that there was none), or names one
+ * whose files cannot be read or parsed. Never throws.
  *
  * `symbols` are the changed symbols the brief already knows; the transcript's
  * edits are matched to them and their text is searched, never shown.
  *
+ * `previous` is the brief's previous checkpoint and `files` what the commit
+ * changed; `windowsOf` uses them to read this commit's part of a cumulative
+ * transcript, not the whole session's.
+ *
  * The paths read are Entire's layout, spelled out here: `<i>/metadata.json`,
  * `<i>/prompt.txt` and `<i>/transcript.jsonl` per session, `metadata.json` at
- * the root. `metadata.json` also lists per-session paths; those are not
- * followed, so no checkpoint can point this reader at `<i>/full.jsonl`.
+ * the root, under the place `checkpointPlaces` names for the id's shape.
+ * `metadata.json` also lists per-session paths; those are not followed, so no
+ * checkpoint can point this reader at `<i>/full.jsonl`.
  */
-export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] = []): Checkpoint | undefined {
+export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] = [], previous?: PreviousCheckpoint, files: string[] = []): Checkpoint | undefined {
   const id = checkpointTrailer(repo, commit);
   if (id === undefined) return undefined;
-  const ref = checkpointRef(id);
-  const show = (path: string): string => git(repo, ["show", `${ref}:${path}`]);
+  const place = checkpointPlace(repo, id);
+  if (place === undefined) return undefined;
+  const show = (path: string): string => git(repo, ["show", `${place.ref}:${place.prefix}${path}`]);
   try {
     const meta = JSON.parse(show("metadata.json")) as CheckpointMetadata;
     const sessionCount = Math.max(1, meta.sessions?.length ?? 1);
     const session = JSON.parse(show("0/metadata.json")) as SessionMetadata;
+    const sessionId = session.session_id ?? "";
+    const createdAt = session.created_at ?? "";
+    const since = previous !== undefined && previous.sessionId !== "" && previous.sessionId === sessionId ? previous.createdAt : undefined;
     const prompt = promptLine(show("0/prompt.txt"));
     const testCommands = new Set<string>();
+    let narration: Narration = { started: "", ended: "", texts: 0, tools: 0 };
     const reasons = new Map<string, SymbolReason>();
     const committed = new Map<string, string | undefined>();
     const contents = (path: string): string | undefined => {
@@ -317,16 +519,23 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
       return committed.get(path);
     };
     for (let i = 0; i < sessionCount; i++) {
-      const transcript = show(`${i}/transcript.jsonl`);
-      for (const c of testCommandsIn(transcript)) testCommands.add(c);
-      for (const r of symbolReasonsIn(transcript, symbols, contents)) reasons.set(`${r.path}\0${r.label}`, r);
+      const { sinceWindow, stepWindow } = windowsOf(show(`${i}/transcript.jsonl`), since, files);
+      for (const c of testCommandsIn(stepWindow)) testCommands.add(c);
+      for (const r of symbolReasonsIn(sinceWindow, symbols, contents)) reasons.set(`${r.path}\0${r.label}`, r);
+      const n = narrationIn(stepWindow);
+      if (i === 0) narration = n;
+      else narration = { started: narration.started || n.started, ended: n.ended || narration.ended, texts: narration.texts + n.texts, tools: narration.tools + n.tools };
     }
     return {
       id,
       commit: git(repo, ["rev-parse", `${commit}^{commit}`]).trim(),
       agent: session.agent ?? "",
       model: session.model ?? "",
+      sessionId,
+      createdAt,
       prompt,
+      narration,
+      ...(since !== undefined && previous !== undefined && narration.texts === 0 && narration.tools === 0 && { sameStepAs: previous.sha }),
       filesTouched: meta.files_touched ?? [],
       testCommands: [...testCommands],
       source: meta.source ?? "entire",

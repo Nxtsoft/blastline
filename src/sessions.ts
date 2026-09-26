@@ -349,13 +349,17 @@ export function localCheckpoint(index: SessionsIndex, repo: string, sha: string,
       reasons.set(`${s.path}\0${s.label}`, { path: s.path, label: s.label, turn: i + 1, why: e.why });
     }
   });
+  const step = (intent.step?.text ?? "").split("\n")[0]!.slice(0, 200);
   return {
     reasons: [...reasons.values()],
     id: "",
     commit: git(repo, ["rev-parse", `${sha}^{commit}`]),
     agent: intent.session.agent,
     model: intent.session.model ?? "",
-    prompt: (intent.step?.text ?? intent.session.firstUserMessage ?? "").split("\n")[0]!.slice(0, 200),
+    sessionId: intent.session.id,
+    createdAt: intent.committedAt,
+    prompt: (intent.session.firstUserMessage ?? "").split("\n")[0]!.slice(0, 200),
+    narration: { started: step, ended: "", texts: step === "" ? 0 : 1, tools: 0 },
     filesTouched: files,
     testCommands: intent.testCommands,
     source: LOCAL_SOURCE,

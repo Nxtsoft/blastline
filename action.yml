@@ -139,11 +139,15 @@ runs:
       run: |
         repo="${INPUT_REPO:-$GITHUB_WORKSPACE}"
         # An Entire checkpoint (what the agent was asked, which tests it ran)
-        # lives on its own ref, pushed separately from the branch. The brief
+        # lives on its own ref (Entire 0.10.0 and later) or on the shared
+        # branch entire/checkpoints/v1 (a repository enabled earlier), both
+        # pushed separately from the feature branch. The brief
         # reads it through each commit's Entire-Checkpoint trailer; a repo
         # without them gets "no checkpoints on this branch", not a failure.
         git -C "$repo" fetch -q origin '+refs/entire/checkpoints/*:refs/entire/checkpoints/*' 2>/dev/null \
           || echo "blastline: no checkpoint refs fetched"
+        git -C "$repo" fetch -q origin '+refs/heads/entire/checkpoints/v1:refs/remotes/origin/entire/checkpoints/v1' 2>/dev/null \
+          || echo "blastline: no checkpoint branch fetched"
 
     - name: Resolve graph path
       id: graphpath

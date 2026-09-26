@@ -80,7 +80,7 @@ brief options:
   --local              on the agent machine: a commit without a checkpoint ref takes its intent from the fleet
                        session index (~/.agents/.history/sessions/sessions.db); nothing leaves the machine
   --sessions-db <path> that index, when it is not at the default path
-  brief reads each commit's Entire-Checkpoint trailer (refs/entire/checkpoints/*) and shows only the
+  brief reads each commit's Entire-Checkpoint trailer (refs/entire/checkpoints/* or the branch entire/checkpoints/v1) and shows only the
   first prompt line, agent, model, files touched and the test commands run; never the transcript.
 
 Selection is a safe superset: "run at least these." Any file the graph cannot
