@@ -378,8 +378,10 @@ export function symbolReasonsIn(transcript: string, symbols: SymbolAt[], content
 export interface Windows {
   /** Everything after the previous checkpoint of the same session: where an edit's reason is looked for. */
   sinceWindow: string;
-  /** From the turn in which the commit's files were first worked on: where the narration and the test runs come from. */
+  /** The later of that and the turn in which the commit's files were first worked on: where the narration comes from. */
   stepWindow: string;
+  /** From that turn, whatever an earlier commit read of it: where the test runs come from, so every commit of one turn carries the turn's runs. */
+  turnWindow: string;
   /** Non-blank lines in the whole transcript. */
   lines: number;
   /** sha256 of those lines. */
@@ -402,7 +404,8 @@ export function transcriptHash(lines: string[]): string {
     let key = line;
     try {
       const r = JSON.parse(line) as TranscriptRecord & { id?: unknown; ts?: unknown };
-      key = `${r.type ?? ""}\0${typeof r.ts === "string" ? r.ts : ""}\0${typeof r.id === "string" ? r.id : ""}`;
+      // A record without an id (blastline's own writer) is its text: two of them a second apart must not look alike.
+      key = typeof r.id === "string" ? `${r.type ?? ""}\0${typeof r.ts === "string" ? r.ts : ""}\0${r.id}` : line;
     } catch {
       // not JSON: the line itself is its identity
     }
@@ -442,11 +445,11 @@ function worksOn(block: NonNullable<TranscriptRecord["content"]>[number], files:
  * starts. `sinceWindow` skips what the previous checkpoint of the same
  * session read (`read`), when this transcript extends that snapshot: its
  * first `read.lines` lines hash to `read.hash`. Otherwise the transcript is
- * this checkpoint's own and is read whole. `stepWindow` starts at the later
- * of that and the last prompt a person typed before the first tool call that
- * works on one of `files`, so a session's earlier, unrelated turns do not
- * read as this commit's intent. Lines that are not JSON are kept; every
- * reader skips them.
+ * this checkpoint's own and is read whole. `turnWindow` starts at the last
+ * prompt a person typed before the first tool call that works on one of
+ * `files`, so a session's earlier, unrelated turns do not count; `stepWindow`
+ * is the later of that and `sinceWindow`. Lines that are not JSON are kept;
+ * every reader skips them.
  */
 export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[]): Windows {
   const lines = transcript.split("\n").filter((line) => line.trim() !== "");
@@ -459,14 +462,22 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   });
   const extended = read !== undefined && read.lines <= lines.length && transcriptHash(lines.slice(0, read.lines)) === read.hash;
   const sinceStart = extended ? read.lines : 0;
-  let stepStart = sinceStart;
-  const firstEdit = records.findIndex((r, i) => i >= sinceStart && r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
-  if (firstEdit !== -1) {
-    let turn = firstEdit;
-    while (turn > sinceStart && !(records[turn] !== undefined && humanTurn(records[turn]!))) turn--;
-    stepStart = turn;
+  let turnStart = sinceStart;
+  const firstWork = records.findIndex((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
+  if (firstWork !== -1) {
+    let turn = firstWork;
+    while (turn > 0 && !(records[turn] !== undefined && humanTurn(records[turn]!))) turn--;
+    turnStart = turn;
   }
-  return { sinceWindow: lines.slice(sinceStart).join("\n"), stepWindow: lines.slice(stepStart).join("\n"), lines: lines.length, hash: transcriptHash(lines), extended };
+  const stepStart = Math.max(sinceStart, turnStart);
+  return {
+    sinceWindow: lines.slice(sinceStart).join("\n"),
+    stepWindow: lines.slice(stepStart).join("\n"),
+    turnWindow: lines.slice(turnStart).join("\n"),
+    lines: lines.length,
+    hash: transcriptHash(lines),
+    extended,
+  };
 }
 
 /** What the agent said in a compact transcript: its first and last text, and how much it did. A line that is not JSON is skipped. */
@@ -567,10 +578,10 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     for (let i = 0; i < sessionCount; i++) {
       const sessionId = (i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata)).session_id ?? "";
       const before = sessionId === "" ? undefined : read.get(sessionId);
-      const { sinceWindow, stepWindow, lines, hash, extended } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
+      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
       if (extended) readBefore++;
       sessions.push({ id: sessionId, lines, hash });
-      for (const c of testCommandsIn(stepWindow)) testCommands.add(c);
+      for (const c of testCommandsIn(turnWindow)) testCommands.add(c);
       for (const r of symbolReasonsIn(sinceWindow, symbols, contents)) reasons.set(`${r.path}\0${r.label}`, r);
       const n = narrationIn(stepWindow);
       narration = {

@@ -182,13 +182,23 @@ describe("promptLine on a turn with several prompts", () => {
   });
 });
 
+describe("transcriptHash", () => {
+  it("identifies a stamped record by type, stamp and id, so a result filled in later changes nothing, and an id-less record by its text", () => {
+    const stamped = (result?: object): string => JSON.stringify({ type: "assistant", ts: "2026-09-26T02:19:45.518Z", id: "msg_1", content: [{ type: "tool_use", name: "Bash", input: { command: "git commit" }, ...(result && { result }) }] });
+    expect(transcriptHash([stamped()])).toBe(transcriptHash([stamped({ output: "[main abc] x" })]));
+    const idless = (command: string): string => JSON.stringify({ v: 1, type: "assistant", ts: "2026-09-24T16:23:46.000Z", content: [{ type: "tool_use", name: "Bash", input: { command } }] });
+    expect(transcriptHash([idless("bunx vitest run a.test.ts")])).not.toBe(transcriptHash([idless("bunx vitest run b.test.ts")]));
+    expect(transcriptHash(["not json"])).not.toBe(transcriptHash(["also not json"]));
+  });
+});
+
 // Entire 0.10.0 branch backend: 12-hex ids, one shared branch, <first two>/<rest>/ directories.
 const HEX_A = "c892ec03a62e";
 const HEX_B = "782a9bbcae1b";
 const HEX_C = "dd54cfcde765";
 const SESSION = "0d2e1746-ad6a-45c2-a9c8-371131273a49";
 const stamp = (n: number): string => `2026-09-26T02:${String(n).padStart(2, "0")}:00.000Z`;
-const rec = (type: string, ts: string, content: object[], extra: object = {}): string => JSON.stringify({ v: 1, agent: "claude-code", cli_version: "0.10.0", type, ts, content, ...extra });
+const rec = (type: string, ts: string, content: object[], extra: object = {}): string => JSON.stringify({ v: 1, agent: "claude-code", cli_version: "0.10.0", type, ts, id: `msg_${ts}`, content, ...extra });
 const text = (t: string): object => ({ type: "text", text: t });
 const user = (t: string): object => ({ id: "u", text: t });
 const edit = (path: string, s: string): object => ({ id: "e", type: "tool_use", name: "Edit", input: { file_path: `/Users/x/wt/${path}`, old_string: "a", new_string: s }, result: { output: "SECRET", status: "success" } });
@@ -328,7 +338,8 @@ describe("checkpointFor on the branch backend", () => {
     const b = checkpointFor(repo, commitB, [], read, ["src/round-size.ts"]);
     expect(b?.narration).toEqual({ started: "", ended: "", texts: 0, tools: 0 });
     expect(b?.sameStepAs).toBe(commitA);
-    expect(b?.testCommands).toEqual([]);
+    // The turn ran the tests once, before both commits; each carries the run, or the claim check would refute the second.
+    expect(b?.testCommands).toEqual(["bunx vitest run src/round-size.test.ts"]);
     expect(b?.sessions).toEqual([{ id: SESSION, lines: 10, hash: HASH_A }]);
     // The last record of A's snapshot is stamped after A's created_at; a time boundary would hand it to C as well.
     const c = checkpointFor(repo, commitC, [], new Map([[SESSION, { sha: commitB, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
@@ -336,6 +347,8 @@ describe("checkpointFor on the branch backend", () => {
     expect(c?.sameStepAs).toBeUndefined();
     expect(c?.prompt).toBe("");
     expect(c?.sessions).toEqual([{ id: SESSION, lines: 12, hash: HASH_C }]);
+    // Its file was first worked on in the earlier turn, so that turn's run counts; the session's first, unrelated turn does not.
+    expect(c?.testCommands).toEqual(["bunx vitest run src/round-size.test.ts"]);
   });
 
   it("still extends a snapshot whose last tool call gained its result since, as Entire fills results in later", () => {
@@ -369,7 +382,7 @@ describe("checkpointFor on the branch backend", () => {
       { id: OTHER, lines: 2, hash: transcriptHash(other) },
     ]);
     expect(d?.narration).toEqual({ started: "Other session at work.", ended: "", texts: 1, tools: 1 });
-    expect(d?.testCommands).toEqual(["bunx vitest run src/other.test.ts"]);
+    expect(d?.testCommands).toEqual(["bunx vitest run src/round-size.test.ts", "bunx vitest run src/other.test.ts"]);
     expect(d?.sameStepAs).toBeUndefined();
     const again = checkpointFor(repo, commitTwoSessions, [], new Map([[SESSION, { sha: commitC, lines: 12, hash: HASH_C }], [OTHER, { sha: commitC, lines: 2, hash: transcriptHash(other) }]]), ["src/round-size.ts"]);
     expect(again?.sameStepAs).toBe(commitC);
@@ -390,7 +403,7 @@ describe("windowsOf and narrationIn", () => {
   it("keeps an unstamped transcript whole and counts texts and tool calls", () => {
     const t = [JSON.stringify({ type: "assistant", content: [text("a"), bash("ls")] }), "not json", JSON.stringify({ type: "assistant", content: [text("b")] })].join("\n");
     const lines = t.split("\n");
-    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, lines: 3, hash: transcriptHash(lines), extended: false });
+    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: transcriptHash(lines.slice(0, 2)) }, ["x.ts"])).toMatchObject({ sinceWindow: lines[2], extended: true });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: "not the prefix" }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
     expect(windowsOf(t, { sha: "a", lines: 9, hash: transcriptHash(lines) }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
@@ -408,7 +421,12 @@ describe("windowsOf and narrationIn", () => {
     ].join("\n");
     const w = windowsOf(t, undefined, ["app/(protected)/lib/use-round-size.ts"]);
     expect(w.stepWindow.split("\n")).toHaveLength(4);
+    expect(w.turnWindow).toBe(w.stepWindow);
     expect(narrationIn(w.stepWindow).started).toBe("editing with a script");
+    // Read up to the script: the narration is what came after, the turn's runs are the whole turn's.
+    const later = windowsOf(t, { sha: "x", lines: 5, hash: transcriptHash(t.split("\n").slice(0, 5)) }, ["app/(protected)/lib/use-round-size.ts"]);
+    expect(later.stepWindow.split("\n")).toHaveLength(1);
+    expect(later.turnWindow.split("\n")).toHaveLength(4);
   });
 
   it("does not walk back past a harness notification into an earlier human turn", () => {
