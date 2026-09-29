@@ -2,7 +2,7 @@ import { declaredTests, isCMakePath } from "./cmake.js";
 import { isTestPath } from "./detect.js";
 import type { CodeGraph, GraphNode } from "./graph.js";
 import { nodesInFile } from "./graph.js";
-import type { Reader, Resolution } from "./references.js";
+import type { Reader } from "./references.js";
 import type { ChangedFile, FailOpenReason } from "./types.js";
 
 export interface MappingResult {
@@ -11,8 +11,6 @@ export interface MappingResult {
   /** the same seeds, keyed by the changed file (its `path`) that produced them */
   seedsByFile: Map<string, Set<string>>;
   failOpen: FailOpenReason[];
-  /** Changed files the graph has no node for whose readers seeded the walk instead, keyed by `path`. */
-  readersByFile: Map<string, Reader[]>;
 }
 
 function spanSize(n: GraphNode): number {
@@ -57,21 +55,22 @@ function registeredTestSeeds(graph: CodeGraph, file: ChangedFile): Set<string> |
 }
 
 /**
- * The nodes a changed non-code file's readers contribute: for each reader, the
- * innermost symbol around each line that names or loads the file. Null when a
- * reader has no node at all -- `references.ts` only returns readers the graph
- * knows, so this guards a graph and a resolution that disagree, and it fails
- * open rather than seeding nothing.
+ * The nodes a changed non-code file's readers point at: for each reader, the
+ * innermost symbol around each line that names or loads the file. A reader the
+ * graph has no node for is left out; `references.ts` only returns readers the
+ * graph knows.
  */
-function readerNodes(graph: CodeGraph, readers: Reader[]): Set<string> | null {
-  const ids = new Set<string>();
+export function readerNodes(graph: CodeGraph, readers: Reader[]): Map<string, Set<string>> {
+  const byReader = new Map<string, Set<string>>();
   for (const reader of readers) {
     const nodes = nodesInFile(graph, reader.file);
-    if (nodes.length === 0) return null;
+    if (nodes.length === 0) continue;
+    const ids = byReader.get(reader.file) ?? new Set<string>();
     const symbols = nodes.filter((n) => n.type !== "file" && n.source_location);
     seedLines(symbols, nodes.find((n) => n.type === "file"), reader.lines, (id) => ids.add(id));
+    byReader.set(reader.file, ids);
   }
-  return ids;
+  return byReader;
 }
 
 /**
@@ -114,17 +113,11 @@ function* linesOf(start: number, end: number): Generator<number> {
 export function mapDiffToSeeds(
   graph: CodeGraph,
   changed: ChangedFile[],
-  opts: {
-    baseGraph?: CodeGraph;
-    ignore?: (path: string) => boolean;
-    /** Readers of changed files the graph has no node for (see `references.ts`), keyed by path. */
-    references?: Map<string, Resolution>;
-  } = {},
+  opts: { baseGraph?: CodeGraph; ignore?: (path: string) => boolean } = {},
 ): MappingResult {
   const seeds = new Set<string>();
   const seedsByFile = new Map<string, Set<string>>();
   const failOpen: FailOpenReason[] = [];
-  const readersByFile = new Map<string, Reader[]>();
 
   for (const file of changed) {
     if (opts.ignore?.(file.path) && opts.ignore?.(file.oldPath)) continue;
@@ -144,18 +137,7 @@ export function mapDiffToSeeds(
         for (const id of registered) seed(id);
         continue;
       }
-      const resolution = opts.references?.get(file.path);
-      const readerSeeds = resolution?.kind === "referenced" ? readerNodes(graph, resolution.readers) : null;
-      if (resolution?.kind === "referenced" && readerSeeds !== null) {
-        for (const id of readerSeeds) seed(id);
-        readersByFile.set(file.path, resolution.readers);
-        continue;
-      }
-      failOpen.push({
-        kind: "unmapped-file",
-        path: file.path,
-        ...(resolution?.kind === "unresolved" && { unresolved: resolution.why }),
-      });
+      failOpen.push({ kind: "unmapped-file", path: file.path });
       continue;
     }
     if (file.status === "deleted") {
@@ -191,5 +173,5 @@ export function mapDiffToSeeds(
       seedLines(pool, fallback, linesOf(range.start, range.end), seed);
     }
   }
-  return { seeds, seedsByFile, failOpen, readersByFile };
+  return { seeds, seedsByFile, failOpen };
 }

@@ -687,7 +687,7 @@ export function buildBrief(o: BriefOptions): Brief {
             : `checkpoint \`${checkpointId}\` for \`${shortSha(sha)}\`: it is not in this repository (${checkpointPushHint(checkpointId)})`,
         );
       }
-      const impacts = files.map((f) => byPath.get(f)).filter((f): f is ChangedFileImpact => f !== undefined && f.disposition !== "ignored");
+      const impacts = files.map((f) => byPath.get(f)).filter((f): f is ChangedFileImpact => f !== undefined && f.disposition === "mapped");
       const reached = new Set<string>();
       const tests = new Set<string>();
       for (const f of impacts) {
@@ -757,7 +757,7 @@ export function buildBrief(o: BriefOptions): Brief {
   if (shas === undefined) {
     unchecked.push("reviewed by: the range did not resolve, so no history was read");
   } else {
-    const mapped = selection.kind === "subset" ? selection.files.filter((f) => f.disposition !== "ignored").map((f) => f.path) : [...changedPaths];
+    const mapped = selection.kind === "subset" ? selection.files.filter((f) => f.disposition === "mapped").map((f) => f.path) : [...changedPaths];
     const latest = new Map<string, string>();
     for (const r of reviews ?? []) if (r.login !== author) latest.set(r.login, r.state);
     const scanned = [...new Set([...mapped, ...reachedFiles])].sort();
@@ -783,7 +783,7 @@ export function buildBrief(o: BriefOptions): Brief {
     };
     if (reviews === undefined) unchecked.push("reviewed by: no `--reviews` given, so the row names owners only");
   }
-  const changedMapped = selection.kind === "subset" ? selection.files.filter((f) => f.disposition !== "ignored").map((f) => f.path).sort() : [];
+  const changedMapped = selection.kind === "subset" ? selection.files.filter((f) => f.disposition === "mapped").map((f) => f.path).sort() : [];
   const snapshot: BriefSnapshot = {
     head: shas?.head ?? range,
     commits: commits.length,
@@ -835,7 +835,7 @@ export function buildBrief(o: BriefOptions): Brief {
     const candidates: (Annotation & { tests: number; reaches: number })[] = [];
     for (const file of parsed) {
       const impact = byPath.get(file.path);
-      if (!impact || impact.disposition === "ignored" || file.status === "deleted") continue;
+      if (!impact || impact.disposition !== "mapped" || file.status === "deleted") continue;
       if (impact.reaches.length === 0 && impact.tests.length === 0) continue;
       const through = impact.symbols.length > 0 ? ` through ${listOf(impact.symbols, 3)}` : "";
       for (const r of file.ranges) {

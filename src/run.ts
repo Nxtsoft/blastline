@@ -169,7 +169,7 @@ function readersOf(
   const read = (p: string): string =>
     o.head !== undefined ? o.git("show", `${o.head}:${p}`) : readFileSync(resolve(o.repo, p), "utf8");
   try {
-    return resolveReferences(o.git, o.head, unmapped, { hasNodes, irrelevant, read });
+    return resolveReferences(o.git, o.head, unmapped, { hasNodes, read });
   } catch (e) {
     process.stderr.write(`blastline: changed non-code files fail open; searching for their readers failed: ${(e as Error).message}\n`);
     return undefined;

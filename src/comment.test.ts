@@ -145,40 +145,6 @@ describe("renderComment: subset", () => {
   });
 });
 
-describe("renderComment: files read by code", () => {
-  const withConfig: Selection = {
-    ...subset,
-    files: [
-      ...(subset.kind === "subset" ? subset.files : []),
-      {
-        path: "config/application-production.yml",
-        status: "modified",
-        disposition: "referenced",
-        symbols: [],
-        readers: [
-          { file: "src/test/ProbeTest.kt", lines: [12], rule: "name" },
-          { file: "src/test/ProbeTest.kt", lines: [4], rule: "spring-profile" },
-          { file: "src/test/ProdTest.kt", lines: [2], rule: "spring-profile" },
-          { file: "src/Loader.kt", lines: [8], rule: "folder" },
-          { file: "src/Other.kt", lines: [3], rule: "name" },
-        ],
-        reaches: [{ file: "/r/src/c.ts", symbols: [] }],
-        tests: ["/r/src/a.test.ts"],
-      },
-    ],
-  };
-
-  it("counts them apart from mapped files and names their readers once each", () => {
-    const md = renderComment(withConfig, ctx);
-    expect(md).toContain("1 with no graph node, selected through the code that reads it");
-    const row = md.split("\n").find((l) => l.includes("application-production.yml")) ?? "";
-    expect(row).toContain(
-      "no graph node; read by `ProbeTest.kt` (names it, uses its profile), `ProdTest.kt` (uses its profile), `Loader.kt` (walks its folder), +1 file",
-    );
-    expect(row.trim().endsWith("| 1 file | 1 |")).toBe(true);
-  });
-});
-
 describe("renderComment: fail-open", () => {
   it("renders every reason kind as a cause with an action, without throwing", () => {
     const md = renderComment(
@@ -258,19 +224,37 @@ describe("renderComment: fail-open", () => {
     expect(md).toContain("api/src/main/resources/application-production.yml");
   });
 
-  it("says why each unmapped file's readers could not all be found", () => {
+  it("advises which code reads each unmapped file, without changing the verdict", () => {
     const md = renderComment(
       {
         kind: "all",
         reasons: [
-          { kind: "unmapped-file", path: "package.json", unresolved: "loaded by convention, not by name" },
-          { kind: "unmapped-file", path: "data/seed.json", unresolved: "package.json names it and can change how tests run" },
+          {
+            kind: "unmapped-file",
+            path: "config/application-production.yml",
+            readers: [
+              { file: "src/test/ProbeTest.kt", lines: [12], rule: "name" },
+              { file: "src/test/ProbeTest.kt", lines: [4], rule: "spring-profile" },
+              { file: "src/test/ProdTest.kt", lines: [2], rule: "spring-profile" },
+              { file: "src/Loader.kt", lines: [8], rule: "path-part" },
+              { file: "src/Other.kt", lines: [3], rule: "name" },
+            ],
+            readerTests: ["/r/src/test/ProbeTest.kt", "/r/src/test/ProdTest.kt"],
+            caveats: [".github/workflows/ci.yml mentions it and can change how tests run", "x"],
+          },
+          { kind: "unmapped-file", path: "package.json" },
         ],
       },
       ctx,
     );
-    expect(md).toContain("package.json  (loaded by convention, not by name)");
-    expect(md).toContain("data/seed.json  (package.json names it and can change how tests run)");
+    expect(md).toContain("Run the full suite");
+    expect(md).toContain("**Code that reads these files** (advice: the run still needs the full suite");
+    const row = md.split("\n").find((l) => l.startsWith("| `config/application-production.yml`")) ?? "";
+    expect(row).toBe(
+      "| `config/application-production.yml` | `ProbeTest.kt` (names it, uses its profile), `ProdTest.kt` (uses its profile), `Loader.kt` (builds a path to it), +1 file | 2 | .github/workflows/ci.yml mentions it and can change how tests run; +1 more |",
+    );
+    expect(md).toContain("The 2 test files those readers reach");
+    expect(md).toContain("src/test/ProbeTest.kt\nsrc/test/ProdTest.kt");
   });
 
   it("offers nothing when every unmapped file is named somewhere", () => {

@@ -49,6 +49,10 @@ const LOADED_BY_CONVENTION: RegExp[] = [
   /(^|\/)META-INF\//,
   /(^|\/)resources\/(templates|static|public|graphql|db\/migration|db\/changelog)\//,
   /(^|\/)resources\/(schema|data)[^/]*\.sql$/,
+  // Build-tool and shell settings read by location: `-Dspring.profiles.active` in
+  // .mvn/maven.config, exports in a direnv .envrc.
+  /(^|\/)\.mvn\//,
+  /(^|\/)\.envrc$/,
   // Test-runner hooks read from the classpath by fixed name.
   /(^|\/)junit-platform\.properties$/,
   /(^|\/)mockito-extensions\//,

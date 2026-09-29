@@ -2,12 +2,12 @@
 
 ## 0.17.0
 
-A changed config or data file with no graph node selects the code that reads it, instead of the full suite, when every reader can be found.
+Under a full-suite verdict, the comment says which code reads each unmapped file and which tests those readers reach. Advice only: the verdict never changes.
 
-- `resolveReferences` in `src/references.ts` finds readers at the range's head: a non-comment line that names the file; a file that names a folder above it and enumerates a directory; and, in a Spring repository, every context test for `application.yml` and, for `application-<profile>.yml`, code that names it, templates its name from the profile, or activates the profile. A reader with no graph node is followed to its own readers unless it can change how tests run; lockfiles are never readers.
-- A resolved file is reported as `referenced`, with `readers` (file, lines, rule); each reader seeds the innermost symbol around its naming lines (`seedLines`, shared with changed lines). Anything unresolved fails open as before, and `unmapped-file.unresolved` says why: loaded by convention, named by config that can change how tests run, a profile activated outside code, or no code reads it.
-- The comment lists a referenced file's readers and why each counts; the unmapped list gives each unresolved file's reason.
-- Replayed over the 30 recorded full-suite PRs in six repositories, on 0.16.0 and on this release: 9 become targeted (for example 288 test files to 4, 290 to 9, 211 to 14), none regresses.
+- `resolveReferences` in `src/references.ts` finds readers at the range's head: a non-comment line naming the file (directives such as `#include`, `//go:embed`, `/// <reference>` and Rust `#[...]` count); a piece a path can be built from (the stem in quotes, the file's folder used as a path, a higher folder in a file that walks directories, a directory walk over its extension); and, in a Spring repository, context tests for `application.yml` or code naming, templating or activating the profile for `application-<p>.yml`, with subclasses and meta-annotated classes followed. A non-code reader is followed to the code that names it; lockfiles and repository metadata (`.github/dependabot.yml`, `CODEOWNERS`) never read anything.
+- `unmapped-file` gains `readers`, `readerTests` (the test files the readers reach, each reader seeded at the innermost symbol around its naming lines via `seedLines`, now shared with changed lines) and `caveats` (build or CI config mentioning it, activation by expression, a reader reaching no test, a non-code reader nothing runs, no code reads it).
+- The unmapped block renders a table per file (readers, tests reached, first caveat) and the reached tests behind a fold.
+- A first version let these readers replace the full suite. An independent review built probes where it silently dropped real tests (pytest fixtures, `@SpringBootTest` base classes and meta-annotations, paths built from a stem, `os.ReadDir`, profiles activated by constants), and the version strict enough to be safe vouched for none of 30 real full-suite PRs. So it ships as advice. Replayed over those 30 PRs: verdicts identical to 0.16.0 on all 30; 17 of the 29 full-suite PRs get a reader table.
 
 ## 0.16.0
 

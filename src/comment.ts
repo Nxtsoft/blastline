@@ -4,6 +4,7 @@ import type { Brief, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
 import { SNAPSHOT_MARKER } from "./brief.js";
 import { relativeTo, sharedDir } from "./paths.js";
 import { ignorePatternFor } from "./unnamed.js";
+import type { Reader } from "./references.js";
 import type { ChangedFileImpact, FileEdge, FailOpenReason, Selection } from "./types.js";
 
 /** First line of every comment: the Action finds and updates the existing comment by it. */
@@ -167,32 +168,6 @@ function ignoredRows(files: ChangedFileImpact[], why = false): string[] {
     });
 }
 
-/** How a reader's rule reads in a sentence. */
-const READ_BY: Record<NonNullable<ChangedFileImpact["readers"]>[number]["rule"], string> = {
-  name: "names it",
-  folder: "walks its folder",
-  "spring-profile": "uses its profile",
-  "spring-context": "starts a Spring context",
-};
-
-/**
- * Rows for changed files the graph has no node for, whose readers seeded the
- * walk in their place: the reader files, shortest first, with why each counts.
- */
-function referencedRows(files: ChangedFileImpact[], short: (rel: string) => string, links: Links, why = false): string[] {
-  return files.map((f) => {
-    // One entry per reader file; a file can count under several rules.
-    const rules = new Map<string, string[]>();
-    for (const r of f.readers ?? []) rules.set(r.file, [...(rules.get(r.file) ?? []), READ_BY[r.rule]]);
-    const readers = [...rules.entries()];
-    const shown = readers.slice(0, 3).map(([file, why]) => `${code(file.slice(file.lastIndexOf("/") + 1))} (${why.join(", ")})`);
-    const more = readers.length > 3 ? `, +${plural(readers.length - 3, "file")}` : "";
-    const name = links.path(f.path, short(f.path)) + (f.status === "added" ? " (new)" : "");
-    const reaches = f.reaches.length === 0 ? "" : plural(f.reaches.length, "file");
-    return `| | ${cell(name)} | no graph node; read by ${cell(shown.join(", ") + more)} |${why ? " |" : ""} ${reaches} | ${f.tests.length} |`;
-  });
-}
-
 type Subset = Extract<Selection, { kind: "subset" }>;
 
 /** The pieces of a subset comment, so the brief can interleave its own sections. */
@@ -236,10 +211,9 @@ function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolCha
   const links = new Links(ctx);
   const mapped = selection.files.filter((f) => f.disposition === "mapped");
   const ignored = selection.files.filter((f) => f.disposition === "ignored");
-  const referenced = selection.files.filter((f) => f.disposition === "referenced");
   const symbolTotal = mapped.reduce((n, f) => n + f.symbols.length, 0);
   const reachedFiles = new Set<string>();
-  for (const f of [...mapped, ...referenced]) for (const r of f.reaches) reachedFiles.add(r.file);
+  for (const f of mapped) for (const r of f.reaches) reachedFiles.add(r.file);
   const n = selection.tests.length;
   const header = `${n} of ${plural(selection.testsTotal, "test file")} reach${n === 1 ? "es" : ""} this diff`;
   const lead =
@@ -251,7 +225,6 @@ function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolCha
   const summaryTitle = ctx.prNumber !== undefined && at ? `PR #${ctx.prNumber} at ${at}` : at ? `at ${at}` : code(ctx.range);
   const changedCell = [
     `${plural(selection.files.length, "file")}: ${mapped.length} mapped to ${plural(symbolTotal, "symbol")}`,
-    referenced.length > 0 ? `${referenced.length} with no graph node, selected through the code that reads ${referenced.length === 1 ? "it" : "them"}` : "",
     ignored.length > 0 ? `${ignored.length} ignored by policy` : "",
   ]
     .filter(Boolean)
@@ -289,7 +262,6 @@ function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolCha
       const reaches = f.reaches.length === 0 ? "" : plural(f.reaches.length, "file");
       return `| ${read} | ${cell(name)} | ${cell(what)} |${why ? ` ${whyCell(f.path, reasons)} |` : ""} ${reaches} | ${f.tests.length} |`;
     }),
-    ...referencedRows(referenced, short, links, why),
     ...ignoredRows(ignored, why),
   ].join("\n");
   const prefixNote = prefix ? `Paths above are under ${code(prefix)} unless shown in full.` : "";
@@ -304,7 +276,7 @@ function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolCha
       ? [
           `<details><summary>Blast radius by changed file: ${plural(selection.blast.length, "dependent")}</summary>`,
           "",
-          ...[...mapped, ...referenced]
+          ...[...mapped]
             .sort(byImpact)
             .filter((f) => f.reaches.length > 0)
             .map((f) => {
@@ -407,7 +379,7 @@ function explain(r: Exclude<FailOpenReason, { kind: "unmapped-file" }>, ctx: Com
  * reason under them. The paths still matter, so they are grouped by directory
  * with counts and kept in full behind a fold, rather than dropped.
  */
-function renderUnmapped(reasons: Extract<FailOpenReason, { kind: "unmapped-file" }>[]): string {
+function renderUnmapped(reasons: Extract<FailOpenReason, { kind: "unmapped-file" }>[], repo: string): string {
   const paths = reasons.map((r) => r.path);
   const byDir = new Map<string, number>();
   for (const p of paths) byDir.set(dirOf(p), (byDir.get(dirOf(p)) ?? 0) + 1);
@@ -422,11 +394,7 @@ function renderUnmapped(reasons: Extract<FailOpenReason, { kind: "unmapped-file"
     })
     .join("\n");
   const rest = rows.length > top.length ? `\n_and ${rows.length - top.length} more directories_\n` : "";
-  // Why each file's readers could not all be found, when that was tried.
-  const listed = reasons
-    .slice(0, 50)
-    .map((r) => (r.unresolved !== undefined ? `${r.path}  (${r.unresolved})` : r.path))
-    .join("\n");
+  const listed = paths.slice(0, 50).join("\n");
   const more = paths.length > 50 ? `\n… ${paths.length - 50} more` : "";
   return [
     `**${paths.length} file${paths.length === 1 ? " has" : "s have"} no graph node** (config, asset, or unextracted).`,
@@ -434,6 +402,7 @@ function renderUnmapped(reasons: Extract<FailOpenReason, { kind: "unmapped-file"
     "If these files cannot change which tests should run, add a pattern for them to `ignore`. If they feed tests (fixtures, data), this outcome is correct.",
     "",
     ...suggestIgnores(reasons.filter((r) => r.unnamed).map((r) => r.path)),
+    ...readerAdvice(reasons, repo),
     "```",
     bars,
     "```",
@@ -475,6 +444,62 @@ function suggestIgnores(unnamed: string[]): string[] {
   ];
 }
 
+/** How a reader's rule reads in a sentence. */
+const READ_BY: Record<Reader["rule"], string> = {
+  name: "names it",
+  "path-part": "builds a path to it",
+  "spring-profile": "uses its profile",
+  "spring-context": "starts a Spring context",
+};
+
+/** How many files the advice table lists; the rest are counted. */
+const ADVICE_ROWS = 10;
+
+/**
+ * Advice under a full-suite verdict: for each unmapped file some code reads,
+ * who reads it, how many tests those readers reach, and why that list cannot
+ * replace the full run. Never a selection -- see `references.ts`.
+ */
+function readerAdvice(reasons: Extract<FailOpenReason, { kind: "unmapped-file" }>[], repo: string): string[] {
+  const read = reasons.filter((r) => (r.readers?.length ?? 0) > 0);
+  if (read.length === 0) return [];
+  const rows = read.slice(0, ADVICE_ROWS).map((r) => {
+    // One entry per reader file; a file can count under several rules.
+    const rules = new Map<string, string[]>();
+    for (const x of r.readers ?? []) rules.set(x.file, [...(rules.get(x.file) ?? []), READ_BY[x.rule]]);
+    const readers = [...rules.entries()];
+    const shown = readers.slice(0, 3).map(([file, why]) => `${code(file.slice(file.lastIndexOf("/") + 1))} (${why.join(", ")})`);
+    const moreReaders = readers.length > 3 ? `, +${plural(readers.length - 3, "file")}` : "";
+    const caveats = r.caveats ?? [];
+    const caveat = caveats.length === 0 ? "" : `${caveats[0]}${caveats.length > 1 ? `; +${caveats.length - 1} more` : ""}`;
+    return `| ${code(r.path)} | ${cell(shown.join(", ") + moreReaders)} | ${r.readerTests?.length ?? 0} | ${cell(caveat)} |`;
+  });
+  const more = read.length > rows.length ? [`_and ${plural(read.length - rows.length, "more file")} with readers_`, ""] : [];
+  const tests = [...new Set(read.flatMap((r) => r.readerTests ?? []))].sort();
+  return [
+    "**Code that reads these files** (advice: the run still needs the full suite, because no search can prove it found every reader):",
+    "",
+    "| File | Read by | Tests reached | Not vouched for |",
+    "|---|---|---:|---|",
+    ...rows,
+    "",
+    ...more,
+    ...(tests.length > 0
+      ? [
+          `<details><summary>The ${plural(tests.length, "test file")} those readers reach</summary>`,
+          "",
+          "```",
+          ...tests.slice(0, 100).map((t) => relativeTo(repo, t)),
+          ...(tests.length > 100 ? [`… ${tests.length - 100} more`] : []),
+          "```",
+          "",
+          "</details>",
+          "",
+        ]
+      : []),
+  ];
+}
+
 type All = Extract<Selection, { kind: "all" }>;
 
 /** The body of a fail-open comment, after its heading: the warning, the reasons, the unmapped files. */
@@ -500,7 +525,7 @@ function allBody(selection: All, ctx: CommentContext): string[] {
     "",
     table,
     table ? "" : undefined,
-    unmapped.length > 0 ? renderUnmapped(unmapped) : undefined,
+    unmapped.length > 0 ? renderUnmapped(unmapped, ctx.repo) : undefined,
     unmapped.length > 0 ? "" : undefined,
     where,
   ].filter((line): line is string => line !== undefined);

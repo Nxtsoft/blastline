@@ -70,13 +70,7 @@ Fail-open triggers, each a typed reason in the output:
 | `graph-unavailable` | no readable `graph.json` |
 | `invalid-ignore-pattern` | an `--ignore` value is not a valid regex — note these are **regexes, not globs**, so `openspec/**` is an error and `^openspec/` is what you want |
 
-**Config and data files read by code.** A changed file with no graph node does not fail open when every reader of it can be found at the range's head; those readers seed the walk at the lines that name or load it (`src/references.ts`):
-
-- **by name**: a non-comment line names the file (`load("rows.csv")`, `ClassPathResource("application-production.yml")`);
-- **by folder**: a file names a folder above it as a path component *and* enumerates a directory (`readdir`, `glob`, `Files.list`, `WalkDir`, `classpath*:`, `**/`);
-- **Spring configuration**, in a repository that uses Spring: `application.yml` is read by every test that starts an application context; `application-<profile>.yml` by code that names it, builds its name from the profile (`"application-$p.yml"` next to `"production"`), or activates the profile (`@ActiveProfiles`, `SPRING_PROFILES_ACTIVE`).
-
-A reader with no graph node of its own is followed to *its* readers, a few levels deep, unless it can change how tests run (build, toolchain or test-runner config, Spring config, a CI workflow): then the file stays unresolved. It also stays unresolved when a Spring config's `profiles` block or a CI workflow activates the profile, when it is loaded by convention rather than by name (manifests, lockfiles, `logback*`, snapshots, ...), or when no code reads it at all -- that last case is what the `ignore` suggestion is for. An unresolved file fails open as before, and the comment says why.
+**Config and data files read by code (advice).** Under a full-suite verdict, the comment lists the code that reads each unmapped file and the tests those readers reach (`src/references.ts`), so a reviewer sees the short list that most likely covers the change. It never changes the verdict: no search can prove it found every reader. A reader counts when it names the file, mentions a piece a path to it can be built from (its stem in quotes, its folder used as a path, a directory walk over its extension), or, for Spring's `application[-profile].yml`, starts an application context or activates the profile (following subclasses and meta-annotations). Each row also says what could not be vouched for: build or CI config that mentions the file, a profile activated through an expression, a reader the graph links to no test (a pytest fixture), a non-code reader nothing is found running.
 
 Pure deletions map against a `--base-graph` when supplied, and degrade to the file node (a superset-safe approximation) when not.
 

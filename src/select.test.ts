@@ -330,7 +330,7 @@ describe("select: per-file impact for the comment", () => {
   });
 });
 
-describe("select: changed files read by code the graph knows", () => {
+describe("select: advice on changed files read by code", () => {
   const node = (id: string, type: string, file: string, lines?: [number, number]) => ({
     id,
     label: id,
@@ -339,6 +339,7 @@ describe("select: changed files read by code the graph knows", () => {
     ...(lines && { source_location: { start_line: lines[0], end_line: lines[1] } }),
   });
   // loader.ts has two functions; only loadRows (lines 1-5) names rows.csv.
+  // conftest.py reads it too, through a pytest fixture no edge leads from.
   const graph = indexGraph(
     [
       node("f_loader", "file", "/repo/src/loader.ts"),
@@ -348,53 +349,55 @@ describe("select: changed files read by code the graph knows", () => {
       node("testRows", "function", "/repo/src/rows.test.ts", [1, 3]),
       node("f_other_test", "file", "/repo/src/other.test.ts"),
       node("testOther", "function", "/repo/src/other.test.ts", [1, 3]),
+      node("f_conftest", "file", "/repo/tests/conftest.py"),
+      node("rowsFixture", "function", "/repo/tests/conftest.py", [5, 8]),
     ],
     [
       { source: "f_loader", target: "loadRows", relation: "contains" },
       { source: "f_loader", target: "loadOther", relation: "contains" },
       { source: "f_rows_test", target: "testRows", relation: "contains" },
       { source: "f_other_test", target: "testOther", relation: "contains" },
+      { source: "f_conftest", target: "rowsFixture", relation: "contains" },
       { source: "testRows", target: "loadRows", relation: "calls" },
       { source: "testOther", target: "loadOther", relation: "calls" },
     ],
   );
   const diff = `diff --git a/data/rows.csv b/data/rows.csv\nindex 1..2 100644\n--- a/data/rows.csv\n+++ b/data/rows.csv\n@@ -1,0 +2,1 @@\n+c,d\n`;
+  const loader = { file: "src/loader.ts", lines: [3], rule: "name" as const };
 
-  it("seeds the symbol around the naming line, not the whole reader", () => {
-    const references = new Map<string, Resolution>([
-      ["data/rows.csv", { kind: "referenced", readers: [{ file: "src/loader.ts", lines: [3], rule: "name" }] }],
-    ]);
+  it("keeps the full suite, and names the tests the naming symbol reaches", () => {
+    const references = new Map<string, Resolution>([["data/rows.csv", { readers: [loader], caveats: [] }]]);
     const sel = select(diff, { graph, minDensity: 0, references });
-    expect(sel.kind).toBe("subset");
-    if (sel.kind !== "subset") return;
-    expect(sel.tests).toEqual(["/repo/src/rows.test.ts"]);
-    expect(sel.files).toEqual([
-      {
-        path: "data/rows.csv",
-        status: "modified",
-        disposition: "referenced",
-        symbols: [],
-        readers: [{ file: "src/loader.ts", lines: [3], rule: "name" }],
-        // The reader's own file is affected: its symbol is the seed.
-        reaches: [{ file: "/repo/src/loader.ts", symbols: [] }],
-        tests: ["/repo/src/rows.test.ts"],
-      },
+    expect(sel).toEqual({
+      kind: "all",
+      reasons: [{ kind: "unmapped-file", path: "data/rows.csv", readers: [loader], readerTests: ["/repo/src/rows.test.ts"] }],
+    });
+  });
+
+  // pytest injects fixtures by parameter name: nothing in the graph leads from
+  // conftest.py to the tests that use it, so its tests are invisible here.
+  it("says so when a reader reaches no test, or has no node", () => {
+    const readers = [
+      loader,
+      { file: "tests/conftest.py", lines: [7], rule: "name" as const },
+      { file: "src/gone.ts", lines: [1], rule: "name" as const },
+    ];
+    const references = new Map<string, Resolution>([["data/rows.csv", { readers, caveats: ["package.json mentions it and can change how tests run"] }]]);
+    const sel = select(diff, { graph, minDensity: 0, references });
+    expect(sel.kind).toBe("all");
+    if (sel.kind !== "all") return;
+    const reason = sel.reasons[0];
+    expect(reason?.kind === "unmapped-file" && reason.readerTests).toEqual(["/repo/src/rows.test.ts"]);
+    expect(reason?.kind === "unmapped-file" && reason.caveats).toEqual([
+      "package.json mentions it and can change how tests run",
+      "src/gone.ts reads it but has no graph node",
+      "tests/conftest.py reads it but reaches no test",
     ]);
   });
 
-  // A reader the graph does not know cannot be walked; seeding nothing for it
-  // would turn "run everything" into "run nothing".
-  it("fails open when a reader has no node in the graph", () => {
-    const references = new Map<string, Resolution>([
-      ["data/rows.csv", { kind: "referenced", readers: [{ file: "src/gone.ts", lines: [1], rule: "name" }] }],
-    ]);
+  it("says when no code reads it", () => {
+    const references = new Map<string, Resolution>([["data/rows.csv", { readers: [], caveats: [] }]]);
     const sel = select(diff, { graph, minDensity: 0, references });
-    expect(sel).toEqual({ kind: "all", reasons: [{ kind: "unmapped-file", path: "data/rows.csv" }] });
-  });
-
-  it("carries why the readers could not be found", () => {
-    const references = new Map<string, Resolution>([["data/rows.csv", { kind: "unresolved", why: "no code names it" }]]);
-    const sel = select(diff, { graph, minDensity: 0, references });
-    expect(sel).toEqual({ kind: "all", reasons: [{ kind: "unmapped-file", path: "data/rows.csv", unresolved: "no code names it" }] });
+    expect(sel).toEqual({ kind: "all", reasons: [{ kind: "unmapped-file", path: "data/rows.csv", caveats: ["no code reads it"] }] });
   });
 });

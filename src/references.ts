@@ -1,42 +1,50 @@
 import { isLockfile, loadedByConvention } from "./unnamed.js";
 
 /**
- * Who reads a changed file the graph has no node for.
+ * Who reads a changed file the graph has no node for -- advice, never selection.
  *
  * An unmapped file fails the whole selection open, because nothing in the graph
- * says what depends on it. For a data or config file that is often knowable
- * from the repository: a test that opens `fixtures/rows.csv` says so in a
- * string. When EVERY reader can be found, the file is not opaque -- its readers
- * seed the walk at the lines that name it, and the tests that depend on them
- * are selected instead of the full suite.
+ * says what depends on it. Its readers are often visible in the repository: a
+ * test that opens `fixtures/rows.csv` says so in a string. The comment lists
+ * them, and the tests they reach, under the full-suite verdict, so a reviewer
+ * sees the short list that most likely covers the change.
  *
- * "Every reader" is the whole difficulty, and each rule below exists to keep
- * the harmful error -- a reader missed, so a test that should run does not --
- * out. When in doubt the answer is `unresolved`, which is today's fail-open.
+ * It stays advice because no search can prove it found EVERY reader: a path
+ * built at runtime, a framework loading files by convention, config that
+ * changes how every test runs. An earlier version let the list replace the
+ * full suite; review showed it silently dropped real tests, and the version
+ * strict enough to be safe vouched for no file in 30 real PRs. So selection
+ * never changes here, and whatever the rules below cannot vouch for is said
+ * plainly as a caveat.
  *
- *   name     a non-comment line names the file's basename (case ignored).
- *   folder   a file names a folder above it as a path component AND enumerates
- *            a directory somewhere (readdir, glob, Files.list, WalkDir,
- *            classpath*:, `**` ...). A loader that walks `migrations` names no
- *            migration, and a file that merely imports from `lib/` walks nothing.
- *   spring   `application[-P].{yml,properties}` in a Spring repository is read
- *            by configuration, not by name. The base file is read by every test
- *            that starts an application context; a profile file by code that
- *            activates or templates profile P. Profile activation the repository
- *            makes outside code (a Spring config `profiles:` block, a build file,
- *            a CI workflow, test resources) cannot be traced to tests, so it
- *            leaves the file unresolved.
+ * A reader counts when it:
  *
- * A reader the graph has no node for is itself opaque. If it can shape a test
- * run (build, toolchain or test-runner config, Spring config, test resources,
- * a CI workflow) the file stays unresolved. Otherwise -- a compose file, a k8s
- * manifest, an alert rule -- it cannot make a test read anything by itself, so
- * its own readers are followed instead, a few levels deep. A file that no code
- * reads at all stays unresolved too: "nothing reads it" is `ignore`'s job, and
- * that is a decision for a person (see `unnamed.ts`).
+ *   name       names the file (`load("rows.csv")`, `#include "tables.h"`).
+ *   path-part  mentions a piece a path to the file can be built from: its stem
+ *              in quotes (`loadFixture("rows")`), its folder used as a path
+ *              (`join(dir, "../fixtures")`, `ReadDir("testdata")`, `test/cli`,
+ *              `migrations/*.cypher`), a higher folder in a file that walks
+ *              directories, or a directory walk over its extension. A folder
+ *              counts only where the path could continue to the file:
+ *              `src/lib/x` is not a way to `src/db/x`.
+ *   spring     for `application[-P].{yml,properties}` in a Spring repository:
+ *              every test that starts an application context (the base file),
+ *              or code that names, templates or activates profile P -- and in
+ *              both cases every subclass of such a test class and every class
+ *              annotated with such an annotation.
+ *
+ * Comments never count, except directives that load files (`#include`,
+ * `//go:embed`, `/// <reference>`, Rust `#[...]` attributes). Lockfiles and
+ * repository metadata only a hosted service reads (`.github/dependabot.yml`,
+ * `CODEOWNERS`, `.gitignore`) are never readers.
+ *
+ * A reader without a graph node is opaque. If it can shape a test run (build,
+ * toolchain, test-runner or Spring config, a CI workflow) that is a caveat;
+ * otherwise -- a compose file, a k8s manifest -- the code that names IT is a
+ * reader too, a few levels deep, and one nothing is found running is a caveat.
  */
 
-export type ReferenceRule = "name" | "folder" | "spring-profile" | "spring-context";
+export type ReferenceRule = "name" | "path-part" | "spring-profile" | "spring-context";
 
 /** A file that reads the changed one, and the lines that say so. */
 export interface Reader {
@@ -47,15 +55,16 @@ export interface Reader {
   rule: ReferenceRule;
 }
 
-export type Resolution =
-  | { kind: "referenced"; readers: Reader[] }
-  | { kind: "unresolved"; why: string };
+/** The readers found for one file, and what the search could not vouch for. */
+export interface Resolution {
+  readers: Reader[];
+  /** Why the list may be incomplete: opaque config that mentions it, profiles activated by expression, and so on. */
+  caveats: string[];
+}
 
 export interface ResolveContext {
   /** True when the graph has at least one node for this repo-relative path. */
   hasNodes: (path: string) => boolean;
-  /** True when the user or cgraph declared the path irrelevant to tests. */
-  irrelevant: (path: string) => boolean;
   /** A repo-relative file's text at the searched revision (the working tree when there is none). */
   read: (path: string) => string;
 }
@@ -67,24 +76,22 @@ interface Hit {
   text: string;
 }
 
-/** How many non-code readers deep a chain of names is followed. */
+/** How many non-code readers deep a chain of mentions is followed. */
 const MAX_DEPTH = 3;
+
+/** Rounds of subclass and annotation expansion before giving up. */
+const MAX_EXPANSION = 5;
 
 // Only markers no code line starts with: a line opening with a quote is a
 // list item (`'rows.csv',`), not a comment, and must stay a reader. Directives
 // that look like comments load files, so they are not comments: C and
-// Objective-C `#include`/`#import`/`#embed`, Go `//go:embed`, TypeScript
-// `/// <reference path=...>`.
-const COMMENT = /^\s*(#(?!\s*(include|import|embed)\b)|\/\/(?!go:embed\b|\/\s*<reference\b)|\/\*|\*|<!--|--(\s|$))/;
+// Objective-C `#include`/`#import`/`#embed`, Rust `#[...]`/`#![...]`
+// attributes, Go `//go:embed`, TypeScript `/// <reference path=...>`.
+const COMMENT = /^\s*(#(?!\s*(include|import|embed)\b|!?\[)|\/\/(?!go:embed\b|\/\s*<reference\b)|\/\*|\*|<!--|--(\s|$))/;
 
-/** Fixed strings that pre-filter lines for WALK; the regex decides. */
-const WALK_MARKERS = [
-  "readdir", "opendir", "Files.", "listFiles", "listdir", "os.walk", "scandir", "glob", "Glob",
-  "WalkDir", "filepath.Walk", "Dir.", "getResources", "classpath*:", "require.context",
-  "rglob", "iterdir", "read_dir", "DirectoryStream", "walkFileTree", "**/",
-];
+/** A line that enumerates a directory or matches files by pattern. Case-insensitive: Go spells it `ReadDir`. */
 const WALK =
-  /readdir|opendir|Files\.(list|walk|find|newDirectoryStream)|listFiles|listdir|os\.walk|scandir|\bglob\b|globSync|\bGlob\b|WalkDir|filepath\.Walk|Dir\.(glob|children|entries|each_child)|getResources|classpath\*:|require\.context|import\.meta\.glob|rglob|iterdir|read_dir|DirectoryStream|walkFileTree|\*\*\//;
+  /readdir|opendir|files\.(list|walk|find|newdirectorystream)|listfiles|listdir|os\.walk|scandir|\bglob|fast-?glob|tinyglobby|\bfg\(|walkdir|filepath\.walk|dir\.(glob|children|entries|each_child)|\bdir\[|getresources|classpath\*:|require\.context|import\.meta\.glob|rglob|iterdir|read_dir|directorystream|walkfiletree|\.walk\(|\.list\(|go:embed|#\[files|\*\*\/|\/\*\./i;
 
 /** Ways code builds a profile file's name instead of spelling it. */
 const PROFILE_TEMPLATES = ["application-$", "application-{", "application-%", '"application-" +', "'application-' +", "`application-${"];
@@ -94,6 +101,9 @@ const ACTIVATION_MARKERS = [
   "ActiveProfiles", "spring.profiles", "SPRING_PROFILES", "setAdditionalProfiles",
   "addActiveProfile", "setActiveProfiles", ".profiles(",
 ];
+
+/** Calls whose arguments ARE profile names; a non-literal argument there cannot be read. */
+const ACTIVATION_CALL = /(ActiveProfiles|setAdditionalProfiles|addActiveProfile|setActiveProfiles|\.profiles)\s*\((.*)$/;
 
 /** Tests that start an application context, and so read application.yml. */
 const CONTEXT_MARKERS = [
@@ -116,17 +126,80 @@ function shapesTestRuns(path: string): boolean {
   return loadedByConvention(path) || /^\.github\/workflows\//.test(path);
 }
 
+/**
+ * Files only a hosted service or git itself reads -- review bots, dependency
+ * bots, ownership, attributes, editor settings. No test process reads them, so
+ * a mention in one is not a reader and is not followed. CI workflows and
+ * composite actions DO run tests, and are not here.
+ */
+const REPOSITORY_METADATA =
+  /^\.github\/(?!workflows\/|actions\/)|(^|\/)(\.coderabbit\.ya?ml|CODEOWNERS|\.gitattributes|\.gitignore|\.mailmap|\.editorconfig|renovate\.json5?|\.pre-commit-config\.yaml|LICENSE[^/]*)$/;
+
 function basename(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
+}
+
+/** The basename without its last extension: `rows` for `rows.csv`, `.env` for `.env`. */
+function stemOf(path: string): string {
+  const name = basename(path);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(0, dot) : name;
+}
+
+/** The last extension with its dot, or "" when there is none. */
+function extensionOf(path: string): string {
+  const name = basename(path);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot) : "";
 }
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** `name` as a whole path component: `migrations` in `db/migrations/x` or `"migrations"`, not in `migrationsLog`. */
-function namesPathComponent(text: string, name: string): boolean {
-  return new RegExp(`(^|[/"'\`\\s(,=:])${escapeRegex(name)}([/"'\`\\s),*]|$)`, "i").test(text);
+const QUOTE = `"'\``;
+
+/**
+ * True when `text` mentions folder `parts[i]` of `path` in a way a path to the
+ * file could continue from: followed by `/` and the file's next component, a
+ * prefix of it, or a glob (`fixtures/rows`, `migrations/*`); or the folder on
+ * its own -- in quotes (`"../fixtures"`) or as the tail of a bare path
+ * (`bats test/cli`) -- when it is the file's own folder or the line walks a
+ * directory. A higher folder named on its own (`working-directory: ./api`) is a
+ * module or a working directory, not a way to one file inside it.
+ */
+function folderLeadsTo(text: string, parts: string[], i: number, walks: boolean): boolean {
+  const folder = (parts[i] as string).toLowerCase();
+  const next = (parts[i + 1] as string).toLowerCase();
+  const lower = text.toLowerCase();
+  const walkingLine = WALK.test(text);
+  const re = new RegExp(`(^|[/${QUOTE}\\s(,=:\\[])${escapeRegex(folder)}(?=[/${QUOTE}\\s),;\\]]|$)`, "g");
+  for (let m = re.exec(lower); m !== null; m = re.exec(lower)) {
+    const before = m[1] ?? "";
+    const at = m.index + m[0].length;
+    const after = lower[at];
+    if (after === "/") {
+      const segment = /^[^/"'`\s),;\]]*/.exec(lower.slice(at + 1))?.[0] ?? "";
+      // The literal part before any query, glob or template: `rows` in
+      // `rows?raw`, `rows.` in `rows.${ext}`.
+      const literal = /^[^?#*{$%<[]*/.exec(segment)?.[0] ?? "";
+      const templated = literal.length < segment.length;
+      if (literal === "" || literal === next || next.startsWith(`${literal}.`) || (templated && next.startsWith(literal))) return true;
+      continue;
+    }
+    if (i !== parts.length - 2 && !walks && !walkingLine) continue;
+    if (after !== undefined && QUOTE.includes(after)) return true;
+    // A bare path's last component: `test/cli` at the end of a shell word.
+    if (before === "/") return true;
+    // A bare folder on a line that walks: `//go:embed static`.
+    if (walkingLine) return true;
+  }
+  return false;
+}
+
+/** The stem as a quoted token or a path's last piece: `"rows"`, `'rows' +`, `/rows"`. */
+function stemMentioned(text: string, stem: string): boolean {
+  return new RegExp(`[/${QUOTE}]${escapeRegex(stem)}[${QUOTE}]`, "i").test(text);
 }
 
 /** `word` standing alone, as a profile name does in `"production"` or `production,staging`. */
@@ -138,6 +211,11 @@ function namesWord(text: string, word: string): boolean {
 function beforeHashComment(text: string): string {
   const cut = text.indexOf(" #");
   return cut === -1 ? text : text.slice(0, cut);
+}
+
+/** String literals removed, so what is left of an argument list is code. */
+function withoutStrings(text: string): string {
+  return text.replace(/"(\\.|[^"\\])*"|'(\\.|[^'\\])*'|`(\\.|[^`\\])*`/g, '""');
 }
 
 class Searcher {
@@ -185,15 +263,25 @@ class Searcher {
   }
 }
 
-/** Accumulates readers per file and rule; an `unresolved` short-circuits. */
+/** Accumulates readers per file and rule. */
 class Readers {
   private readonly byFile = new Map<string, Reader>();
 
   add(file: string, line: number, rule: ReferenceRule): void {
+    // A line that names the file also mentions its folder; say it once.
+    if (rule === "path-part" && this.byFile.get(`${file}\0name`)?.lines.includes(line)) return;
     const key = `${file}\0${rule}`;
     const reader = this.byFile.get(key) ?? { file, lines: [], rule };
     if (!reader.lines.includes(line)) reader.lines.push(line);
     this.byFile.set(key, reader);
+  }
+
+  size(): number {
+    return this.byFile.size;
+  }
+
+  files(): Set<string> {
+    return new Set([...this.byFile.values()].map((r) => r.file));
   }
 
   list(): Reader[] {
@@ -202,8 +290,6 @@ class Readers {
       .sort((a, b) => a.file.localeCompare(b.file) || a.rule.localeCompare(b.rule));
   }
 }
-
-class Unresolved extends Error {}
 
 /**
  * Resolve each path's readers at `rev` (the working tree when undefined).
@@ -220,55 +306,113 @@ export function resolveReferences(
   const isSpring = (): boolean =>
     (spring ??= search.lines(["org.springframework"], { paths: ["*.kt", "*.java", "*.kts", "*.gradle", "pom.xml"] }).length > 0);
 
+  /** Whether a file enumerates a directory on any line; a loader names the folder on one line and walks it on another. */
+  const walkers = new Map<string, boolean>();
+  const walksAnywhere = (file: string): boolean => {
+    let walks = walkers.get(file);
+    if (walks === undefined) {
+      walks = ctx.read(file).split("\n").some((line) => !COMMENT.test(line) && WALK.test(line));
+      walkers.set(file, walks);
+    }
+    return walks;
+  };
+
   /**
    * Route one reader of `path`: code joins the result; opaque config that can
    * shape a test run makes `path` unresolved; any other non-code file is looked
    * through to its own readers.
    */
-  const route = (path: string, hit: Hit, rule: ReferenceRule, out: Readers, depth: number, seen: Set<string>): void => {
+  const route = (path: string, hit: Hit, rule: ReferenceRule, out: Readers, chain: string[], seen: Set<string>, caveats: Set<string>): void => {
     // A lockfile records paths but never reads a repository file.
-    if (hit.file === path || ctx.irrelevant(hit.file) || isLockfile(hit.file)) return;
-    if (COMMENT.test(hit.text)) return;
+    if (hit.file === path || isLockfile(hit.file) || REPOSITORY_METADATA.test(hit.file) || COMMENT.test(hit.text)) return;
     if (ctx.hasNodes(hit.file)) {
       out.add(hit.file, hit.line, rule);
       return;
     }
-    if (shapesTestRuns(hit.file)) throw new Unresolved(`${hit.file} names it and can change how tests run`);
+    if (shapesTestRuns(hit.file)) {
+      caveats.add(`${hit.file} mentions ${chain.length === 0 ? "it" : path} and can change how tests run`);
+      return;
+    }
     if (seen.has(hit.file)) return;
-    plain(hit.file, out, depth + 1, seen);
+    const before = out.size();
+    plain(hit.file, out, [...chain, hit.file], seen, caveats);
+    if (out.size() === before) caveats.add(`${hit.file} mentions ${chain.length === 0 ? "it" : path}; nothing found runs it`);
   };
 
-  /** The `name` and `folder` rules for one file, feeding `out`. */
-  const plain = (path: string, out: Readers, depth: number, seen: Set<string>): void => {
-    if (depth > MAX_DEPTH) throw new Unresolved(`readers of readers go deeper than ${MAX_DEPTH} files`);
+  /** The `name` and `path-part` rules for one file, feeding `out`. */
+  const plain = (path: string, out: Readers, chain: string[], seen: Set<string>, caveats: Set<string>): void => {
+    if (chain.length > MAX_DEPTH) {
+      caveats.add(`readers of readers go deeper than ${MAX_DEPTH} files: ${chain.join(" <- ")}`);
+      return;
+    }
     seen.add(path);
-    const name = basename(path);
-    for (const hit of search.lines([name], { ignoreCase: true })) route(path, hit, "name", out, depth, seen);
+    for (const hit of search.lines([basename(path)], { ignoreCase: true })) route(path, hit, "name", out, chain, seen, caveats);
+    // Through a non-code reader only its exact name counts: the pieces of an
+    // intermediate file's path match route strings and slugs, not loaders.
+    if (chain.length > 0) return;
 
-    const folders = path.split("/").slice(0, -1);
-    if (folders.length === 0) return;
-    const naming = search
-      .lines(folders, { ignoreCase: true })
-      .filter((hit) => !COMMENT.test(hit.text) && folders.some((f) => namesPathComponent(hit.text, f)));
-    const candidates = [...new Set(naming.map((h) => h.file))].filter((f) => f !== path && !ctx.irrelevant(f));
-    const walkers = new Set(
-      search
-        .lines(WALK_MARKERS, { paths: candidates })
-        .filter((hit) => !COMMENT.test(hit.text) && WALK.test(hit.text))
-        .map((hit) => hit.file),
-    );
-    for (const hit of naming) if (walkers.has(hit.file)) route(path, hit, "folder", out, depth, seen);
+    const stem = stemOf(path);
+    if (stem !== basename(path)) {
+      for (const hit of search.lines([stem], { ignoreCase: true })) {
+        if (stemMentioned(hit.text, stem)) route(path, hit, "path-part", out, chain, seen, caveats);
+      }
+    }
+    const parts = path.split("/");
+    const folders = parts.slice(0, -1);
+    if (folders.length > 0) {
+      for (const hit of search.lines(folders, { ignoreCase: true })) {
+        if (folders.some((_, i) => folderLeadsTo(hit.text, parts, i, walksAnywhere(hit.file)))) route(path, hit, "path-part", out, chain, seen, caveats);
+      }
+    }
+    const ext = extensionOf(path);
+    if (ext !== "") {
+      for (const hit of search.lines([`*${ext}`], { ignoreCase: true })) {
+        if (WALK.test(hit.text) || /\*\*/.test(hit.text)) route(path, hit, "path-part", out, chain, seen, caveats);
+      }
+    }
+  };
+
+  /**
+   * Add every subclass of a reader class and every class annotated with a
+   * reader annotation, until nothing new appears. Class names come from file
+   * names, the JVM convention; a file whose class cannot be named that way
+   * still counts itself, and its subclasses are searched under that name too.
+   */
+  const expandClasses = (out: Readers, rule: ReferenceRule, caveats: Set<string>): void => {
+    const done = new Set<string>();
+    for (let round = 0; ; round++) {
+      const pending = [...out.files()].filter((f) => !done.has(f) && /\.(java|kt|groovy|scala)$/.test(f));
+      if (pending.length === 0) return;
+      if (round >= MAX_EXPANSION) {
+        caveats.add(`test classes inherit context settings deeper than ${MAX_EXPANSION} levels`);
+        return;
+      }
+      const names = pending.map((f) => stemOf(f));
+      for (const f of pending) done.add(f);
+      for (const hit of search.lines(names)) {
+        if (COMMENT.test(hit.text) || pending.includes(hit.file)) continue;
+        const uses = names.some((n) =>
+          new RegExp(`(\\bextends\\s+${escapeRegex(n)}\\b|:\\s*${escapeRegex(n)}\\s*[({,]|,\\s*${escapeRegex(n)}\\s*[({,]|@${escapeRegex(n)}\\b)`).test(hit.text),
+        );
+        if (!uses) continue;
+        if (ctx.hasNodes(hit.file)) out.add(hit.file, hit.line, rule);
+        else caveats.add(`${hit.file} extends a context test but has no graph node`);
+      }
+    }
   };
 
   /** The `spring` rules for `application[-profile].{yml,properties}`. */
-  const springConfig = (path: string, profile: string | undefined, out: Readers): void => {
+  const springConfig = (path: string, profile: string | undefined, out: Readers, caveats: Set<string>): void => {
     const seen = new Set([path]);
-    for (const hit of search.lines([basename(path)], { ignoreCase: true })) route(path, hit, "name", out, 1, seen);
+    for (const hit of search.lines([basename(path)], { ignoreCase: true })) route(path, hit, "name", out, [], seen, caveats);
 
     if (profile === undefined || profile === "default") {
       for (const hit of search.lines(CONTEXT_MARKERS)) {
-        if (!COMMENT.test(hit.text) && ctx.hasNodes(hit.file) && !ctx.irrelevant(hit.file)) out.add(hit.file, hit.line, "spring-context");
+        if (COMMENT.test(hit.text)) continue;
+        if (ctx.hasNodes(hit.file)) out.add(hit.file, hit.line, "spring-context");
+        else caveats.add(`${hit.file} starts a Spring context but has no graph node`);
       }
+      expandClasses(out, "spring-context", caveats);
       return;
     }
 
@@ -277,16 +421,29 @@ export function resolveReferences(
       search.lines(PROFILE_TEMPLATES).filter((h) => !COMMENT.test(h.text)).map((h) => h.file),
     );
     for (const hit of search.lines([`"${profile}"`, `'${profile}'`], { paths: [...templated] })) {
-      if (!COMMENT.test(hit.text) && ctx.hasNodes(hit.file) && !ctx.irrelevant(hit.file)) out.add(hit.file, hit.line, "spring-profile");
+      if (!COMMENT.test(hit.text) && ctx.hasNodes(hit.file)) out.add(hit.file, hit.line, "spring-profile");
     }
 
     // Anything that activates the profile.
+    const activating = new Readers();
     for (const hit of search.lines(ACTIVATION_MARKERS)) {
-      if (hit.file === path || ctx.irrelevant(hit.file) || COMMENT.test(hit.text)) continue;
+      if (hit.file === path || COMMENT.test(hit.text)) continue;
+      const call = ACTIVATION_CALL.exec(hit.text);
+      // `@ActiveProfiles(Profiles.PRODUCTION)`: the profile is a constant this search cannot read.
+      if (call !== null && /[A-Za-z_]/.test(withoutStrings(call[2] ?? "").replace(/\b(value|profiles|inheritProfiles|resolver|true|false)\b/g, ""))) {
+        caveats.add(`${hit.file} activates profiles through an expression, not a literal`);
+        continue;
+      }
       if (!namesWord(beforeHashComment(hit.text), profile)) continue;
-      if (ctx.hasNodes(hit.file)) out.add(hit.file, hit.line, "spring-profile");
-      else if (shapesTestRuns(hit.file)) throw new Unresolved(`${hit.file} activates profile ${profile}`);
+      if (ctx.hasNodes(hit.file)) activating.add(hit.file, hit.line, "spring-profile");
+      else if (shapesTestRuns(hit.file)) caveats.add(`${hit.file} activates profile ${profile}`);
+      // A compose file, Dockerfile or env file: whatever runs it activates the
+      // profile, so its readers are readers here.
+      else plain(hit.file, out, [hit.file], seen, caveats);
     }
+    expandClasses(activating, "spring-profile", caveats);
+    for (const reader of activating.list()) for (const line of reader.lines) out.add(reader.file, line, reader.rule);
+
     // A YAML `profiles:` block spreads activation over nested keys
     // (`group: { staging: production }`) no single line can show.
     const configs = new Set(
@@ -297,28 +454,21 @@ export function resolveReferences(
     );
     configs.delete(path);
     for (const config of configs) {
-      if (ctx.irrelevant(config)) continue;
-      if (activatesInYaml(ctx.read(config), profile)) throw new Unresolved(`${config} activates profile ${profile} in its profiles block`);
+      if (activatesInYaml(ctx.read(config), profile)) caveats.add(`${config} activates profile ${profile} in its profiles block`);
     }
   };
 
   const result = new Map<string, Resolution>();
   for (const path of paths) {
     const out = new Readers();
-    try {
-      const spec = SPRING_CONFIG.exec(path);
-      if (spec !== null && isSpring()) springConfig(path, spec[3], out);
-      else if (loadedByConvention(path)) throw new Unresolved("loaded by convention, not by name");
-      else plain(path, out, 0, new Set());
-      const readers = out.list();
-      result.set(
-        path,
-        readers.length > 0 ? { kind: "referenced", readers } : { kind: "unresolved", why: "no code names it" },
-      );
-    } catch (e) {
-      if (!(e instanceof Unresolved)) throw e;
-      result.set(path, { kind: "unresolved", why: e.message });
-    }
+    const caveats = new Set<string>();
+    const spec = SPRING_CONFIG.exec(path);
+    // A manifest, lockfile or toolchain file affects every test; naming its readers would mislead.
+    if (spec === null && loadedByConvention(path)) continue;
+    if (spec !== null && isSpring()) springConfig(path, spec[3], out, caveats);
+    else if (spec !== null) continue;
+    else plain(path, out, [], new Set(), caveats);
+    result.set(path, { readers: out.list(), caveats: [...caveats].sort() });
   }
   return result;
 }

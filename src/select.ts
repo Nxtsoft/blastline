@@ -4,7 +4,7 @@ import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
 import { dependencyDirection, nodesInFile, translatePath } from "./graph.js";
 import { TraversalExhausted, dependents } from "./impact.js";
-import { mapDiffToSeeds } from "./mapping.js";
+import { mapDiffToSeeds, readerNodes } from "./mapping.js";
 import { isDeliberatelyIgnored } from "./paths.js";
 import type { Resolution } from "./references.js";
 import type { PathVerdicts } from "./paths.js";
@@ -29,8 +29,9 @@ export interface SelectOptions {
   pathVerdicts?: PathVerdicts;
   /**
    * Readers of the changed files the graph has no node for, from
-   * `resolveReferences`. A `referenced` file seeds its readers instead of
-   * failing open; an `unresolved` one fails open as before, with the reason.
+   * `resolveReferences`. Advice only: when those files fail the selection
+   * open, their `unmapped-file` reasons carry the readers, the tests the
+   * readers reach, and the caveats. The verdict is unchanged.
    */
   references?: Map<string, Resolution>;
   /**
@@ -90,6 +91,52 @@ export interface SelectOptions {
   /** graph.json mtime (ms) and head-commit time (ms) for the staleness guard */
   graphMtimeMs?: number;
   headCommitMs?: number;
+}
+
+/**
+ * Attach the advice for one unmapped file: its readers, the test files they
+ * reach, and the caveats. A reader that reaches no test through the graph --
+ * a pytest fixture, injected by parameter name -- is a caveat of its own, since
+ * the tests that use it are invisible here.
+ */
+function advise(
+  reason: Extract<FailOpenReason, { kind: "unmapped-file" }>,
+  resolution: Resolution | undefined,
+  graph: CodeGraph,
+  testSet: Set<string>,
+  budget: number,
+): FailOpenReason {
+  if (resolution === undefined) return reason;
+  const caveats = [...resolution.caveats];
+  const tests = new Set<string>();
+  if (resolution.readers.length === 0) caveats.push("no code reads it");
+  try {
+    const walked = readerNodes(graph, resolution.readers);
+    for (const file of new Set(resolution.readers.map((x) => x.file))) {
+      if (!walked.has(file)) caveats.push(`${file} reads it but has no graph node`);
+    }
+    for (const [reader, seeds] of walked) {
+      const own = new Set<string>();
+      for (const id of seeds) {
+        const file = graph.byId.get(id)?.source_file;
+        if (file && testSet.has(file)) own.add(file);
+      }
+      for (const id of dependents(graph, seeds, budget)) {
+        const file = graph.byId.get(id)?.source_file;
+        if (file && testSet.has(file)) own.add(file);
+      }
+      if (own.size === 0) caveats.push(`${reader} reads it but reaches no test`);
+      for (const t of own) tests.add(t);
+    }
+  } catch (e) {
+    if (!(e instanceof TraversalExhausted)) throw e;
+    caveats.push("the walk from its readers exceeded the traversal budget");
+  }
+  return {
+    ...reason,
+    ...(resolution.readers.length > 0 && { readers: resolution.readers, readerTests: [...tests].sort() }),
+    ...(caveats.length > 0 && { caveats }),
+  };
 }
 
 /** The full selection pipeline: diff text in, Selection out. Deterministic. */
@@ -180,11 +227,15 @@ export function select(diffText: string, opts: SelectOptions): Selection {
   const mapping = mapDiffToSeeds(opts.graph, changed, {
     ...(opts.baseGraph !== undefined && { baseGraph: opts.baseGraph }),
     ...(ignore !== undefined && { ignore }),
-    ...(opts.references !== undefined && { references: opts.references }),
   });
   reasons.push(...mapping.failOpen);
 
-  if (reasons.length > 0) return { kind: "all", reasons };
+  if (reasons.length > 0) {
+    const references = opts.references;
+    if (references === undefined) return { kind: "all", reasons };
+    const budget = opts.maxTraversalNodes ?? 2_000_000;
+    return { kind: "all", reasons: reasons.map((r) => (r.kind === "unmapped-file" ? advise(r, references.get(r.path), opts.graph, knownTests, budget) : r)) };
+  }
 
   // Deletion seeds are BASE-graph node ids: the deleted symbols no longer
   // exist at head, and the base graph is built from a different checkout, so
@@ -265,21 +316,6 @@ export function select(diffText: string, opts: SelectOptions): Selection {
         continue;
       }
       const own = walk(seeds);
-      const readers = mapping.readersByFile.get(file.path);
-      if (readers !== undefined) {
-        files.push({
-          path: file.path,
-          status: file.status,
-          disposition: "referenced",
-          symbols: [],
-          readers,
-          reaches: [...own.reached.entries()]
-            .map(([f, syms]) => ({ file: f, symbols: [...syms].sort() }))
-            .sort((a, b) => a.file.localeCompare(b.file)),
-          tests: [...own.tests].sort(),
-        });
-        continue;
-      }
       const symbols = new Set<string>();
       for (const id of seeds) {
         const node = opts.graph.byId.get(id) ?? opts.baseGraph?.byId.get(id);
