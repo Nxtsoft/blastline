@@ -29,7 +29,16 @@ export interface ChangedFile {
 
 /** Why a run fell open to selecting the full test suite. */
 export type FailOpenReason =
-  | { kind: "unmapped-file"; path: string }
+  | {
+      kind: "unmapped-file";
+      path: string;
+      /**
+       * Nothing outside Markdown names this file or its directory, and it is not
+       * a file that affects tests unnamed (see `unnamed.ts`). Advisory: the
+       * comment offers it for `ignore`; selection still fails open.
+       */
+      unnamed?: true;
+    }
   | { kind: "stale-graph"; expected: string; actual: string }
   | { kind: "extraction-warning"; path: string }
   | { kind: "diff-too-large"; files: number; limit: number }

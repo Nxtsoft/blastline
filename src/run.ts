@@ -5,6 +5,7 @@ import { loadGraph } from "./graph.js";
 import { loadPathVerdicts } from "./paths.js";
 import { fileMtimeMs, select } from "./select.js";
 import type { Selection } from "./types.js";
+import { unnamedFiles } from "./unnamed.js";
 
 export interface RunOptions {
   repo: string;
@@ -83,16 +84,16 @@ export function runSelection(o: RunOptions): Selection {
     }
   }
 
+  // The range's head when the diff came from git; a supplied diff has no tree.
+  const head = o.diffText === undefined && o.diffFile === undefined && o.range !== undefined ? (o.range.split("..").pop() as string) : undefined;
   const graphPath = o.graphPath ?? resolve(repo, "cgraph-out/graph.json");
+  let selection: Selection;
   try {
     const graph = loadGraph(graphPath);
     const baseGraph = o.baseGraphPath ? loadGraph(o.baseGraphPath) : undefined;
 
     let headCommitMs: number | undefined;
-    if (o.diffText === undefined && o.diffFile === undefined && o.range !== undefined) {
-      const head = o.range.split("..").pop() as string;
-      headCommitMs = Number(git("log", "-1", "--format=%ct", head).trim()) * 1000;
-    }
+    if (head !== undefined) headCommitMs = Number(git("log", "-1", "--format=%ct", head).trim()) * 1000;
 
     let expectedContentRoot = o.expectedContentRoot;
     if (o.daemonVerify) {
@@ -115,7 +116,7 @@ export function runSelection(o: RunOptions): Selection {
     // hand-built graph) simply means no verdicts and today's behaviour.
     const pathVerdicts = loadPathVerdicts(graphPath);
 
-    return select(diffText, {
+    selection = select(diffText, {
       graph,
       ...(pathVerdicts !== undefined && { pathVerdicts }),
       ...(baseGraph !== undefined && { baseGraph }),
@@ -137,4 +138,28 @@ export function runSelection(o: RunOptions): Selection {
       ],
     };
   }
+  return markUnnamed(selection, git, head);
+}
+
+/**
+ * Flag the unmapped files nothing names, so the comment can offer them for
+ * `ignore`. Outside the graph's try: a failed search is not a graph failure.
+ * It is also not a selection failure -- the verdict is already "run
+ * everything" -- so it costs only the suggestion, and says so on stderr.
+ */
+function markUnnamed(selection: Selection, git: (...args: string[]) => string, head: string | undefined): Selection {
+  if (selection.kind !== "all") return selection;
+  const paths = selection.reasons.flatMap((r) => (r.kind === "unmapped-file" ? [r.path] : []));
+  if (paths.length === 0) return selection;
+  let unnamed: Set<string>;
+  try {
+    unnamed = unnamedFiles(git, head, paths);
+  } catch (e) {
+    process.stderr.write(`blastline: no ignore suggestions; searching for references failed: ${(e as Error).message}\n`);
+    return selection;
+  }
+  return {
+    kind: "all",
+    reasons: selection.reasons.map((r) => (r.kind === "unmapped-file" && unnamed.has(r.path) ? { ...r, unnamed: true } : r)),
+  };
 }

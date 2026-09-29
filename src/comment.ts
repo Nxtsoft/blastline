@@ -3,6 +3,7 @@ import { TEST_RUNNER } from "./checkpoint.js";
 import type { Brief, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
 import { SNAPSHOT_MARKER } from "./brief.js";
 import { relativeTo, sharedDir } from "./paths.js";
+import { ignorePatternFor } from "./unnamed.js";
 import type { ChangedFileImpact, FileEdge, FailOpenReason, Selection } from "./types.js";
 
 /** First line of every comment: the Action finds and updates the existing comment by it. */
@@ -377,7 +378,8 @@ function explain(r: Exclude<FailOpenReason, { kind: "unmapped-file" }>, ctx: Com
  * reason under them. The paths still matter, so they are grouped by directory
  * with counts and kept in full behind a fold, rather than dropped.
  */
-function renderUnmapped(paths: string[]): string {
+function renderUnmapped(reasons: Extract<FailOpenReason, { kind: "unmapped-file" }>[]): string {
+  const paths = reasons.map((r) => r.path);
   const byDir = new Map<string, number>();
   for (const p of paths) byDir.set(dirOf(p), (byDir.get(dirOf(p)) ?? 0) + 1);
   const rows = [...byDir.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
@@ -398,6 +400,7 @@ function renderUnmapped(paths: string[]): string {
     "",
     "If these files cannot change which tests should run, add a pattern for them to `ignore`. If they feed tests (fixtures, data), this outcome is correct.",
     "",
+    ...suggestIgnores(reasons.filter((r) => r.unnamed).map((r) => r.path)),
     "```",
     bars,
     "```",
@@ -412,12 +415,40 @@ function renderUnmapped(paths: string[]): string {
   ].join("\n");
 }
 
+/** How many suggested patterns the comment spells out; the rest are counted. */
+const SUGGESTIONS_SHOWN = 20;
+
+/**
+ * The unmapped files nothing names, as `ignore` patterns ready to paste. Only a
+ * suggestion: selection still failed open, and whether a file is loaded by
+ * some convention the search cannot see is for the reader to judge.
+ */
+function suggestIgnores(unnamed: string[]): string[] {
+  if (unnamed.length === 0) return [];
+  const shown = unnamed.slice(0, SUGGESTIONS_SHOWN);
+  const more = unnamed.length > shown.length ? [`_and ${unnamed.length - shown.length} more named by no code or config_`, ""] : [];
+  const lead =
+    unnamed.length === 1
+      ? "**1 of them is named by no code or config**"
+      : `**${unnamed.length} of them are named by no code or config**`;
+  return [
+    `${lead}: nothing outside Markdown mentions the file or its folder. Unless something loads ${unnamed.length === 1 ? "it" : "them"} by convention, ${unnamed.length === 1 ? "it is" : "they are"} likely safe to ignore:`,
+    "",
+    "```yaml",
+    "ignore: |",
+    ...shown.map((p) => `  ${ignorePatternFor(p)}`),
+    "```",
+    ...more,
+    "",
+  ];
+}
+
 type All = Extract<Selection, { kind: "all" }>;
 
 /** The body of a fail-open comment, after its heading: the warning, the reasons, the unmapped files. */
 function allBody(selection: All, ctx: CommentContext): string[] {
   const links = new Links(ctx);
-  const unmapped = selection.reasons.filter((r) => r.kind === "unmapped-file").map((r) => r.path);
+  const unmapped = selection.reasons.filter((r): r is Extract<FailOpenReason, { kind: "unmapped-file" }> => r.kind === "unmapped-file");
   const others = selection.reasons.filter(
     (r): r is Exclude<FailOpenReason, { kind: "unmapped-file" }> => r.kind !== "unmapped-file",
   );

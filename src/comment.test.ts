@@ -196,6 +196,50 @@ describe("renderComment: fail-open", () => {
     expect(md).toContain("bench");
     expect(md).toContain("more");
   });
+
+  it("offers the unmapped files nothing names as ignore patterns, and only those", () => {
+    const md = renderComment(
+      {
+        kind: "all",
+        reasons: [
+          { kind: "unmapped-file", path: "docker-compose.prod.yml", unnamed: true },
+          { kind: "unmapped-file", path: "openspec/changes/x/.openspec.yaml", unnamed: true },
+          { kind: "unmapped-file", path: "api/src/main/resources/application-production.yml" },
+        ],
+      },
+      ctx,
+    );
+    expect(md).toContain("3 files have no graph node");
+    expect(md).toContain("**2 of them are named by no code or config**");
+    const block = md.slice(md.indexOf("```yaml"), md.indexOf("```", md.indexOf("```yaml") + 3));
+    expect(block.split("\n").slice(1)).toEqual([
+      "ignore: |",
+      "  ^docker-compose\\.prod\\.yml$",
+      "  ^openspec/changes/x/\\.openspec\\.yaml$",
+      "",
+    ]);
+    // The named file stays listed, but is never offered.
+    expect(block).not.toContain("application-production");
+    expect(md).toContain("api/src/main/resources/application-production.yml");
+  });
+
+  it("offers nothing when every unmapped file is named somewhere", () => {
+    const md = renderComment({ kind: "all", reasons: [{ kind: "unmapped-file", path: "package.json" }] }, ctx);
+    expect(md).not.toContain("```yaml");
+    expect(md).not.toContain("named by no code");
+  });
+
+  // The 900-file PR again: every pattern spelled out would bury the verdict.
+  it("caps the suggested patterns and counts the rest", () => {
+    const reasons = Array.from({ length: 900 }, (_, i) => ({
+      kind: "unmapped-file" as const,
+      path: `research/evidence/run-${i}/result.json`,
+      unnamed: true as const,
+    }));
+    const md = renderComment({ kind: "all", reasons }, ctx);
+    expect(md.split("\n").length).toBeLessThan(150);
+    expect(md).toContain("_and 880 more named by no code or config_");
+  });
 });
 
 const brief: Brief = {
