@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.0
+
+A changed config or data file with no graph node selects the code that reads it, instead of the full suite, when every reader can be found.
+
+- `resolveReferences` in `src/references.ts` finds readers at the range's head: a non-comment line that names the file; a file that names a folder above it and enumerates a directory; and, in a Spring repository, every context test for `application.yml` and, for `application-<profile>.yml`, code that names it, templates its name from the profile, or activates the profile. A reader with no graph node is followed to its own readers unless it can change how tests run; lockfiles are never readers.
+- A resolved file is reported as `referenced`, with `readers` (file, lines, rule); each reader seeds the innermost symbol around its naming lines (`seedLines`, shared with changed lines). Anything unresolved fails open as before, and `unmapped-file.unresolved` says why: loaded by convention, named by config that can change how tests run, a profile activated outside code, or no code reads it.
+- The comment lists a referenced file's readers and why each counts; the unmapped list gives each unresolved file's reason.
+- Replayed over the 30 recorded full-suite PRs in six repositories, on 0.16.0 and on this release: 9 become targeted (for example 288 test files to 4, 290 to 9, 211 to 14), none regresses.
+
 ## 0.16.0
 
 The full-suite comment says which unmapped files nothing names, and gives their `ignore` patterns.

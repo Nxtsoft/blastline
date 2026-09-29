@@ -70,6 +70,14 @@ Fail-open triggers, each a typed reason in the output:
 | `graph-unavailable` | no readable `graph.json` |
 | `invalid-ignore-pattern` | an `--ignore` value is not a valid regex — note these are **regexes, not globs**, so `openspec/**` is an error and `^openspec/` is what you want |
 
+**Config and data files read by code.** A changed file with no graph node does not fail open when every reader of it can be found at the range's head; those readers seed the walk at the lines that name or load it (`src/references.ts`):
+
+- **by name**: a non-comment line names the file (`load("rows.csv")`, `ClassPathResource("application-production.yml")`);
+- **by folder**: a file names a folder above it as a path component *and* enumerates a directory (`readdir`, `glob`, `Files.list`, `WalkDir`, `classpath*:`, `**/`);
+- **Spring configuration**, in a repository that uses Spring: `application.yml` is read by every test that starts an application context; `application-<profile>.yml` by code that names it, builds its name from the profile (`"application-$p.yml"` next to `"production"`), or activates the profile (`@ActiveProfiles`, `SPRING_PROFILES_ACTIVE`).
+
+A reader with no graph node of its own is followed to *its* readers, a few levels deep, unless it can change how tests run (build, toolchain or test-runner config, Spring config, a CI workflow): then the file stays unresolved. It also stays unresolved when a Spring config's `profiles` block or a CI workflow activates the profile, when it is loaded by convention rather than by name (manifests, lockfiles, `logback*`, snapshots, ...), or when no code reads it at all -- that last case is what the `ignore` suggestion is for. An unresolved file fails open as before, and the comment says why.
+
 Pure deletions map against a `--base-graph` when supplied, and degrade to the file node (a superset-safe approximation) when not.
 
 **Test-registration files.** A build file has no graph node, so touching one normally fails the whole selection open — which made selection blind on exactly the PRs that *add* tests, since registering a test means editing the file that declares it. On our own dogfood loop, five of eleven CGraph PRs failed open and every one of them was a new test being registered. A CMake hunk that is **purely additive and does nothing but declare new test targets** is now read instead: at least one `add_test(NAME t …)`, an `add_executable(t src…)` for each, and no other command touching anything but those targets. The declared sources then seed the walk like any other changed test file.

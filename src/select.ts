@@ -6,6 +6,7 @@ import { dependencyDirection, nodesInFile, translatePath } from "./graph.js";
 import { TraversalExhausted, dependents } from "./impact.js";
 import { mapDiffToSeeds } from "./mapping.js";
 import { isDeliberatelyIgnored } from "./paths.js";
+import type { Resolution } from "./references.js";
 import type { PathVerdicts } from "./paths.js";
 import type { ChangedFileImpact, FailOpenReason, FileEdge, Selection } from "./types.js";
 
@@ -26,6 +27,12 @@ export interface SelectOptions {
    * no extractor claimed them, so the graph may be incomplete because of them.
    */
   pathVerdicts?: PathVerdicts;
+  /**
+   * Readers of the changed files the graph has no node for, from
+   * `resolveReferences`. A `referenced` file seeds its readers instead of
+   * failing open; an `unresolved` one fails open as before, with the reason.
+   */
+  references?: Map<string, Resolution>;
   /**
    * Fail open when the diff touches more files than this. **Unbounded by
    * default.** File count was never a safety property: selection is the union
@@ -173,6 +180,7 @@ export function select(diffText: string, opts: SelectOptions): Selection {
   const mapping = mapDiffToSeeds(opts.graph, changed, {
     ...(opts.baseGraph !== undefined && { baseGraph: opts.baseGraph }),
     ...(ignore !== undefined && { ignore }),
+    ...(opts.references !== undefined && { references: opts.references }),
   });
   reasons.push(...mapping.failOpen);
 
@@ -257,6 +265,21 @@ export function select(diffText: string, opts: SelectOptions): Selection {
         continue;
       }
       const own = walk(seeds);
+      const readers = mapping.readersByFile.get(file.path);
+      if (readers !== undefined) {
+        files.push({
+          path: file.path,
+          status: file.status,
+          disposition: "referenced",
+          symbols: [],
+          readers,
+          reaches: [...own.reached.entries()]
+            .map(([f, syms]) => ({ file: f, symbols: [...syms].sort() }))
+            .sort((a, b) => a.file.localeCompare(b.file)),
+          tests: [...own.tests].sort(),
+        });
+        continue;
+      }
       const symbols = new Set<string>();
       for (const id of seeds) {
         const node = opts.graph.byId.get(id) ?? opts.baseGraph?.byId.get(id);

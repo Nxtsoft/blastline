@@ -2,6 +2,7 @@ import { declaredTests, isCMakePath } from "./cmake.js";
 import { isTestPath } from "./detect.js";
 import type { CodeGraph, GraphNode } from "./graph.js";
 import { nodesInFile } from "./graph.js";
+import type { Reader, Resolution } from "./references.js";
 import type { ChangedFile, FailOpenReason } from "./types.js";
 
 export interface MappingResult {
@@ -10,6 +11,8 @@ export interface MappingResult {
   /** the same seeds, keyed by the changed file (its `path`) that produced them */
   seedsByFile: Map<string, Set<string>>;
   failOpen: FailOpenReason[];
+  /** Changed files the graph has no node for whose readers seeded the walk instead, keyed by `path`. */
+  readersByFile: Map<string, Reader[]>;
 }
 
 function spanSize(n: GraphNode): number {
@@ -54,6 +57,48 @@ function registeredTestSeeds(graph: CodeGraph, file: ChangedFile): Set<string> |
 }
 
 /**
+ * The nodes a changed non-code file's readers contribute: for each reader, the
+ * innermost symbol around each line that names or loads the file. Null when a
+ * reader has no node at all -- `references.ts` only returns readers the graph
+ * knows, so this guards a graph and a resolution that disagree, and it fails
+ * open rather than seeding nothing.
+ */
+function readerNodes(graph: CodeGraph, readers: Reader[]): Set<string> | null {
+  const ids = new Set<string>();
+  for (const reader of readers) {
+    const nodes = nodesInFile(graph, reader.file);
+    if (nodes.length === 0) return null;
+    const symbols = nodes.filter((n) => n.type !== "file" && n.source_location);
+    seedLines(symbols, nodes.find((n) => n.type === "file"), reader.lines, (id) => ids.add(id));
+  }
+  return ids;
+}
+
+/**
+ * Seed the innermost symbol containing each line, or the file node when a line
+ * sits outside every symbol: the one rule for both changed lines and the lines
+ * of a reader that name a changed non-code file.
+ */
+function seedLines(pool: GraphNode[], fallback: GraphNode | undefined, lines: Iterable<number>, seed: (id: string) => void): void {
+  for (const line of lines) {
+    const containing = pool.filter(
+      (n) => n.source_location!.start_line <= line && n.source_location!.end_line >= line,
+    );
+    if (containing.length > 0) {
+      containing.sort((a, b) => spanSize(a) - spanSize(b));
+      seed((containing[0] as GraphNode).id);
+    } else if (fallback) {
+      seed(fallback.id);
+    }
+  }
+}
+
+/** Every line of an inclusive range. */
+function* linesOf(start: number, end: number): Generator<number> {
+  for (let line = start; line <= end; line++) yield line;
+}
+
+/**
  * Map changed line ranges to seed nodes.
  *
  * Rule (corrected by the phase-1 spike): the seed set is the union over
@@ -69,11 +114,17 @@ function registeredTestSeeds(graph: CodeGraph, file: ChangedFile): Set<string> |
 export function mapDiffToSeeds(
   graph: CodeGraph,
   changed: ChangedFile[],
-  opts: { baseGraph?: CodeGraph; ignore?: (path: string) => boolean } = {},
+  opts: {
+    baseGraph?: CodeGraph;
+    ignore?: (path: string) => boolean;
+    /** Readers of changed files the graph has no node for (see `references.ts`), keyed by path. */
+    references?: Map<string, Resolution>;
+  } = {},
 ): MappingResult {
   const seeds = new Set<string>();
   const seedsByFile = new Map<string, Set<string>>();
   const failOpen: FailOpenReason[] = [];
+  const readersByFile = new Map<string, Reader[]>();
 
   for (const file of changed) {
     if (opts.ignore?.(file.path) && opts.ignore?.(file.oldPath)) continue;
@@ -93,7 +144,18 @@ export function mapDiffToSeeds(
         for (const id of registered) seed(id);
         continue;
       }
-      failOpen.push({ kind: "unmapped-file", path: file.path });
+      const resolution = opts.references?.get(file.path);
+      const readerSeeds = resolution?.kind === "referenced" ? readerNodes(graph, resolution.readers) : null;
+      if (resolution?.kind === "referenced" && readerSeeds !== null) {
+        for (const id of readerSeeds) seed(id);
+        readersByFile.set(file.path, resolution.readers);
+        continue;
+      }
+      failOpen.push({
+        kind: "unmapped-file",
+        path: file.path,
+        ...(resolution?.kind === "unresolved" && { unresolved: resolution.why }),
+      });
       continue;
     }
     if (file.status === "deleted") {
@@ -126,18 +188,8 @@ export function mapDiffToSeeds(
       }
       const pool = range.deletion ? baseSymbols : symbols;
       const fallback = range.deletion ? baseFileNode : fileNode;
-      for (let line = range.start; line <= range.end; line++) {
-        const containing = pool.filter(
-          (n) => n.source_location!.start_line <= line && n.source_location!.end_line >= line,
-        );
-        if (containing.length > 0) {
-          containing.sort((a, b) => spanSize(a) - spanSize(b));
-          seed((containing[0] as GraphNode).id);
-        } else if (fallback) {
-          seed(fallback.id);
-        }
-      }
+      seedLines(pool, fallback, linesOf(range.start, range.end), seed);
     }
   }
-  return { seeds, seedsByFile, failOpen };
+  return { seeds, seedsByFile, failOpen, readersByFile };
 }

@@ -108,9 +108,9 @@ index 3..4 100644
     // compose.yml names the Dockerfile, and "deploy" names notes.txt's folder;
     // nothing names compose.yml.
     expect(unmapped).toEqual([
-      { kind: "unmapped-file", path: "compose.yml", unnamed: true },
-      { kind: "unmapped-file", path: "deploy/Dockerfile" },
-      { kind: "unmapped-file", path: "deploy/notes.txt" },
+      { kind: "unmapped-file", path: "compose.yml", unnamed: true, unresolved: "no code names it" },
+      { kind: "unmapped-file", path: "deploy/Dockerfile", unresolved: "no code names it" },
+      { kind: "unmapped-file", path: "deploy/notes.txt", unresolved: "no code names it" },
     ]);
   });
 

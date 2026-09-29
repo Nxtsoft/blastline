@@ -38,6 +38,8 @@ export type FailOpenReason =
        * comment offers it for `ignore`; selection still fails open.
        */
       unnamed?: true;
+      /** Why its readers could not all be found (see `references.ts`), when that was tried. */
+      unresolved?: string;
     }
   | { kind: "stale-graph"; expected: string; actual: string }
   | { kind: "extraction-warning"; path: string }
@@ -51,6 +53,14 @@ export type FailOpenReason =
   | { kind: "invalid-ignore-pattern"; pattern: string; detail: string };
 
 /** What one changed file reached, so the comment can show the selection per file. */
+/** A file that reads a changed non-code file, and the lines that name or load it (see `references.ts`). */
+export interface ReaderRef {
+  /** Repo-relative path. */
+  file: string;
+  lines: number[];
+  rule: "name" | "folder" | "spring-profile" | "spring-context";
+}
+
 export interface ChangedFileImpact {
   /** Repo-relative head path, or the base path when the file was deleted. */
   path: string;
@@ -59,7 +69,13 @@ export interface ChangedFileImpact {
    * `ignored`: declared irrelevant by `--ignore`, or skipped by cgraph itself
    * (paths.json). Never walked, so `symbols`, `reaches` and `tests` are empty.
    */
-  disposition: "mapped" | "ignored";
+  disposition: "mapped" | "ignored" | "referenced";
+  /**
+   * `referenced` only: the graph has no node for this file, and these readers
+   * seeded the walk in its place. `symbols` is empty; `reaches` and `tests`
+   * are what the readers reach.
+   */
+  readers?: ReaderRef[];
   /** Labels of the changed symbols that seeded the walk; empty when only the file node did. */
   symbols: string[];
   /** Non-test files that transitively depend on the change, with the symbols reached in each. Absolute paths, like `blast`. */
