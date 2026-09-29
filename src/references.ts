@@ -91,7 +91,7 @@ const COMMENT = /^\s*(#(?!\s*(include|import|embed)\b|!?\[)|\/\/(?!go:embed\b|\/
 
 /** A line that enumerates a directory or matches files by pattern. Case-insensitive: Go spells it `ReadDir`. */
 const WALK =
-  /readdir|opendir|files\.(list|walk|find|newdirectorystream)|listfiles|listdir|os\.walk|scandir|\bglob|fast-?glob|tinyglobby|\bfg\(|walkdir|filepath\.walk|dir\.(glob|children|entries|each_child)|\bdir\[|getresources|classpath\*:|require\.context|import\.meta\.glob|rglob|iterdir|read_dir|directorystream|walkfiletree|\.walk\(|\.list\(|go:embed|#\[files|\*\*\/|\/\*\./i;
+  /readdir|opendir|files\.(list|walk|find|newdirectorystream)|listfiles|listdir|os\.walk|scandir|\bglob(?!al)|fast-?glob|tinyglobby|\bfg\(|walkdir|filepath\.walk|dir\.(glob|children|entries|each_child)|\bdir\[|getresources|classpath\*:|require\.context|import\.meta\.glob|rglob|iterdir|read_dir|directorystream|walkfiletree|\.walk\(|\.list\(|go:embed|#\[files|\*\*\/|\/\*\./i;
 
 /** Ways code builds a profile file's name instead of spelling it. */
 const PROFILE_TEMPLATES = ["application-$", "application-{", "application-%", '"application-" +', "'application-' +", "`application-${"];
@@ -161,38 +161,73 @@ const QUOTE = `"'\``;
 
 /**
  * True when `text` mentions folder `parts[i]` of `path` in a way a path to the
- * file could continue from: followed by `/` and the file's next component, a
- * prefix of it, or a glob (`fixtures/rows`, `migrations/*`); or the folder on
- * its own -- in quotes (`"../fixtures"`) or as the tail of a bare path
- * (`bats test/cli`) -- when it is the file's own folder or the line walks a
- * directory. A higher folder named on its own (`working-directory: ./api`) is a
- * module or a working directory, not a way to one file inside it.
+ * file could continue from. The mention is followed segment by segment while it
+ * agrees with the file's path: it leads when it reaches the file (a prefix of
+ * its name counts: `rows` for `rows.json`), ends in a glob or template on the
+ * way (`migrations/*`, `rows.${ext}`), or stops at one of the file's folders --
+ * its own folder in quotes or as a bare path's tail (`"../fixtures"`,
+ * `bats test/cli`), or a higher one when the file walks directories. It does
+ * not lead the moment it turns off (`@/lib/upload-processing/types` is not a
+ * way to `lib/upload-processing/testdata/x.csv`), and a higher folder named on
+ * its own (`working-directory: ./api`) is a module, not a way to one file.
+ * `walks` is asked only when that last rule needs it: it reads the file.
  */
-function folderLeadsTo(text: string, parts: string[], i: number, walks: boolean): boolean {
-  const folder = (parts[i] as string).toLowerCase();
-  const next = (parts[i + 1] as string).toLowerCase();
+function folderLeadsTo(text: string, parts: string[], i: number, walks: () => boolean): boolean {
   const lower = text.toLowerCase();
+  const want = parts.map((p) => p.toLowerCase());
   const walkingLine = WALK.test(text);
-  const re = new RegExp(`(^|[/${QUOTE}\\s(,=:\\[])${escapeRegex(folder)}(?=[/${QUOTE}\\s),;\\]]|$)`, "g");
+  const re = new RegExp(`(^|[/${QUOTE}\\s(,=:\\[])${escapeRegex(want[i] as string)}(?=[/${QUOTE}\\s),;\\]]|$)`, "g");
   for (let m = re.exec(lower); m !== null; m = re.exec(lower)) {
     const before = m[1] ?? "";
-    const at = m.index + m[0].length;
-    const after = lower[at];
-    if (after === "/") {
+    let at = m.index + m[0].length;
+    let j = i; // the file's component the mention has reached
+    let verdict: boolean | undefined;
+    while (lower[at] === "/") {
       const segment = /^[^/"'`\s),;\]]*/.exec(lower.slice(at + 1))?.[0] ?? "";
+      if (segment === "") {
+        at += 1; // a trailing slash: the mention stops at want[j], as `"../fixtures/" + name`
+        break;
+      }
+      const next = want[j + 1] as string;
+      const last = j + 1 === want.length - 1;
+      // An exact match first: app-router folders such as `(group)` contain template characters.
+      if (segment === next) {
+        if (last) verdict = true;
+        j++;
+        at += 1 + segment.length;
+        if (last) break;
+        continue;
+      }
+      if (segment.startsWith("**")) {
+        verdict = true; // any depth
+        break;
+      }
       // The literal part before any query, glob or template: `rows` in
-      // `rows?raw`, `rows.` in `rows.${ext}`.
+      // `rows?raw`, `rows.` in `rows.${ext}`, "" in `${kind}` or `*.csv`.
       const literal = /^[^?#*{$%<[]*/.exec(segment)?.[0] ?? "";
       const templated = literal.length < segment.length;
-      if (literal === "" || literal === next || next.startsWith(`${literal}.`) || (templated && next.startsWith(literal))) return true;
-      continue;
+      if (templated && next.startsWith(literal)) {
+        // A template stands for one component; the rest must still agree.
+        if (last) verdict = true;
+        j++;
+        at += 1 + segment.length;
+        if (last) break;
+        continue;
+      }
+      verdict = last && next.startsWith(`${literal}.`); // `rows` for `rows.json`, else it turned off
+      break;
     }
-    if (i !== parts.length - 2 && !walks && !walkingLine) continue;
-    if (after !== undefined && QUOTE.includes(after)) return true;
-    // A bare path's last component: `test/cli` at the end of a shell word.
-    if (before === "/") return true;
-    // A bare folder on a line that walks: `//go:embed static`.
-    if (walkingLine) return true;
+    if (verdict === true) return true;
+    if (verdict === false) continue;
+    // The mention stops at folder want[j]. It can count as a quoted folder, as
+    // a bare path's tail (`test/cli`), or as a bare folder on a line that walks
+    // (`//go:embed static`); a bare word such as `new` in `new Map()` never
+    // can, so it is dropped before the file is read.
+    const after = lower[at];
+    const quoted = after !== undefined && QUOTE.includes(after);
+    if (!quoted && before !== "/" && j === i && !walkingLine) continue;
+    if (j !== want.length - 2 && !walkingLine && !walks()) continue;
+    return true;
   }
   return false;
 }
@@ -217,6 +252,8 @@ function beforeHashComment(text: string): string {
 function withoutStrings(text: string): string {
   return text.replace(/"(\\.|[^"\\])*"|'(\\.|[^'\\])*'|`(\\.|[^`\\])*`/g, '""');
 }
+
+const RULE_STRENGTH: Record<ReferenceRule, number> = { name: 0, "spring-profile": 1, "spring-context": 2, "path-part": 3 };
 
 class Searcher {
   private readonly cache = new Map<string, Hit[]>();
@@ -284,10 +321,11 @@ class Readers {
     return new Set([...this.byFile.values()].map((r) => r.file));
   }
 
+  /** Strongest evidence first: a file named outright before one whose path could be built. */
   list(): Reader[] {
     return [...this.byFile.values()]
       .map((r) => ({ ...r, lines: [...r.lines].sort((a, b) => a - b) }))
-      .sort((a, b) => a.file.localeCompare(b.file) || a.rule.localeCompare(b.rule));
+      .sort((a, b) => RULE_STRENGTH[a.rule] - RULE_STRENGTH[b.rule] || a.file.localeCompare(b.file));
   }
 }
 
@@ -361,7 +399,7 @@ export function resolveReferences(
     const folders = parts.slice(0, -1);
     if (folders.length > 0) {
       for (const hit of search.lines(folders, { ignoreCase: true })) {
-        if (folders.some((_, i) => folderLeadsTo(hit.text, parts, i, walksAnywhere(hit.file)))) route(path, hit, "path-part", out, chain, seen, caveats);
+        if (folders.some((_, i) => folderLeadsTo(hit.text, parts, i, () => walksAnywhere(hit.file)))) route(path, hit, "path-part", out, chain, seen, caveats);
       }
     }
     const ext = extensionOf(path);

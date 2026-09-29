@@ -452,6 +452,17 @@ const READ_BY: Record<Reader["rule"], string> = {
   "spring-context": "starts a Spring context",
 };
 
+/**
+ * Which caveat the table shows first: one that means the list may miss tests
+ * outright (config that changes how tests run, a profile activated elsewhere)
+ * before one about a reader the graph cannot follow, before noise.
+ */
+function caveatWeight(caveat: string): number {
+  if (/can change how tests run|activates profile|through an expression|exceeded the traversal budget|go deeper than/.test(caveat)) return 0;
+  if (/reaches no test|has no graph node|extends a context test|inherit context|nothing found runs it/.test(caveat)) return 1;
+  return 2;
+}
+
 /** How many files the advice table lists; the rest are counted. */
 const ADVICE_ROWS = 10;
 
@@ -470,7 +481,7 @@ function readerAdvice(reasons: Extract<FailOpenReason, { kind: "unmapped-file" }
     const readers = [...rules.entries()];
     const shown = readers.slice(0, 3).map(([file, why]) => `${code(file.slice(file.lastIndexOf("/") + 1))} (${why.join(", ")})`);
     const moreReaders = readers.length > 3 ? `, +${plural(readers.length - 3, "file")}` : "";
-    const caveats = r.caveats ?? [];
+    const caveats = [...(r.caveats ?? [])].sort((a, b) => caveatWeight(a) - caveatWeight(b));
     const caveat = caveats.length === 0 ? "" : `${caveats[0]}${caveats.length > 1 ? `; +${caveats.length - 1} more` : ""}`;
     return `| ${code(r.path)} | ${cell(shown.join(", ") + moreReaders)} | ${r.readerTests?.length ?? 0} | ${cell(caveat)} |`;
   });

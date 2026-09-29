@@ -149,10 +149,10 @@ export function runSelection(o: RunOptions): Selection {
 }
 
 /**
- * Readers of the changed files the graph has no node for, so selection can
- * seed them instead of failing open. A failed search is not a graph failure
- * and not a selection failure: it costs only the resolution -- those files fail
- * open exactly as before -- and says so on stderr.
+ * Readers of the changed files the graph has no node for, as advice for the
+ * full-suite comment (see `references.ts`). A failed search is not a graph
+ * failure and changes no verdict: it costs only the advice, and says so on
+ * stderr.
  */
 function readersOf(
   diffText: string,

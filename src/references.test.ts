@@ -129,6 +129,71 @@ describe("resolveReferences: plain files", () => {
   // `ignore` says a change to tools/ cannot matter, not that tools/ cannot read this file.
   // A runbook names the file, dependabot config names the runbook's folder, and
   // review-bot config names .github: no test process reads any of them.
+  // Found on a real PR: every module importing a sibling of the fixture's
+  // folder counted, because only the first segment after a folder was checked.
+  it("does not count a path that turns off the file's path", () => {
+    const refs = resolveIn(
+      {
+        "lib/upload/testdata/band.csv": "a\n",
+        "lib/upload/grid.test.ts": "const band = fixture('band.csv');\n",
+        "app/wizard.tsx": "import { csvToGrid } from '@/lib/upload/grid';\n",
+        "app/types.ts": "export type { Row } from '@/lib/upload/types';\n",
+        "lib/upload/loader.ts": "export const all = () => readdirSync(join(ROOT, 'lib/upload/testdata'));\n",
+      },
+      ["lib/upload/testdata/band.csv"],
+    );
+    expect(readersOf(refs.get("lib/upload/testdata/band.csv"))).toEqual(["lib/upload/grid.test.ts:1:name", "lib/upload/loader.ts:1:path-part"]);
+  });
+
+  // Review of #51: a template or an app-router folder used to end the
+  // comparison and count at once, so every route under `[uuid]` was a reader.
+  it("keeps comparing past a template, and matches [param] and (group) folders as written", () => {
+    const fixture = "app/(shop)/new/testdata/band.csv";
+    const refs = resolveIn(
+      {
+        [fixture]: "a\n",
+        "app/(shop)/new/loader.ts": 'export const read = (n: string) => load(join(dir, "testdata/", n));\n',
+        "app/page.tsx": "import { Badge } from '@/app/(shop)/[id]/new/badge';\n",
+        "app/nav.ts": "router.push(`/app/${section}/new/checkout`);\n",
+        "app/all.test.ts": 'const cases = globSync("app/(shop)/**/*.csv");\n',
+        "app/kind.test.ts": "const rows = read(`app/(shop)/${kind}/testdata/band.csv`);\n",
+        "app/other.test.ts": "const rows = read(`app/(shop)/${kind}/testdata/other.csv`);\n",
+      },
+      [fixture],
+    );
+    expect(readersOf(refs.get(fixture))).toEqual([
+      "app/kind.test.ts:1:name",
+      "app/(shop)/new/loader.ts:1:path-part",
+      "app/all.test.ts:1:path-part",
+    ]);
+  });
+
+  // Review: every file mentioning a parent folder was read to see whether it
+  // walks directories -- 5,000 git shows to find nothing on a large repo.
+  it("reads no file when no mention needs to know whether it walks", () => {
+    const files: Record<string, string> = { "src/data/config.json": "{}\n" };
+    for (let n = 0; n < 200; n++) files[`src/lib${n}.test.ts`] = `import { f } from "../src/lib${n}";\n`;
+    const root = join(mkdtempSync(join(tmpdir(), "blastline-refs-")), "repo");
+    const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", env: ENV });
+    execFileSync("git", ["init", "-q", "-b", "main", root]);
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), text);
+    }
+    git("add", "-A");
+    git("commit", "-q", "-m", "init");
+    let reads = 0;
+    const refs = resolveReferences(git, "HEAD", ["src/data/config.json"], {
+      hasNodes: (p) => CODE.test(p),
+      read: (p) => {
+        reads++;
+        return readFileSync(join(root, p), "utf8");
+      },
+    });
+    expect(readersOf(refs.get("src/data/config.json"))).toEqual([]);
+    expect(reads).toBe(0);
+  });
+
   it("does not count a higher folder named on its own", () => {
     const refs = resolveIn(
       {
@@ -197,8 +262,8 @@ describe("resolveReferences: Spring configuration", () => {
   it("selects what names, templates or activates the profile, and nothing else", () => {
     const refs = resolveIn(SPRING, [PROFILE]);
     expect(readersOf(refs.get(PROFILE))).toEqual([
-      "src/test/kotlin/MatrixTest.kt:1:spring-profile",
       "src/test/kotlin/ProbeTest.kt:2:name",
+      "src/test/kotlin/MatrixTest.kt:1:spring-profile",
       "src/test/kotlin/ProdTest.kt:2:spring-profile",
     ]);
   });

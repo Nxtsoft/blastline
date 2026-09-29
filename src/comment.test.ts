@@ -240,7 +240,8 @@ describe("renderComment: fail-open", () => {
               { file: "src/Other.kt", lines: [3], rule: "name" },
             ],
             readerTests: ["/r/src/test/ProbeTest.kt", "/r/src/test/ProdTest.kt"],
-            caveats: [".github/workflows/ci.yml mentions it and can change how tests run", "x"],
+            // The one that can hide tests is shown, whatever the order.
+            caveats: ["x mentions it; nothing found runs it", ".github/workflows/ci.yml mentions it and can change how tests run"],
           },
           { kind: "unmapped-file", path: "package.json" },
         ],
@@ -255,6 +256,25 @@ describe("renderComment: fail-open", () => {
     );
     expect(md).toContain("The 2 test files those readers reach");
     expect(md).toContain("src/test/ProbeTest.kt\nsrc/test/ProdTest.kt");
+  });
+
+  it("shows a truncated walk before a reader the graph cannot follow", () => {
+    const md = renderComment(
+      {
+        kind: "all",
+        reasons: [
+          {
+            kind: "unmapped-file",
+            path: "data/rows.csv",
+            readers: [{ file: "src/a.ts", lines: [1], rule: "name" }],
+            readerTests: [],
+            caveats: ["src/b.ts reads it but has no graph node", "the walk from its readers exceeded the traversal budget"],
+          },
+        ],
+      },
+      ctx,
+    );
+    expect(md).toContain("| the walk from its readers exceeded the traversal budget; +1 more |");
   });
 
   it("offers nothing when every unmapped file is named somewhere", () => {
