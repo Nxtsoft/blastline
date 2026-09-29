@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.1
+
+The reader advice names the readers, not every module beside them.
+
+- A folder mention is followed segment by segment while it agrees with the file's path, and stops counting the moment it turns off: `@/lib/upload/grid` no longer counts as a way to `lib/upload/testdata/x.csv`. Before, only the first segment after the folder was checked, so every module importing a sibling was listed; on a real web-app PR a new test fixture listed 36 readers reaching 26 tests, now 13 reaching 11, with the test that loads it first.
+- Readers are ordered by evidence (named outright, then Spring profile and context, then path pieces), and the table shows the caveat that can hide tests (config that changes how tests run, a profile activated elsewhere) before noise.
+- Whether a file walks directories is read only when a mention needs it. Before, every file mentioning a parent folder was read: 5,000 `git show` calls and 32 seconds on a 5,000-file probe that found nothing.
+
 ## 0.17.0
 
 Under a full-suite verdict, the comment says which code reads each unmapped file and which tests those readers reach. Advice only: the verdict never changes.

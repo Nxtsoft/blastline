@@ -240,7 +240,8 @@ describe("renderComment: fail-open", () => {
               { file: "src/Other.kt", lines: [3], rule: "name" },
             ],
             readerTests: ["/r/src/test/ProbeTest.kt", "/r/src/test/ProdTest.kt"],
-            caveats: [".github/workflows/ci.yml mentions it and can change how tests run", "x"],
+            // The one that can hide tests is shown, whatever the order.
+            caveats: ["x mentions it; nothing found runs it", ".github/workflows/ci.yml mentions it and can change how tests run"],
           },
           { kind: "unmapped-file", path: "package.json" },
         ],
