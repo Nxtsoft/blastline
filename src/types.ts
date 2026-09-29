@@ -1,3 +1,5 @@
+import type { Reader } from "./references.js";
+
 /** A contiguous range of changed lines in one file, from a unified diff. */
 export interface ChangedRange {
   /** 1-indexed first changed line in the new file (or old file for pure deletions). */
@@ -38,6 +40,14 @@ export type FailOpenReason =
        * comment offers it for `ignore`; selection still fails open.
        */
       unnamed?: true;
+      /**
+       * Advice, never selection (see `references.ts`): code that reads this
+       * file, the test files those readers reach (absolute, like `tests`), and
+       * why that list may be incomplete. The verdict stays the full suite.
+       */
+      readers?: Reader[];
+      readerTests?: string[];
+      caveats?: string[];
     }
   | { kind: "stale-graph"; expected: string; actual: string }
   | { kind: "extraction-warning"; path: string }

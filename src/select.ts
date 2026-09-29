@@ -4,8 +4,9 @@ import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
 import { dependencyDirection, nodesInFile, translatePath } from "./graph.js";
 import { TraversalExhausted, dependents } from "./impact.js";
-import { mapDiffToSeeds } from "./mapping.js";
+import { mapDiffToSeeds, readerNodes } from "./mapping.js";
 import { isDeliberatelyIgnored } from "./paths.js";
+import type { Resolution } from "./references.js";
 import type { PathVerdicts } from "./paths.js";
 import type { ChangedFileImpact, FailOpenReason, FileEdge, Selection } from "./types.js";
 
@@ -26,6 +27,13 @@ export interface SelectOptions {
    * no extractor claimed them, so the graph may be incomplete because of them.
    */
   pathVerdicts?: PathVerdicts;
+  /**
+   * Readers of the changed files the graph has no node for, from
+   * `resolveReferences`. Advice only: when those files fail the selection
+   * open, their `unmapped-file` reasons carry the readers, the tests the
+   * readers reach, and the caveats. The verdict is unchanged.
+   */
+  references?: Map<string, Resolution>;
   /**
    * Fail open when the diff touches more files than this. **Unbounded by
    * default.** File count was never a safety property: selection is the union
@@ -83,6 +91,52 @@ export interface SelectOptions {
   /** graph.json mtime (ms) and head-commit time (ms) for the staleness guard */
   graphMtimeMs?: number;
   headCommitMs?: number;
+}
+
+/**
+ * Attach the advice for one unmapped file: its readers, the test files they
+ * reach, and the caveats. A reader that reaches no test through the graph --
+ * a pytest fixture, injected by parameter name -- is a caveat of its own, since
+ * the tests that use it are invisible here.
+ */
+function advise(
+  reason: Extract<FailOpenReason, { kind: "unmapped-file" }>,
+  resolution: Resolution | undefined,
+  graph: CodeGraph,
+  testSet: Set<string>,
+  budget: number,
+): FailOpenReason {
+  if (resolution === undefined) return reason;
+  const caveats = [...resolution.caveats];
+  const tests = new Set<string>();
+  if (resolution.readers.length === 0) caveats.push("no code reads it");
+  try {
+    const walked = readerNodes(graph, resolution.readers);
+    for (const file of new Set(resolution.readers.map((x) => x.file))) {
+      if (!walked.has(file)) caveats.push(`${file} reads it but has no graph node`);
+    }
+    for (const [reader, seeds] of walked) {
+      const own = new Set<string>();
+      for (const id of seeds) {
+        const file = graph.byId.get(id)?.source_file;
+        if (file && testSet.has(file)) own.add(file);
+      }
+      for (const id of dependents(graph, seeds, budget)) {
+        const file = graph.byId.get(id)?.source_file;
+        if (file && testSet.has(file)) own.add(file);
+      }
+      if (own.size === 0) caveats.push(`${reader} reads it but reaches no test`);
+      for (const t of own) tests.add(t);
+    }
+  } catch (e) {
+    if (!(e instanceof TraversalExhausted)) throw e;
+    caveats.push("the walk from its readers exceeded the traversal budget");
+  }
+  return {
+    ...reason,
+    ...(resolution.readers.length > 0 && { readers: resolution.readers, readerTests: [...tests].sort() }),
+    ...(caveats.length > 0 && { caveats }),
+  };
 }
 
 /** The full selection pipeline: diff text in, Selection out. Deterministic. */
@@ -176,7 +230,12 @@ export function select(diffText: string, opts: SelectOptions): Selection {
   });
   reasons.push(...mapping.failOpen);
 
-  if (reasons.length > 0) return { kind: "all", reasons };
+  if (reasons.length > 0) {
+    const references = opts.references;
+    if (references === undefined) return { kind: "all", reasons };
+    const budget = opts.maxTraversalNodes ?? 2_000_000;
+    return { kind: "all", reasons: reasons.map((r) => (r.kind === "unmapped-file" ? advise(r, references.get(r.path), opts.graph, knownTests, budget) : r)) };
+  }
 
   // Deletion seeds are BASE-graph node ids: the deleted symbols no longer
   // exist at head, and the base graph is built from a different checkout, so

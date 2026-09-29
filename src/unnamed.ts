@@ -24,23 +24,49 @@
  * and bunfig.toml carries a [test] section).
  */
 
-const NEVER_SUGGESTED: RegExp[] = [
-  // Spring loads these by profile or by name; no code spells the filename.
+/**
+ * Lockfiles. They change what every test runs against, and they never read a
+ * repository file, however many paths they record.
+ */
+const LOCKFILE =
+  /(^|\/)(bun\.lockb?|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|go\.sum|Gemfile\.lock|composer\.lock|pubspec\.lock|Package\.resolved|Podfile\.lock|Cartfile\.resolved|packages\.lock\.json|poetry\.lock|uv\.lock|Pipfile\.lock)$/;
+
+/** True for a dependency lockfile. */
+export function isLockfile(path: string): boolean {
+  return LOCKFILE.test(path);
+}
+
+/**
+ * Files something loads without naming them, so no search for a name can find
+ * their readers. Shared with `references.ts`, which never resolves these.
+ */
+const LOADED_BY_CONVENTION: RegExp[] = [
+  // Spring loads these by profile, by name or by location; no code spells the filename.
   /(^|\/)application[^/]*\.(ya?ml|properties)$/,
   /(^|\/)bootstrap[^/]*\.(ya?ml|properties)$/,
   /(^|\/)(logback|log4j2?)[^/]*\.(xml|properties|ya?ml)$/,
+  /(^|\/)messages[^/]*\.properties$/,
   /(^|\/)META-INF\//,
-  /(^|\/)src\/[^/]+\/resources\//,
-  // Read by test runners by convention, or walked as a folder of cases.
-  /(^|\/)(__snapshots__|snapshots|testdata|test-data|fixtures?|__fixtures__|golden)\//,
+  /(^|\/)resources\/(templates|static|public|graphql|db\/migration|db\/changelog)\//,
+  /(^|\/)resources\/(schema|data)[^/]*\.sql$/,
+  // Build-tool and shell settings read by location: `-Dspring.profiles.active` in
+  // .mvn/maven.config, exports in a direnv .envrc.
+  /(^|\/)\.mvn\//,
+  /(^|\/)\.envrc$/,
+  // Test-runner hooks read from the classpath by fixed name.
+  /(^|\/)junit-platform\.properties$/,
+  /(^|\/)mockito-extensions\//,
+  // Read by test runners next to the test that owns them.
+  /(^|\/)__snapshots__\//,
   /\.(snap|golden)$/,
   // Dependency manifests and lockfiles: they change what every test runs against.
   /(^|\/)package\.json$/,
-  /(^|\/)(bun\.lockb?|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|\.yarnrc(\.yml)?|\.npmrc)$/,
-  /(^|\/)(Cargo\.(toml|lock)|go\.(mod|sum|work)|Gemfile(\.lock)?|composer\.(json|lock))$/,
-  /(^|\/)(pubspec\.(yaml|lock)|Package\.(swift|resolved)|Podfile(\.lock)?|Cartfile(\.resolved)?|packages\.lock\.json|Directory\.(Build|Packages)\.(props|targets))$/,
+  LOCKFILE,
+  /(^|\/)(pnpm-workspace\.yaml|\.yarnrc(\.yml)?|\.npmrc)$/,
+  /(^|\/)(Cargo\.toml|go\.(mod|work)|Gemfile|composer\.json)$/,
+  /(^|\/)(pubspec\.yaml|Package\.swift|Podfile|Cartfile|Directory\.(Build|Packages)\.(props|targets))$/,
   /\.(csproj|fsproj|vbproj|sln|gemspec)$/,
-  /(^|\/)(pyproject\.toml|poetry\.lock|uv\.lock|Pipfile(\.lock)?|requirements[^/]*\.txt|setup\.(py|cfg))$/,
+  /(^|\/)(pyproject\.toml|Pipfile|requirements[^/]*\.txt|setup\.(py|cfg))$/,
   /(^|\/)(build|settings)\.gradle(\.kts)?$/,
   /(^|\/)(gradle\.properties|gradlew(\.bat)?|pom\.xml)$/,
   /(^|\/)gradle\/(wrapper\/|libs\.versions\.toml$)/,
@@ -56,6 +82,21 @@ const NEVER_SUGGESTED: RegExp[] = [
   // Loaded by dotenv conventions; only the documented templates are inert.
   /(^|\/)\.env(?!\.(example|sample|template)$)[^/]*$/,
 ];
+
+/**
+ * Also never offered for `ignore`, though a reader that names them can be found:
+ * anything a JVM build puts on the classpath, and folders of cases a test walks.
+ */
+const NEVER_SUGGESTED: RegExp[] = [
+  ...LOADED_BY_CONVENTION,
+  /(^|\/)src\/[^/]+\/resources\//,
+  /(^|\/)(snapshots|testdata|test-data|fixtures?|__fixtures__|golden)\//,
+];
+
+/** True when something loads the file by convention, without naming it anywhere. */
+export function loadedByConvention(path: string): boolean {
+  return LOADED_BY_CONVENTION.some((r) => r.test(path));
+}
 
 /** True when a file must never be offered for `ignore`, however unnamed it is. */
 export function neverSuggested(path: string): boolean {

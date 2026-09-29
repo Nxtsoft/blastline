@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { indexGraph, loadGraph } from "./graph.js";
 import { select } from "./select.js";
 import type { PathVerdicts } from "./paths.js";
+import type { Resolution } from "./references.js";
 
 const FIXTURE = fileURLToPath(new URL("./testdata/mini-graph.json", import.meta.url));
 const g = loadGraph(FIXTURE);
@@ -326,5 +327,77 @@ describe("select: per-file impact for the comment", () => {
     if (sel.kind !== "subset") throw new Error("expected subset");
     const perFile = new Set(sel.files.flatMap((f) => f.tests));
     expect([...perFile].sort()).toEqual(sel.tests);
+  });
+});
+
+describe("select: advice on changed files read by code", () => {
+  const node = (id: string, type: string, file: string, lines?: [number, number]) => ({
+    id,
+    label: id,
+    type,
+    source_file: file,
+    ...(lines && { source_location: { start_line: lines[0], end_line: lines[1] } }),
+  });
+  // loader.ts has two functions; only loadRows (lines 1-5) names rows.csv.
+  // conftest.py reads it too, through a pytest fixture no edge leads from.
+  const graph = indexGraph(
+    [
+      node("f_loader", "file", "/repo/src/loader.ts"),
+      node("loadRows", "function", "/repo/src/loader.ts", [1, 5]),
+      node("loadOther", "function", "/repo/src/loader.ts", [6, 10]),
+      node("f_rows_test", "file", "/repo/src/rows.test.ts"),
+      node("testRows", "function", "/repo/src/rows.test.ts", [1, 3]),
+      node("f_other_test", "file", "/repo/src/other.test.ts"),
+      node("testOther", "function", "/repo/src/other.test.ts", [1, 3]),
+      node("f_conftest", "file", "/repo/tests/conftest.py"),
+      node("rowsFixture", "function", "/repo/tests/conftest.py", [5, 8]),
+    ],
+    [
+      { source: "f_loader", target: "loadRows", relation: "contains" },
+      { source: "f_loader", target: "loadOther", relation: "contains" },
+      { source: "f_rows_test", target: "testRows", relation: "contains" },
+      { source: "f_other_test", target: "testOther", relation: "contains" },
+      { source: "f_conftest", target: "rowsFixture", relation: "contains" },
+      { source: "testRows", target: "loadRows", relation: "calls" },
+      { source: "testOther", target: "loadOther", relation: "calls" },
+    ],
+  );
+  const diff = `diff --git a/data/rows.csv b/data/rows.csv\nindex 1..2 100644\n--- a/data/rows.csv\n+++ b/data/rows.csv\n@@ -1,0 +2,1 @@\n+c,d\n`;
+  const loader = { file: "src/loader.ts", lines: [3], rule: "name" as const };
+
+  it("keeps the full suite, and names the tests the naming symbol reaches", () => {
+    const references = new Map<string, Resolution>([["data/rows.csv", { readers: [loader], caveats: [] }]]);
+    const sel = select(diff, { graph, minDensity: 0, references });
+    expect(sel).toEqual({
+      kind: "all",
+      reasons: [{ kind: "unmapped-file", path: "data/rows.csv", readers: [loader], readerTests: ["/repo/src/rows.test.ts"] }],
+    });
+  });
+
+  // pytest injects fixtures by parameter name: nothing in the graph leads from
+  // conftest.py to the tests that use it, so its tests are invisible here.
+  it("says so when a reader reaches no test, or has no node", () => {
+    const readers = [
+      loader,
+      { file: "tests/conftest.py", lines: [7], rule: "name" as const },
+      { file: "src/gone.ts", lines: [1], rule: "name" as const },
+    ];
+    const references = new Map<string, Resolution>([["data/rows.csv", { readers, caveats: ["package.json mentions it and can change how tests run"] }]]);
+    const sel = select(diff, { graph, minDensity: 0, references });
+    expect(sel.kind).toBe("all");
+    if (sel.kind !== "all") return;
+    const reason = sel.reasons[0];
+    expect(reason?.kind === "unmapped-file" && reason.readerTests).toEqual(["/repo/src/rows.test.ts"]);
+    expect(reason?.kind === "unmapped-file" && reason.caveats).toEqual([
+      "package.json mentions it and can change how tests run",
+      "src/gone.ts reads it but has no graph node",
+      "tests/conftest.py reads it but reaches no test",
+    ]);
+  });
+
+  it("says when no code reads it", () => {
+    const references = new Map<string, Resolution>([["data/rows.csv", { readers: [], caveats: [] }]]);
+    const sel = select(diff, { graph, minDensity: 0, references });
+    expect(sel).toEqual({ kind: "all", reasons: [{ kind: "unmapped-file", path: "data/rows.csv", caveats: ["no code reads it"] }] });
   });
 });

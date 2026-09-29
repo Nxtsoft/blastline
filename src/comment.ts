@@ -4,6 +4,7 @@ import type { Brief, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
 import { SNAPSHOT_MARKER } from "./brief.js";
 import { relativeTo, sharedDir } from "./paths.js";
 import { ignorePatternFor } from "./unnamed.js";
+import type { Reader } from "./references.js";
 import type { ChangedFileImpact, FileEdge, FailOpenReason, Selection } from "./types.js";
 
 /** First line of every comment: the Action finds and updates the existing comment by it. */
@@ -378,7 +379,7 @@ function explain(r: Exclude<FailOpenReason, { kind: "unmapped-file" }>, ctx: Com
  * reason under them. The paths still matter, so they are grouped by directory
  * with counts and kept in full behind a fold, rather than dropped.
  */
-function renderUnmapped(reasons: Extract<FailOpenReason, { kind: "unmapped-file" }>[]): string {
+function renderUnmapped(reasons: Extract<FailOpenReason, { kind: "unmapped-file" }>[], repo: string): string {
   const paths = reasons.map((r) => r.path);
   const byDir = new Map<string, number>();
   for (const p of paths) byDir.set(dirOf(p), (byDir.get(dirOf(p)) ?? 0) + 1);
@@ -401,6 +402,7 @@ function renderUnmapped(reasons: Extract<FailOpenReason, { kind: "unmapped-file"
     "If these files cannot change which tests should run, add a pattern for them to `ignore`. If they feed tests (fixtures, data), this outcome is correct.",
     "",
     ...suggestIgnores(reasons.filter((r) => r.unnamed).map((r) => r.path)),
+    ...readerAdvice(reasons, repo),
     "```",
     bars,
     "```",
@@ -442,6 +444,62 @@ function suggestIgnores(unnamed: string[]): string[] {
   ];
 }
 
+/** How a reader's rule reads in a sentence. */
+const READ_BY: Record<Reader["rule"], string> = {
+  name: "names it",
+  "path-part": "builds a path to it",
+  "spring-profile": "uses its profile",
+  "spring-context": "starts a Spring context",
+};
+
+/** How many files the advice table lists; the rest are counted. */
+const ADVICE_ROWS = 10;
+
+/**
+ * Advice under a full-suite verdict: for each unmapped file some code reads,
+ * who reads it, how many tests those readers reach, and why that list cannot
+ * replace the full run. Never a selection -- see `references.ts`.
+ */
+function readerAdvice(reasons: Extract<FailOpenReason, { kind: "unmapped-file" }>[], repo: string): string[] {
+  const read = reasons.filter((r) => (r.readers?.length ?? 0) > 0);
+  if (read.length === 0) return [];
+  const rows = read.slice(0, ADVICE_ROWS).map((r) => {
+    // One entry per reader file; a file can count under several rules.
+    const rules = new Map<string, string[]>();
+    for (const x of r.readers ?? []) rules.set(x.file, [...(rules.get(x.file) ?? []), READ_BY[x.rule]]);
+    const readers = [...rules.entries()];
+    const shown = readers.slice(0, 3).map(([file, why]) => `${code(file.slice(file.lastIndexOf("/") + 1))} (${why.join(", ")})`);
+    const moreReaders = readers.length > 3 ? `, +${plural(readers.length - 3, "file")}` : "";
+    const caveats = r.caveats ?? [];
+    const caveat = caveats.length === 0 ? "" : `${caveats[0]}${caveats.length > 1 ? `; +${caveats.length - 1} more` : ""}`;
+    return `| ${code(r.path)} | ${cell(shown.join(", ") + moreReaders)} | ${r.readerTests?.length ?? 0} | ${cell(caveat)} |`;
+  });
+  const more = read.length > rows.length ? [`_and ${plural(read.length - rows.length, "more file")} with readers_`, ""] : [];
+  const tests = [...new Set(read.flatMap((r) => r.readerTests ?? []))].sort();
+  return [
+    "**Code that reads these files** (advice: the run still needs the full suite, because no search can prove it found every reader):",
+    "",
+    "| File | Read by | Tests reached | Not vouched for |",
+    "|---|---|---:|---|",
+    ...rows,
+    "",
+    ...more,
+    ...(tests.length > 0
+      ? [
+          `<details><summary>The ${plural(tests.length, "test file")} those readers reach</summary>`,
+          "",
+          "```",
+          ...tests.slice(0, 100).map((t) => relativeTo(repo, t)),
+          ...(tests.length > 100 ? [`… ${tests.length - 100} more`] : []),
+          "```",
+          "",
+          "</details>",
+          "",
+        ]
+      : []),
+  ];
+}
+
 type All = Extract<Selection, { kind: "all" }>;
 
 /** The body of a fail-open comment, after its heading: the warning, the reasons, the unmapped files. */
@@ -467,7 +525,7 @@ function allBody(selection: All, ctx: CommentContext): string[] {
     "",
     table,
     table ? "" : undefined,
-    unmapped.length > 0 ? renderUnmapped(unmapped) : undefined,
+    unmapped.length > 0 ? renderUnmapped(unmapped, ctx.repo) : undefined,
     unmapped.length > 0 ? "" : undefined,
     where,
   ].filter((line): line is string => line !== undefined);

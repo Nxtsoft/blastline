@@ -224,6 +224,39 @@ describe("renderComment: fail-open", () => {
     expect(md).toContain("api/src/main/resources/application-production.yml");
   });
 
+  it("advises which code reads each unmapped file, without changing the verdict", () => {
+    const md = renderComment(
+      {
+        kind: "all",
+        reasons: [
+          {
+            kind: "unmapped-file",
+            path: "config/application-production.yml",
+            readers: [
+              { file: "src/test/ProbeTest.kt", lines: [12], rule: "name" },
+              { file: "src/test/ProbeTest.kt", lines: [4], rule: "spring-profile" },
+              { file: "src/test/ProdTest.kt", lines: [2], rule: "spring-profile" },
+              { file: "src/Loader.kt", lines: [8], rule: "path-part" },
+              { file: "src/Other.kt", lines: [3], rule: "name" },
+            ],
+            readerTests: ["/r/src/test/ProbeTest.kt", "/r/src/test/ProdTest.kt"],
+            caveats: [".github/workflows/ci.yml mentions it and can change how tests run", "x"],
+          },
+          { kind: "unmapped-file", path: "package.json" },
+        ],
+      },
+      ctx,
+    );
+    expect(md).toContain("Run the full suite");
+    expect(md).toContain("**Code that reads these files** (advice: the run still needs the full suite");
+    const row = md.split("\n").find((l) => l.startsWith("| `config/application-production.yml`")) ?? "";
+    expect(row).toBe(
+      "| `config/application-production.yml` | `ProbeTest.kt` (names it, uses its profile), `ProdTest.kt` (uses its profile), `Loader.kt` (builds a path to it), +1 file | 2 | .github/workflows/ci.yml mentions it and can change how tests run; +1 more |",
+    );
+    expect(md).toContain("The 2 test files those readers reach");
+    expect(md).toContain("src/test/ProbeTest.kt\nsrc/test/ProdTest.kt");
+  });
+
   it("offers nothing when every unmapped file is named somewhere", () => {
     const md = renderComment({ kind: "all", reasons: [{ kind: "unmapped-file", path: "package.json" }] }, ctx);
     expect(md).not.toContain("named by no code");

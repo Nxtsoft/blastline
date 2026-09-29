@@ -1,8 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { loadGraph } from "./graph.js";
-import { loadPathVerdicts } from "./paths.js";
+import { parseUnifiedDiff } from "./diff.js";
+import type { CodeGraph } from "./graph.js";
+import { loadGraph, nodesInFile } from "./graph.js";
+import type { PathVerdicts } from "./paths.js";
+import { isDeliberatelyIgnored, loadPathVerdicts } from "./paths.js";
+import type { Resolution } from "./references.js";
+import { resolveReferences } from "./references.js";
 import { fileMtimeMs, select } from "./select.js";
 import type { Selection } from "./types.js";
 import { unnamedFiles } from "./unnamed.js";
@@ -115,10 +120,12 @@ export function runSelection(o: RunOptions): Selection {
     // cgraph writes paths.json beside graph.json. Absent (an older cgraph, or a
     // hand-built graph) simply means no verdicts and today's behaviour.
     const pathVerdicts = loadPathVerdicts(graphPath);
+    const references = readersOf(diffText, graph, { repo, git, head, regexes, pathVerdicts });
 
     selection = select(diffText, {
       graph,
       ...(pathVerdicts !== undefined && { pathVerdicts }),
+      ...(references !== undefined && { references }),
       ...(baseGraph !== undefined && { baseGraph }),
       ...(regexes.length > 0 && { ignore: (p: string) => regexes.some((r) => r.test(p)) }),
       ...(o.maxFiles !== undefined && { maxFiles: o.maxFiles }),
@@ -139,6 +146,34 @@ export function runSelection(o: RunOptions): Selection {
     };
   }
   return markUnnamed(selection, git, head);
+}
+
+/**
+ * Readers of the changed files the graph has no node for, so selection can
+ * seed them instead of failing open. A failed search is not a graph failure
+ * and not a selection failure: it costs only the resolution -- those files fail
+ * open exactly as before -- and says so on stderr.
+ */
+function readersOf(
+  diffText: string,
+  graph: CodeGraph,
+  o: { repo: string; git: (...args: string[]) => string; head: string | undefined; regexes: RegExp[]; pathVerdicts: PathVerdicts | undefined },
+): Map<string, Resolution> | undefined {
+  const irrelevant = (p: string): boolean =>
+    o.regexes.some((r) => r.test(p)) || (o.pathVerdicts !== undefined && isDeliberatelyIgnored(o.pathVerdicts, p));
+  const hasNodes = (p: string): boolean => nodesInFile(graph, p).length > 0;
+  const unmapped = parseUnifiedDiff(diffText)
+    .filter((f) => f.status !== "deleted" && !hasNodes(f.path) && !irrelevant(f.path))
+    .map((f) => f.path);
+  if (unmapped.length === 0) return undefined;
+  const read = (p: string): string =>
+    o.head !== undefined ? o.git("show", `${o.head}:${p}`) : readFileSync(resolve(o.repo, p), "utf8");
+  try {
+    return resolveReferences(o.git, o.head, unmapped, { hasNodes, read });
+  } catch (e) {
+    process.stderr.write(`blastline: changed non-code files fail open; searching for their readers failed: ${(e as Error).message}\n`);
+    return undefined;
+  }
 }
 
 /**
