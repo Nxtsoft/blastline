@@ -9,7 +9,7 @@ import type { Resolution } from "./references.js";
 const ENV = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@x", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@x" };
 
 /** Source files the graph extracts; anything else has no node, like a real cgraph run. */
-const CODE = /\.(ts|js|kt|java|py|go)$/;
+const CODE = /\.(ts|js|kt|java|py|go|c)$/;
 
 /** Commit `files` to a fresh repo and resolve `paths` at HEAD. */
 function resolveIn(files: Record<string, string>, paths: string[], irrelevant: (p: string) => boolean = () => false): Map<string, Resolution> {
@@ -48,6 +48,24 @@ describe("resolveReferences: plain files", () => {
   it("does not count a comment as a reader", () => {
     const refs = resolveIn({ "data/rows.csv": "a\n", "src/a.ts": "// see rows.csv\n/* rows.csv */\n * rows.csv\n" }, ["data/rows.csv"]);
     expect(refs.get("data/rows.csv")).toEqual({ kind: "unresolved", why: "no code names it" });
+  });
+
+  // These read a file and start like a comment.
+  it("counts #include, //go:embed and /// <reference> as readers", () => {
+    const refs = resolveIn(
+      {
+        "native/tables.h": "int t[] = {1};\n",
+        "native/codec.c": '#include "tables.h"\nint f(void) { return t[0]; }\n',
+        "cmd/golden.json": "{}\n",
+        "cmd/golden.go": "package cmd\n\n//go:embed golden.json\nvar golden []byte\n",
+        "types/env.d.ts": "declare const x: number;\n",
+        "src/app.ts": '/// <reference path="../types/env.d.ts" />\nexport const y = x;\n',
+      },
+      ["native/tables.h", "cmd/golden.json", "types/env.d.ts"],
+    );
+    expect(readersOf(refs.get("native/tables.h"))).toEqual(["native/codec.c:1:name"]);
+    expect(readersOf(refs.get("cmd/golden.json"))).toEqual(["cmd/golden.go:3:name"]);
+    expect(readersOf(refs.get("types/env.d.ts"))).toEqual(["src/app.ts:1:name"]);
   });
 
   it("counts a list item that opens with a quote as a reader, not a comment", () => {

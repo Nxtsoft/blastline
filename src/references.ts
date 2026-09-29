@@ -71,8 +71,11 @@ interface Hit {
 const MAX_DEPTH = 3;
 
 // Only markers no code line starts with: a line opening with a quote is a
-// list item (`'rows.csv',`), not a comment, and must stay a reader.
-const COMMENT = /^\s*(#|\/\/|\/\*|\*|<!--|--(\s|$))/;
+// list item (`'rows.csv',`), not a comment, and must stay a reader. Directives
+// that look like comments load files, so they are not comments: C and
+// Objective-C `#include`/`#import`/`#embed`, Go `//go:embed`, TypeScript
+// `/// <reference path=...>`.
+const COMMENT = /^\s*(#(?!\s*(include|import|embed)\b)|\/\/(?!go:embed\b|\/\s*<reference\b)|\/\*|\*|<!--|--(\s|$))/;
 
 /** Fixed strings that pre-filter lines for WALK; the regex decides. */
 const WALK_MARKERS = [
