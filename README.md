@@ -60,7 +60,7 @@ Fail-open triggers, each a typed reason in the output:
 
 | Reason | Fires when |
 | --- | --- |
-| `unmapped-file` | a changed file has no graph node (configs, lockfiles, assets) — declare irrelevant paths with `--ignore`. One exception: a **CMake hunk that does nothing but register new test targets** is read rather than refused, and the tests it declares are selected (see below) |
+| `unmapped-file` | a changed file has no graph node (configs, lockfiles, assets) — declare irrelevant paths with `--ignore`. When nothing outside Markdown names a file or any folder above it (case ignored), and it is not on the never-list in `src/unnamed.ts` (Spring config, `src/*/resources/`, snapshots, `testdata`/`fixtures` folders, dependency manifests and lockfiles for JS, Python, JVM, Go, Rust, Ruby, PHP, .NET, Swift and Dart, build files such as `Makefile`, and test-runner and toolchain config), the comment offers it as a pattern to add under `ignore: |`; the run still fails open. One exception: a **CMake hunk that does nothing but register new test targets** is read rather than refused, and the tests it declares are selected (see below) |
 | `stale-graph` | the graph fails a content-root pin (`--expect-root`, or `--daemon-verify` against the live CGraph daemon), or `graph.json` is older than the head commit |
 | `sparse-graph` | the graph averages under 3 edges per file — an under-extracted graph produces subsets that look smart and are blind, so blastline refuses |
 | `disconnected-tests` | tests can forward-reach under 25% of the code's symbols — the graph passed the density floor but is blind for selection (how broken Go/Python extraction presented, and how every Rust graph presents today) |

@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { runSelection } from "./run.js";
@@ -80,5 +84,45 @@ index 3..4 100644
     expect(sel.kind).toBe("all");
     if (sel.kind !== "all") return;
     expect(sel.reasons[0]?.kind).toBe("invalid-ignore-pattern");
+  });
+
+  it("marks the unmapped files nothing at the range's head names", () => {
+    const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@x", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@x" };
+    const repo = join(mkdtempSync(join(tmpdir(), "blastline-run-")), "repo");
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env });
+    execFileSync("git", ["init", "-q", "-b", "main", repo]);
+    mkdirSync(join(repo, "deploy"));
+    writeFileSync(join(repo, "compose.yml"), "build: deploy/Dockerfile\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    writeFileSync(join(repo, "deploy/Dockerfile"), "FROM scratch\n");
+    writeFileSync(join(repo, "deploy/notes.txt"), "on-call rota\n");
+    writeFileSync(join(repo, "compose.yml"), "build: deploy/Dockerfile\nimage: x\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "head");
+
+    const sel = runSelection({ repo, range: "HEAD~1..HEAD", graphPath: FIXTURE, minDensity: 0 });
+    expect(sel.kind).toBe("all");
+    if (sel.kind !== "all") return;
+    const unmapped = sel.reasons.filter((r) => r.kind === "unmapped-file");
+    // compose.yml names the Dockerfile, and "deploy" names notes.txt's folder;
+    // nothing names compose.yml.
+    expect(unmapped).toEqual([
+      { kind: "unmapped-file", path: "compose.yml", unnamed: true },
+      { kind: "unmapped-file", path: "deploy/Dockerfile" },
+      { kind: "unmapped-file", path: "deploy/notes.txt" },
+    ]);
+  });
+
+  it("keeps the verdict and drops only the suggestion when the search cannot run", () => {
+    const withConfig = `diff --git a/deploy.yml b/deploy.yml
+index 3..4 100644
+--- a/deploy.yml
++++ b/deploy.yml
+@@ -1,0 +2,1 @@
++x: 1
+`;
+    const sel = runSelection({ repo: "/nonexistent-repo", diffText: withConfig, graphPath: FIXTURE, minDensity: 0 });
+    expect(sel).toEqual({ kind: "all", reasons: [{ kind: "unmapped-file", path: "deploy.yml" }] });
   });
 });
