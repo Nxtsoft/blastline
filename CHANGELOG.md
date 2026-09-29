@@ -6,7 +6,9 @@ The reader advice names the readers, not every module beside them.
 
 - A folder mention is followed segment by segment while it agrees with the file's path, and stops counting the moment it turns off: `@/lib/upload/grid` no longer counts as a way to `lib/upload/testdata/x.csv`. Before, only the first segment after the folder was checked, so every module importing a sibling was listed; on a real web-app PR a new test fixture listed 36 readers reaching 26 tests, now 13 reaching 11, with the test that loads it first.
 - Readers are ordered by evidence (named outright, then Spring profile and context, then path pieces), and the table shows the caveat that can hide tests (config that changes how tests run, a profile activated elsewhere) before noise.
-- Whether a file walks directories is read only when a mention needs it. Before, every file mentioning a parent folder was read: 5,000 `git show` calls and 32 seconds on a 5,000-file probe that found nothing.
+- A template or glob segment (`${kind}`, `*`) stands for one path component and the comparison continues past it; only `**` matches any depth. Before, any template counted at once, so every route under a Next.js `[uuid]` folder was a reader: on an app-router fixture, 227 readers become 27.
+- Whether a file walks directories is read only when a mention could count: never for a bare word (`new` in `new Map()`). Before, every file mentioning a parent folder was read: 5,000 `git show` calls and 32 seconds on a 5,000-file probe that found nothing; on the app-router fixture, 1,478 reads and 14 seconds become 235 and 3.
+- The shown caveat puts a truncated walk ("exceeded the traversal budget", "go deeper than") with the ones that can hide tests. `\bglob` no longer matches `globalThis`. `.gitignore` ignores a symlinked `node_modules`.
 
 ## 0.17.0
 

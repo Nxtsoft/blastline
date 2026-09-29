@@ -258,6 +258,25 @@ describe("renderComment: fail-open", () => {
     expect(md).toContain("src/test/ProbeTest.kt\nsrc/test/ProdTest.kt");
   });
 
+  it("shows a truncated walk before a reader the graph cannot follow", () => {
+    const md = renderComment(
+      {
+        kind: "all",
+        reasons: [
+          {
+            kind: "unmapped-file",
+            path: "data/rows.csv",
+            readers: [{ file: "src/a.ts", lines: [1], rule: "name" }],
+            readerTests: [],
+            caveats: ["src/b.ts reads it but has no graph node", "the walk from its readers exceeded the traversal budget"],
+          },
+        ],
+      },
+      ctx,
+    );
+    expect(md).toContain("| the walk from its readers exceeded the traversal budget; +1 more |");
+  });
+
   it("offers nothing when every unmapped file is named somewhere", () => {
     const md = renderComment({ kind: "all", reasons: [{ kind: "unmapped-file", path: "package.json" }] }, ctx);
     expect(md).not.toContain("named by no code");

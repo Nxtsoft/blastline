@@ -145,6 +145,29 @@ describe("resolveReferences: plain files", () => {
     expect(readersOf(refs.get("lib/upload/testdata/band.csv"))).toEqual(["lib/upload/grid.test.ts:1:name", "lib/upload/loader.ts:1:path-part"]);
   });
 
+  // Review of #51: a template or an app-router folder used to end the
+  // comparison and count at once, so every route under `[uuid]` was a reader.
+  it("keeps comparing past a template, and matches [param] and (group) folders as written", () => {
+    const fixture = "app/(shop)/new/testdata/band.csv";
+    const refs = resolveIn(
+      {
+        [fixture]: "a\n",
+        "app/(shop)/new/loader.ts": 'export const read = (n: string) => load(join(dir, "testdata/", n));\n',
+        "app/page.tsx": "import { Badge } from '@/app/(shop)/[id]/new/badge';\n",
+        "app/nav.ts": "router.push(`/app/${section}/new/checkout`);\n",
+        "app/all.test.ts": 'const cases = globSync("app/(shop)/**/*.csv");\n',
+        "app/kind.test.ts": "const rows = read(`app/(shop)/${kind}/testdata/band.csv`);\n",
+        "app/other.test.ts": "const rows = read(`app/(shop)/${kind}/testdata/other.csv`);\n",
+      },
+      [fixture],
+    );
+    expect(readersOf(refs.get(fixture))).toEqual([
+      "app/kind.test.ts:1:name",
+      "app/(shop)/new/loader.ts:1:path-part",
+      "app/all.test.ts:1:path-part",
+    ]);
+  });
+
   // Review: every file mentioning a parent folder was read to see whether it
   // walks directories -- 5,000 git shows to find nothing on a large repo.
   it("reads no file when no mention needs to know whether it walks", () => {

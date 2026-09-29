@@ -458,8 +458,8 @@ const READ_BY: Record<Reader["rule"], string> = {
  * before one about a reader the graph cannot follow, before noise.
  */
 function caveatWeight(caveat: string): number {
-  if (/can change how tests run|activates profile|through an expression/.test(caveat)) return 0;
-  if (/reaches no test|has no graph node|extends a context test|inherit context/.test(caveat)) return 1;
+  if (/can change how tests run|activates profile|through an expression|exceeded the traversal budget|go deeper than/.test(caveat)) return 0;
+  if (/reaches no test|has no graph node|extends a context test|inherit context|nothing found runs it/.test(caveat)) return 1;
   return 2;
 }
 
