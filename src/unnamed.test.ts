@@ -61,6 +61,45 @@ describe("unnamedFiles", () => {
     expect(unnamedFiles(git, "HEAD", ["db/seeds/047-new.sql"]).size).toBe(0);
   });
 
+  // Found in review: only the parent folder used to count, so a glob or walk
+  // naming a folder higher up read as "unnamed" and the files were offered.
+  it("treats a file as named when code names any folder above it", () => {
+    const { git } = repo({
+      "test/cases/users/alice.json": "{}\n",
+      "test/load.ts": 'glob.sync("cases/**/*.json");\n',
+      "pkg/parse/golden-cases/deep/t1.txt": "want\n",
+      "pkg/parse/parse_test.go": 'filepath.WalkDir("golden-cases", visit)\n',
+    });
+    expect(unnamedFiles(git, "HEAD", ["test/cases/users/alice.json", "pkg/parse/golden-cases/deep/t1.txt"]).size).toBe(0);
+  });
+
+  it("ignores case, since lookups on case-insensitive filesystems still find the file", () => {
+    const { git } = repo({ "assets/logo.png.txt": "x\n", "src/ui.ts": 'load("Logo.PNG.txt");\n' });
+    expect(unnamedFiles(git, "HEAD", ["assets/logo.png.txt"]).size).toBe(0);
+  });
+
+  // Test runners read these by convention: a snapshot, a folder of cases, and
+  // toolchain or build files that shape every test. Nothing names any of them.
+  it("never offers snapshots, fixture folders, or toolchain and build files", () => {
+    const conventional = [
+      "src/__snapshots__/foo.test.ts.snap",
+      "src/bar.test.ts.snap",
+      "test/fixtures/users/alice.json",
+      "pkg/parse/testdata/cases/t1.golden",
+      ".babelrc.json",
+      "Makefile",
+      "rust-toolchain.toml",
+      ".cargo/config.toml",
+      "phpunit.xml",
+      "pubspec.yaml",
+      "Package.resolved",
+      ".rspec",
+      ".coveragerc",
+    ];
+    const { git } = repo(Object.fromEntries(conventional.map((p) => [p, "x\n"])));
+    expect([...unnamedFiles(git, "HEAD", conventional)]).toEqual([]);
+  });
+
   // Named by nothing, yet read on every run: Spring picks up ./config/application.yml
   // by location, and a Thymeleaf view is loaded as "welcome", never "welcome.html".
   it("never offers a file a framework loads by convention", () => {
@@ -90,12 +129,12 @@ describe("unnamedFiles", () => {
   });
 
   it("searches the given revision, not the working tree", () => {
-    const { root, git } = repo({ "fixtures/rows.csv": "a,b\n", "src/app.ts": "export {};\n" });
+    const { root, git } = repo({ "sample/rows.csv": "a,b\n", "src/app.ts": "export {};\n" });
     // The only reference is in a file that is not committed, nor even tracked.
     writeFileSync(join(root, "src/new.ts"), 'load("rows.csv");\n');
-    expect([...unnamedFiles(git, "HEAD", ["fixtures/rows.csv"])]).toEqual(["fixtures/rows.csv"]);
+    expect([...unnamedFiles(git, "HEAD", ["sample/rows.csv"])]).toEqual(["sample/rows.csv"]);
     // Without a revision the working tree is searched, untracked files included.
-    expect(unnamedFiles(git, undefined, ["fixtures/rows.csv"]).size).toBe(0);
+    expect(unnamedFiles(git, undefined, ["sample/rows.csv"]).size).toBe(0);
   });
 
   it("propagates a search that could not run instead of calling everything unnamed", () => {

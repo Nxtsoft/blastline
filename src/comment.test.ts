@@ -211,11 +211,12 @@ describe("renderComment: fail-open", () => {
     );
     expect(md).toContain("3 files have no graph node");
     expect(md).toContain("**2 of them are named by no code or config**");
-    const block = md.slice(md.indexOf("```yaml"), md.indexOf("```", md.indexOf("```yaml") + 3));
+    expect(md).toContain("under the workflow's `ignore: |`");
+    const start = md.indexOf("```", md.indexOf("named by no code or config"));
+    const block = md.slice(start, md.indexOf("```", start + 3));
     expect(block.split("\n").slice(1)).toEqual([
-      "ignore: |",
-      "  ^docker-compose\\.prod\\.yml$",
-      "  ^openspec/changes/x/\\.openspec\\.yaml$",
+      "^docker-compose\\.prod\\.yml$",
+      "^openspec/changes/x/\\.openspec\\.yaml$",
       "",
     ]);
     // The named file stays listed, but is never offered.
@@ -225,7 +226,6 @@ describe("renderComment: fail-open", () => {
 
   it("offers nothing when every unmapped file is named somewhere", () => {
     const md = renderComment({ kind: "all", reasons: [{ kind: "unmapped-file", path: "package.json" }] }, ctx);
-    expect(md).not.toContain("```yaml");
     expect(md).not.toContain("named by no code");
   });
 

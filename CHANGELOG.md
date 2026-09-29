@@ -4,10 +4,10 @@
 
 The full-suite comment says which unmapped files nothing names, and gives their `ignore` patterns.
 
-- `unnamedFiles` in `src/unnamed.ts` runs one `git grep -F` at the range's head for each unmapped file's basename and its directory's name, outside Markdown and outside the file itself; a file nothing names gets `unnamed: true` on its `unmapped-file` reason (in `--json` and over MCP too). Files that affect tests without being named are never marked: Spring `application*`/`bootstrap*`/logging config, `src/*/resources/**`, `META-INF/`, manifests and lockfiles, Gradle build and wrapper files, test-runner and toolchain config, `.env*` other than templates.
-- The unmapped block lists them as anchored, escaped regexes under `ignore: |`, up to 20. Selection is unchanged: the run still fails open, and nothing is ignored until someone pastes the pattern.
+- `unnamedFiles` in `src/unnamed.ts` runs one case-insensitive `git grep -F` at the range's head for each unmapped file's basename and the name of every folder above it (loaders walk folders: a `fixtures` glob, `WalkDir("testdata")`), outside Markdown and outside the file itself; a file nothing names gets `unnamed: true` on its `unmapped-file` reason (in `--json` and over MCP too). Files that affect tests without being named are never marked: Spring `application*`/`bootstrap*`/logging config, `src/*/resources/**`, `META-INF/`, snapshots and `testdata`/`fixtures`/`golden` folders, manifests and lockfiles across ecosystems, build files (`Makefile`, `build.rs`, Gradle), test-runner and toolchain config (`.babelrc*`, `jest.config.*`, `phpunit.xml`, `rust-toolchain`, `.cargo/`, …), `.env*` other than templates.
+- The unmapped block lists them as anchored, escaped regexes to add under the workflow's `ignore: |`, up to 20. Selection is unchanged: the run still fails open, and nothing is ignored until someone pastes the pattern.
 - The search runs after selection and outside the graph's `try`, so a failed search drops only the suggestion (with a stderr line) and is never reported as an unreadable graph.
-- Replayed over the 30 full-suite PRs in six repositories running Blastline, each at its PR head: 7 of 90 unmapped entries offered, on three PRs of one Spring service (production and local-dev compose files, `.env.example`, openspec metadata), none read by a test.
+- Replayed over the 30 full-suite PRs in six repositories running Blastline, each at its PR head: 6 of 90 unmapped entries offered, on three PRs of one Spring service (production and local-dev compose files, `.env.example`), none read by a test.
 
 ## 0.15.0
 

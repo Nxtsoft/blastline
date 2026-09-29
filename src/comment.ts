@@ -432,11 +432,10 @@ function suggestIgnores(unnamed: string[]): string[] {
       ? "**1 of them is named by no code or config**"
       : `**${unnamed.length} of them are named by no code or config**`;
   return [
-    `${lead}: nothing outside Markdown mentions the file or its folder. Unless something loads ${unnamed.length === 1 ? "it" : "them"} by convention, ${unnamed.length === 1 ? "it is" : "they are"} likely safe to ignore:`,
+    `${lead}: nothing outside Markdown mentions the file or any folder above it. Unless something loads ${unnamed.length === 1 ? "it" : "them"} by convention, ${unnamed.length === 1 ? "it is" : "they are"} likely safe to ignore. Add ${unnamed.length === 1 ? "this line" : "these lines"} under the workflow's \`ignore: |\`:`,
     "",
-    "```yaml",
-    "ignore: |",
-    ...shown.map((p) => `  ${ignorePatternFor(p)}`),
+    "```",
+    ...shown.map((p) => ignorePatternFor(p)),
     "```",
     ...more,
     "",
