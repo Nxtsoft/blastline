@@ -66,10 +66,17 @@ export interface ChangedFileImpact {
   path: string;
   status: ChangedFile["status"];
   /**
-   * `ignored`: declared irrelevant by `--ignore`, or skipped by cgraph itself
-   * (paths.json). Never walked, so `symbols`, `reaches` and `tests` are empty.
+   * `ignored`: declared irrelevant by `--ignore`, skipped by cgraph itself
+   * (paths.json), or a manifest change shown to be inert (`manifest.ts`).
+   * Never walked, so `symbols`, `reaches` and `tests` are empty.
    */
   disposition: "mapped" | "ignored";
+  /**
+   * For a manifest change that only adds scripts (`manifest.ts`): why it can
+   * affect tests only through the code that names them. `ignored` when no code
+   * does; `mapped`, walked from those code lines, when some does.
+   */
+  why?: string;
   /** Labels of the changed symbols that seeded the walk; empty when only the file node did. */
   symbols: string[];
   /** Non-test files that transitively depend on the change, with the symbols reached in each. Absolute paths, like `blast`. */

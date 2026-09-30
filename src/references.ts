@@ -87,6 +87,11 @@ const MAX_EXPANSION = 5;
 // that look like comments load files, so they are not comments: C and
 // Objective-C `#include`/`#import`/`#embed`, Rust `#[...]`/`#![...]`
 // attributes, Go `//go:embed`, TypeScript `/// <reference path=...>`.
+/** True for a line that is only a comment (directives that load files excluded). */
+export function isComment(text: string): boolean {
+  return COMMENT.test(text);
+}
+
 const COMMENT = /^\s*(#(?!\s*(include|import|embed)\b|!?\[)|\/\/(?!go:embed\b|\/\s*<reference\b)|\/\*|\*|<!--|--(\s|$))/;
 
 /** A line that enumerates a directory or matches files by pattern. Case-insensitive: Go spells it `ReadDir`. */

@@ -1,0 +1,118 @@
+import { describe, expect, it } from "vitest";
+import { addedScriptsOnly, inertScriptAddition } from "./manifest.js";
+import type { Mention } from "./manifest.js";
+
+const manifest = (scripts: Record<string, string>, extra: Record<string, unknown> = {}) =>
+  `${JSON.stringify({ name: "app", scripts, dependencies: { next: "15.0.0" }, ...extra }, null, 2)}\n`;
+
+const BASE = manifest({ test: "vitest run", lint: "eslint ." });
+
+/** The manifest's own lines naming the new scripts, as git grep reports them. */
+function declarations(path: string, head: string, names: string[]): Map<string, Mention[]> {
+  const hits = new Map<string, Mention[]>();
+  head.split("\n").forEach((text, i) => {
+    for (const n of names) if (text.includes(n)) hits.set(n, [...(hits.get(n) ?? []), { file: path, line: i + 1, text }]);
+  });
+  return hits;
+}
+
+/** Which files the graph has nodes for. */
+const isCode = (file: string) => /\.(ts|js)$/.test(file);
+
+describe("addedScriptsOnly", () => {
+  it("returns the scripts a change only adds", () => {
+    const head = manifest({ test: "vitest run", lint: "eslint .", "docs:check": "bun run scripts/docs.ts" });
+    expect(addedScriptsOnly(BASE, head)).toEqual(new Map([["docs:check", "bun run scripts/docs.ts"]]));
+  });
+
+  it("refuses an edited or removed script", () => {
+    expect(addedScriptsOnly(BASE, manifest({ test: "vitest run --coverage", lint: "eslint .", x: "y" }))).toBeNull();
+    expect(addedScriptsOnly(BASE, manifest({ test: "vitest run", x: "y" }))).toBeNull();
+  });
+
+  // A dependency bump changes what every test runs against.
+  it("refuses any change outside scripts", () => {
+    const head = manifest({ test: "vitest run", lint: "eslint .", x: "y" }, { dependencies: { next: "15.1.0" } });
+    expect(addedScriptsOnly(BASE, head)).toBeNull();
+  });
+
+  it("refuses what it cannot parse", () => {
+    expect(addedScriptsOnly(BASE, "{ not json")).toBeNull();
+  });
+});
+
+describe("inertScriptAddition", () => {
+  const head = manifest({ test: "vitest run", lint: "eslint .", "docs:check": "bun run scripts/docs.ts" });
+
+  it("proves a new script nothing invokes inert", () => {
+    expect(inertScriptAddition("package.json", BASE, head, (n) => declarations("package.json", head, n), isCode)).toEqual({
+      why: "only adds scripts nothing runs: docs:check",
+      readers: [],
+    });
+  });
+
+  it("calls a formatting-only change inert", () => {
+    const reordered = `${JSON.stringify({ dependencies: { next: "15.0.0" }, scripts: { lint: "eslint .", test: "vitest run" }, name: "app" })}\n`;
+    expect(inertScriptAddition("package.json", BASE, reordered, () => new Map(), isCode)).toEqual({ why: "changes formatting only", readers: [] });
+  });
+
+  // npm and bun run `pretest` before `test`; hosts run `build` and friends.
+  it("refuses a script a package manager or host runs by name", () => {
+    for (const name of ["pretest", "postinstall", "prepare", "build", "vercel-build"]) {
+      const withHook = manifest({ test: "vitest run", lint: "eslint .", [name]: "node setup.js" });
+      expect(inertScriptAddition("package.json", BASE, withHook, (n) => declarations("package.json", withHook, n), isCode)).toBeNull();
+    }
+  });
+
+  it("refuses a new script a workflow invokes", () => {
+    const mentions = (n: string[]) => {
+      const hits = declarations("package.json", head, n);
+      hits.set("docs:check", [...(hits.get("docs:check") ?? []), { file: ".github/workflows/ci.yml", line: 9, text: "      - run: bun run docs:check" }]);
+      return hits;
+    };
+    expect(inertScriptAddition("package.json", BASE, head, mentions, isCode)).toBeNull();
+  });
+
+  // Another package's manifest can run it, and so can config keyed by it.
+  it("refuses a mention in the manifest that is not the new declaration", () => {
+    const withPipeline = manifest({ test: "vitest run", lint: "eslint .", "docs:check": "bun run scripts/docs.ts" }, { turbo: { pipeline: { "docs:check": {} } } });
+    const baseWithPipeline = manifest({ test: "vitest run", lint: "eslint ." }, { turbo: { pipeline: { "docs:check": {} } } });
+    expect(
+      inertScriptAddition("package.json", baseWithPipeline, withPipeline, (n) => declarations("package.json", withPipeline, n), isCode),
+    ).toBeNull();
+  });
+
+  // `ci` already called `docs:check`, which did not exist; adding it changes `ci`.
+  it("refuses a new script an existing one already calls", () => {
+    const base = manifest({ test: "vitest run", ci: "bun run docs:check && bun test" });
+    const withIt = manifest({ test: "vitest run", ci: "bun run docs:check && bun test", "docs:check": "bun run scripts/docs.ts" });
+    expect(inertScriptAddition("package.json", base, withIt, (n) => declarations("package.json", withIt, n), isCode)).toBeNull();
+  });
+
+  // Nothing runs either new script, so one calling the other runs nothing.
+  it("allows one new script to call another", () => {
+    const chained = manifest({ test: "vitest run", lint: "eslint .", "docs:check": "bun run scripts/docs.ts", "docs:all": "bun run docs:check" });
+    expect(inertScriptAddition("package.json", BASE, chained, (n) => declarations("package.json", chained, n), isCode)).toEqual({
+      why: "only adds scripts nothing runs: docs:all, docs:check",
+      readers: [],
+    });
+  });
+
+  // A helper that spawns the script, or a usage message naming it, is code the
+  // graph knows: its dependents are walked. A comment naming it is nothing.
+  it("returns code that names a new script as a reader, and skips comments", () => {
+    const mentions = (n: string[]) => {
+      const hits = declarations("package.json", head, n);
+      hits.set("docs:check", [
+        ...(hits.get("docs:check") ?? []),
+        { file: "scripts/docs.ts", line: 3, text: " *   bun run docs:check   # validate every doc" },
+        { file: "scripts/docs.ts", line: 40, text: "  console.error('fix the problems above first (bun run docs:check).');" },
+      ]);
+      return hits;
+    };
+    expect(inertScriptAddition("package.json", BASE, head, mentions, isCode)).toEqual({
+      why: "only adds scripts: docs:check; code naming them is walked",
+      readers: [{ file: "scripts/docs.ts", line: 40 }],
+    });
+  });
+});

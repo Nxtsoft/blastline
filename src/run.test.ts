@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -124,5 +124,85 @@ index 3..4 100644
 `;
     const sel = runSelection({ repo: "/nonexistent-repo", diffText: withConfig, graphPath: FIXTURE, minDensity: 0 });
     expect(sel).toEqual({ kind: "all", reasons: [{ kind: "unmapped-file", path: "deploy.yml" }] });
+  });
+
+  // The shape of a real web-app PR: two scripts wired into package.json beside
+  // a code change. The manifest used to fail the whole run open.
+  describe("a package.json change that only adds scripts nothing runs", () => {
+    const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@x", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@x" };
+    const pkg = (scripts: Record<string, string>, deps = "15.0.0") =>
+      `${JSON.stringify({ name: "app", scripts, dependencies: { next: deps } }, null, 2)}\n`;
+    const lib = (tag: string) => Array.from({ length: 20 }, (_, i) => `// ${i === 4 ? tag : "line"}`).join("\n") + "\n";
+
+    function range(head: { pkg: string; workflow?: string; lib?: string }): { repo: string; graphPath: string } {
+      const repo = join(mkdtempSync(join(tmpdir(), "blastline-manifest-")), "repo");
+      const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env });
+      execFileSync("git", ["init", "-q", "-b", "main", repo]);
+      mkdirSync(join(repo, "src"));
+      writeFileSync(join(repo, "package.json"), pkg({ test: "vitest run" }));
+      writeFileSync(join(repo, "src/lib.ts"), head.lib ?? lib("base"));
+      git("add", "-A");
+      git("commit", "-q", "-m", "base");
+      writeFileSync(join(repo, "package.json"), head.pkg);
+      writeFileSync(join(repo, "src/lib.ts"), head.lib ?? lib("head")); // line 5, inside parse
+      if (head.workflow !== undefined) {
+        mkdirSync(join(repo, ".github/workflows"), { recursive: true });
+        writeFileSync(join(repo, ".github/workflows/ci.yml"), head.workflow);
+      }
+      git("add", "-A");
+      git("commit", "-q", "-m", "head");
+      // Copied after the commits, so the graph is not older than the head.
+      const graphPath = join(repo, "graph.json");
+      copyFileSync(FIXTURE, graphPath);
+      return { repo, graphPath };
+    }
+
+    it("selects the code change's tests and says why the manifest cannot matter", () => {
+      const { repo, graphPath } = range({ pkg: pkg({ test: "vitest run", "docs:check": "bun run scripts/docs.ts" }) });
+      const sel = runSelection({ repo, range: "HEAD~1..HEAD", graphPath, minDensity: 0, ignore: ["^graph\\.json$"] });
+      expect(sel.kind).toBe("subset");
+      if (sel.kind !== "subset") return;
+      expect(sel.tests).toEqual(["/repo/src/lib.test.ts"]);
+      expect(sel.files.find((f) => f.path === "package.json")).toEqual({
+        path: "package.json",
+        status: "modified",
+        disposition: "ignored",
+        why: "only adds scripts nothing runs: docs:check",
+        symbols: [],
+        reaches: [],
+        tests: [],
+      });
+    });
+
+    // Only the manifest changes; code that already spawns the new script (line 5,
+    // inside parse) is walked like a changed line, and its test is selected.
+    it("walks the code that names a new script", () => {
+      const spawner = lib("x").replace("// x", 'spawnSync("bun", ["run", "docs:check"]);');
+      const { repo, graphPath } = range({ pkg: pkg({ test: "vitest run", "docs:check": "bun run scripts/docs.ts" }), lib: spawner });
+      const sel = runSelection({ repo, range: "HEAD~1..HEAD", graphPath, minDensity: 0, ignore: ["^graph\\.json$"] });
+      expect(sel.kind).toBe("subset");
+      if (sel.kind !== "subset") return;
+      expect(sel.tests).toEqual(["/repo/src/lib.test.ts"]);
+      expect(sel.files).toEqual([
+        expect.objectContaining({ path: "package.json", disposition: "mapped", why: "only adds scripts: docs:check; code naming them is walked", symbols: [] }),
+      ]);
+    });
+
+    it("still fails open when a workflow runs the new script", () => {
+      const { repo, graphPath } = range({
+        pkg: pkg({ test: "vitest run", "docs:check": "bun run scripts/docs.ts" }),
+        workflow: "jobs:\n  t:\n    steps:\n      - run: bun run docs:check\n",
+      });
+      const sel = runSelection({ repo, range: "HEAD~1..HEAD", graphPath, minDensity: 0, ignore: ["^graph\\.json$", "^\\.github/"] });
+      expect(sel.kind).toBe("all");
+      if (sel.kind !== "all") return;
+      expect(sel.reasons.map((r) => r.kind === "unmapped-file" && r.path)).toContain("package.json");
+    });
+
+    it("still fails open on a dependency change", () => {
+      const { repo, graphPath } = range({ pkg: pkg({ test: "vitest run", "docs:check": "x" }, "15.1.0") });
+      const sel = runSelection({ repo, range: "HEAD~1..HEAD", graphPath, minDensity: 0, ignore: ["^graph\\.json$"] });
+      expect(sel.kind).toBe("all");
+    });
   });
 });

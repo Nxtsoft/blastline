@@ -6,6 +6,7 @@ import { dependencyDirection, nodesInFile, translatePath } from "./graph.js";
 import { TraversalExhausted, dependents } from "./impact.js";
 import { mapDiffToSeeds, readerNodes } from "./mapping.js";
 import { isDeliberatelyIgnored } from "./paths.js";
+import type { ScriptAddition } from "./manifest.js";
 import type { Resolution } from "./references.js";
 import type { PathVerdicts } from "./paths.js";
 import type { ChangedFileImpact, FailOpenReason, FileEdge, Selection } from "./types.js";
@@ -15,6 +16,12 @@ export interface SelectOptions {
   baseGraph?: CodeGraph;
   /** repo-relative path predicate for files declared irrelevant by the user */
   ignore?: (path: string) => boolean;
+  /**
+   * Changed files shown to affect no test, with why: a `package.json` change
+   * that only adds scripts nothing runs (`manifest.ts`). Skipped like ignored
+   * files, with the reason shown instead of "ignored by policy".
+   */
+  inert?: Map<string, ScriptAddition>;
   /**
    * cgraph's own verdict per path, from paths.json beside graph.json. Unlike
    * `ignore` -- a user DECLARATION that a path is irrelevant -- an `ignored`
@@ -227,6 +234,7 @@ export function select(diffText: string, opts: SelectOptions): Selection {
   const mapping = mapDiffToSeeds(opts.graph, changed, {
     ...(opts.baseGraph !== undefined && { baseGraph: opts.baseGraph }),
     ...(ignore !== undefined && { ignore }),
+    ...(opts.inert !== undefined && { inert: opts.inert }),
   });
   reasons.push(...mapping.failOpen);
 
@@ -312,10 +320,12 @@ export function select(diffText: string, opts: SelectOptions): Selection {
     for (const file of changed) {
       const seeds = mapping.seedsByFile.get(file.path);
       if (seeds === undefined) {
-        files.push({ path: file.path, status: file.status, disposition: "ignored", symbols: [], reaches: [], tests: [] });
+        const why = opts.inert?.get(file.path)?.why;
+        files.push({ path: file.path, status: file.status, disposition: "ignored", ...(why !== undefined && { why }), symbols: [], reaches: [], tests: [] });
         continue;
       }
       const own = walk(seeds);
+      const proof = opts.inert?.get(file.path)?.why;
       const symbols = new Set<string>();
       for (const id of seeds) {
         const node = opts.graph.byId.get(id) ?? opts.baseGraph?.byId.get(id);
@@ -325,7 +335,9 @@ export function select(diffText: string, opts: SelectOptions): Selection {
         path: file.path,
         status: file.status,
         disposition: "mapped",
-        symbols: [...symbols].sort(),
+        // A manifest walked through the code naming its new scripts changed no symbol of its own.
+        symbols: proof !== undefined ? [] : [...symbols].sort(),
+        ...(proof !== undefined && { why: proof }),
         reaches: [...own.reached.entries()]
           .map(([f, syms]) => ({ file: f, symbols: [...syms].sort() }))
           .sort((a, b) => a.file.localeCompare(b.file)),

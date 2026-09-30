@@ -2,6 +2,7 @@ import { declaredTests, isCMakePath } from "./cmake.js";
 import { isTestPath } from "./detect.js";
 import type { CodeGraph, GraphNode } from "./graph.js";
 import { nodesInFile } from "./graph.js";
+import type { ScriptAddition } from "./manifest.js";
 import type { Reader } from "./references.js";
 import type { ChangedFile, FailOpenReason } from "./types.js";
 
@@ -113,7 +114,7 @@ function* linesOf(start: number, end: number): Generator<number> {
 export function mapDiffToSeeds(
   graph: CodeGraph,
   changed: ChangedFile[],
-  opts: { baseGraph?: CodeGraph; ignore?: (path: string) => boolean } = {},
+  opts: { baseGraph?: CodeGraph; ignore?: (path: string) => boolean; inert?: Map<string, ScriptAddition> } = {},
 ): MappingResult {
   const seeds = new Set<string>();
   const seedsByFile = new Map<string, Set<string>>();
@@ -121,12 +122,27 @@ export function mapDiffToSeeds(
 
   for (const file of changed) {
     if (opts.ignore?.(file.path) && opts.ignore?.(file.oldPath)) continue;
+    // A manifest change that only adds scripts (manifest.ts): nothing to walk
+    // when no code names them, else the code lines that do, like changed lines.
+    const addition = opts.inert?.get(file.path);
+    if (addition !== undefined && addition.readers.length === 0) continue;
     const own = new Set<string>();
     seedsByFile.set(file.path, own);
     const seed = (id: string): void => {
       seeds.add(id);
       own.add(id);
     };
+
+    if (addition !== undefined) {
+      const readers: Reader[] = addition.readers.map((r) => ({ file: r.file, lines: [r.line], rule: "name" }));
+      const byReader = readerNodes(graph, readers);
+      if (byReader.size < new Set(readers.map((r) => r.file)).size) {
+        failOpen.push({ kind: "unmapped-file", path: file.path }); // a reader the graph lost
+        continue;
+      }
+      for (const ids of byReader.values()) for (const id of ids) seed(id);
+      continue;
+    }
 
     const headNodes = file.status === "deleted" ? [] : nodesInFile(graph, file.path);
     const baseNodes = opts.baseGraph ? nodesInFile(opts.baseGraph, file.oldPath) : [];
