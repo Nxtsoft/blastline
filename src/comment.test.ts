@@ -145,6 +145,23 @@ describe("renderComment: subset", () => {
   });
 });
 
+describe("renderComment: a file shown to affect no test", () => {
+  it("gets its own row with the proof, apart from the policy count", () => {
+    const md = renderComment(
+      {
+        ...subset,
+        files: [
+          ...(subset.kind === "subset" ? subset.files : []),
+          { path: "package.json", status: "modified", disposition: "ignored", why: "only adds scripts nothing runs: docs:check", symbols: [], reaches: [], tests: [] },
+        ],
+      },
+      ctx,
+    );
+    expect(md).toContain("2 ignored by policy, 1 shown to affect no test");
+    expect(md).toContain("| | `package.json` | only adds scripts nothing runs: docs:check | | 0 |");
+  });
+});
+
 describe("renderComment: fail-open", () => {
   it("renders every reason kind as a cause with an action, without throwing", () => {
     const md = renderComment(

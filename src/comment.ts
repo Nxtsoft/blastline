@@ -156,7 +156,10 @@ function symbolsCell(symbols: string[], limit = 3): string {
 }
 
 /** Rows for ignored files, grouped by top-level directory so ten spec files are one line. */
-function ignoredRows(files: ChangedFileImpact[], why = false): string[] {
+function ignoredRows(all: ChangedFileImpact[], why = false): string[] {
+  // A file that proved itself inert gets its own row with the proof.
+  const proven = all.filter((f) => f.why !== undefined).map((f) => `| | ${code(f.path)} | ${cell(f.why as string)} |${why ? " |" : ""} | 0 |`);
+  const files = all.filter((f) => f.why === undefined);
   const topOf = (path: string): string => (path.includes("/") ? (path.split("/")[0] as string) : ".");
   const byTop = new Map<string, string[]>();
   for (const f of files) byTop.set(topOf(f.path), [...(byTop.get(topOf(f.path)) ?? []), f.path]);
@@ -165,7 +168,8 @@ function ignoredRows(files: ChangedFileImpact[], why = false): string[] {
     .map(([top, paths]) => {
       const what = paths.length === 1 ? code(paths[0] as string) : `${plural(paths.length, "file")} under ${code(top === "." ? "the repo root" : `${top}/`)}`;
       return `| | ${cell(what)} | ignored by policy |${why ? " |" : ""} | 0 |`;
-    });
+    })
+    .concat(proven);
 }
 
 type Subset = Extract<Selection, { kind: "subset" }>;
@@ -225,7 +229,8 @@ function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolCha
   const summaryTitle = ctx.prNumber !== undefined && at ? `PR #${ctx.prNumber} at ${at}` : at ? `at ${at}` : code(ctx.range);
   const changedCell = [
     `${plural(selection.files.length, "file")}: ${mapped.length} mapped to ${plural(symbolTotal, "symbol")}`,
-    ignored.length > 0 ? `${ignored.length} ignored by policy` : "",
+    ignored.some((f) => f.why === undefined) ? `${ignored.filter((f) => f.why === undefined).length} ignored by policy` : "",
+    ignored.some((f) => f.why !== undefined) ? `${ignored.filter((f) => f.why !== undefined).length} shown to affect no test` : "",
   ]
     .filter(Boolean)
     .join(", ");
@@ -258,7 +263,7 @@ function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolCha
     ...readingOrder(mapped, selection.edges, ctx.repo).map(({ file: f, after }) => {
       const read = after ? `with ${code(short(after.path))}` : String(++position);
       const name = links.path(f.path, short(f.path)) + (f.status === "added" ? " (new)" : f.status === "deleted" ? " (deleted)" : "");
-      const what = isTestFile(f) ? "test code, selected directly" : symbols ? changeCell(f.path, symbols, f.symbols) : symbolsCell(f.symbols);
+      const what = f.why !== undefined ? f.why : isTestFile(f) ? "test code, selected directly" : symbols ? changeCell(f.path, symbols, f.symbols) : symbolsCell(f.symbols);
       const reaches = f.reaches.length === 0 ? "" : plural(f.reaches.length, "file");
       return `| ${read} | ${cell(name)} | ${cell(what)} |${why ? ` ${whyCell(f.path, reasons)} |` : ""} ${reaches} | ${f.tests.length} |`;
     }),

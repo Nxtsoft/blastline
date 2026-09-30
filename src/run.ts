@@ -8,6 +8,8 @@ import type { PathVerdicts } from "./paths.js";
 import { isDeliberatelyIgnored, loadPathVerdicts } from "./paths.js";
 import type { Resolution } from "./references.js";
 import { resolveReferences } from "./references.js";
+import type { ScriptAddition } from "./manifest.js";
+import { inertScriptAddition } from "./manifest.js";
 import { fileMtimeMs, select } from "./select.js";
 import type { Selection } from "./types.js";
 import { unnamedFiles } from "./unnamed.js";
@@ -120,12 +122,16 @@ export function runSelection(o: RunOptions): Selection {
     // cgraph writes paths.json beside graph.json. Absent (an older cgraph, or a
     // hand-built graph) simply means no verdicts and today's behaviour.
     const pathVerdicts = loadPathVerdicts(graphPath);
-    const references = readersOf(diffText, graph, { repo, git, head, regexes, pathVerdicts });
+    // A supplied diff is judged as supplied: the range, if any, is not what changed.
+    const suppliedDiff = o.diffText !== undefined || o.diffFile !== undefined;
+    const inert = inertManifests(diffText, git, suppliedDiff ? undefined : o.range, (p) => nodesInFile(graph, p).length > 0);
+    const references = readersOf(diffText, graph, { repo, git, head, regexes, pathVerdicts, inert });
 
     selection = select(diffText, {
       graph,
       ...(pathVerdicts !== undefined && { pathVerdicts }),
       ...(references !== undefined && { references }),
+      ...(inert.size > 0 && { inert }),
       ...(baseGraph !== undefined && { baseGraph }),
       ...(regexes.length > 0 && { ignore: (p: string) => regexes.some((r) => r.test(p)) }),
       ...(o.maxFiles !== undefined && { maxFiles: o.maxFiles }),
@@ -157,13 +163,13 @@ export function runSelection(o: RunOptions): Selection {
 function readersOf(
   diffText: string,
   graph: CodeGraph,
-  o: { repo: string; git: (...args: string[]) => string; head: string | undefined; regexes: RegExp[]; pathVerdicts: PathVerdicts | undefined },
+  o: { repo: string; git: (...args: string[]) => string; head: string | undefined; regexes: RegExp[]; pathVerdicts: PathVerdicts | undefined; inert: Map<string, ScriptAddition> },
 ): Map<string, Resolution> | undefined {
   const irrelevant = (p: string): boolean =>
     o.regexes.some((r) => r.test(p)) || (o.pathVerdicts !== undefined && isDeliberatelyIgnored(o.pathVerdicts, p));
   const hasNodes = (p: string): boolean => nodesInFile(graph, p).length > 0;
   const unmapped = parseUnifiedDiff(diffText)
-    .filter((f) => f.status !== "deleted" && !hasNodes(f.path) && !irrelevant(f.path))
+    .filter((f) => f.status !== "deleted" && !hasNodes(f.path) && !irrelevant(f.path) && !o.inert.has(f.path))
     .map((f) => f.path);
   if (unmapped.length === 0) return undefined;
   const read = (p: string): string =>
@@ -174,6 +180,51 @@ function readersOf(
     process.stderr.write(`blastline: changed non-code files fail open; searching for their readers failed: ${(e as Error).message}\n`);
     return undefined;
   }
+}
+
+/**
+ * `package.json` files whose change only adds scripts nothing runs, with why
+ * (see `manifest.ts`). Only a two-dot range has a base to compare against; a
+ * supplied diff, a three-dot range, an added, deleted or renamed manifest, and
+ * any failed read leave the file to fail open as before.
+ */
+function inertManifests(
+  diffText: string,
+  git: (...args: string[]) => string,
+  range: string | undefined,
+  isCode: (path: string) => boolean,
+): Map<string, ScriptAddition> {
+  const inert = new Map<string, ScriptAddition>();
+  const ends = range?.split("..");
+  if (ends === undefined || ends.length !== 2 || ends[0] === "" || ends[1] === "" || range?.includes("...")) return inert;
+  const [base, head] = ends as [string, string];
+  const manifests = parseUnifiedDiff(diffText).filter((f) => f.status === "modified" && /(^|\/)package\.json$/.test(f.path));
+  for (const file of manifests) {
+    try {
+      const why = inertScriptAddition(file.path, git("show", `${base}:${file.path}`), git("show", `${head}:${file.path}`), (names) => {
+        const hits = new Map<string, { file: string; line: number; text: string }[]>();
+        let out = "";
+        try {
+          out = git("grep", "-I", "-F", "-n", "-z", "--no-color", ...names.flatMap((n) => ["-e", n]), head, "--", ".", ":!*.md", ":!*.mdx");
+        } catch (e) {
+          if ((e as { status?: number }).status !== 1) throw e; // 1: no line matched
+        }
+        // Each hit is `<rev>:<path>\0<line>\0<text>`.
+        for (const raw of out.split("\n")) {
+          const a = raw.indexOf("\0");
+          const b = raw.indexOf("\0", a + 1);
+          if (a < 0 || b < 0) continue;
+          const hit = { file: raw.slice(head.length + 1, a), line: Number(raw.slice(a + 1, b)), text: raw.slice(b + 1) };
+          for (const n of names) if (hit.text.includes(n)) hits.set(n, [...(hits.get(n) ?? []), hit]);
+        }
+        return hits;
+      }, isCode);
+      if (why !== null) inert.set(file.path, why);
+    } catch (e) {
+      process.stderr.write(`blastline: ${file.path} fails open; comparing it failed: ${(e as Error).message}\n`);
+    }
+  }
+  return inert;
 }
 
 /**
