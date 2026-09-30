@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -134,7 +134,7 @@ index 3..4 100644
       `${JSON.stringify({ name: "app", scripts, dependencies: { next: deps } }, null, 2)}\n`;
     const lib = (tag: string) => Array.from({ length: 20 }, (_, i) => `// ${i === 4 ? tag : "line"}`).join("\n") + "\n";
 
-    function range(head: { pkg: string; workflow?: string; lib?: string }): { repo: string; graphPath: string } {
+    function range(head: { pkg: string; workflow?: string; lib?: string; extra?: Record<string, string> }): { repo: string; graphPath: string } {
       const repo = join(mkdtempSync(join(tmpdir(), "blastline-manifest-")), "repo");
       const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env });
       execFileSync("git", ["init", "-q", "-b", "main", repo]);
@@ -145,6 +145,10 @@ index 3..4 100644
       git("commit", "-q", "-m", "base");
       writeFileSync(join(repo, "package.json"), head.pkg);
       writeFileSync(join(repo, "src/lib.ts"), head.lib ?? lib("head")); // line 5, inside parse
+      for (const [path, text] of Object.entries(head.extra ?? {})) {
+        mkdirSync(join(repo, path, ".."), { recursive: true });
+        writeFileSync(join(repo, path), text);
+      }
       if (head.workflow !== undefined) {
         mkdirSync(join(repo, ".github/workflows"), { recursive: true });
         writeFileSync(join(repo, ".github/workflows/ci.yml"), head.workflow);
@@ -154,6 +158,10 @@ index 3..4 100644
       // Copied after the commits, so the graph is not older than the head.
       const graphPath = join(repo, "graph.json");
       copyFileSync(FIXTURE, graphPath);
+      // Pinned an hour ahead: the stale-graph guard compares whole-second commit
+      // times, and a copy in the commit's own second must not read as older.
+      const later = new Date(Date.now() + 3_600_000);
+      utimesSync(graphPath, later, later);
       return { repo, graphPath };
     }
 
@@ -188,6 +196,16 @@ index 3..4 100644
       ]);
     });
 
+    // Review of #52: code running scripts through a variable runner is walked.
+    it("walks code that runs scripts through a variable runner", () => {
+      const runner = lib("x").replace("// x", "execSync(`${pm} run ${name}`);");
+      const { repo, graphPath } = range({ pkg: pkg({ test: "vitest run", "docs:check": "bun run scripts/docs.ts" }), lib: runner });
+      const sel = runSelection({ repo, range: "HEAD~1..HEAD", graphPath, minDensity: 0, ignore: ["^graph\\.json$"] });
+      expect(sel.kind).toBe("subset");
+      if (sel.kind !== "subset") return;
+      expect(sel.tests).toEqual(["/repo/src/lib.test.ts"]);
+    });
+
     it("still fails open when a workflow runs the new script", () => {
       const { repo, graphPath } = range({
         pkg: pkg({ test: "vitest run", "docs:check": "bun run scripts/docs.ts" }),
@@ -207,6 +225,26 @@ index 3..4 100644
       const sel = runSelection({ repo, range: "HEAD~1..HEAD", diffText: bump, graphPath, minDensity: 0 });
       expect(sel.kind).toBe("all");
     });
+
+    // Review of #52: CI running scripts by a name chosen at run time picks up
+    // a new one, however the runner is spelled.
+    for (const [file, text] of [
+      ["package.json", ""],
+      ["scripts/ci.sh", "for s in $SUITES; do echo $s; done | xargs -I{} npm run {}\n"],
+      ["justfile", "e2e suite:\n  npm run {{suite}}\n"],
+      ["scripts/ws.sh", 'for s in $SUITES; do npm run -w web "$s"; done\n'],
+      ["scripts/pipe.sh", "echo $SUITES | xargs -n1 pnpm run\n"],
+      [".github/workflows/suites.yml", "jobs:\n  e2e:\n    steps:\n      - run: ${{ env.PM }} run ${{ matrix.suite }}\n"],
+      ["Makefile", "NPM ?= npm\ne2e:\n\t$(NPM) run $(SUITE)\n"],
+    ] as const) {
+      it(`fails open when ${file} runs scripts by a name chosen at run time`, () => {
+        const scripts: Record<string, string> = { test: "vitest run", "docs:check": "bun run scripts/docs.ts" };
+        if (file === "package.json") scripts["ci"] = 'for s in $SUITES; do "$npm_execpath" run $s; done';
+        const { repo, graphPath } = range({ pkg: pkg(scripts), ...(file !== "package.json" && { extra: { [file]: text } }) });
+        const sel = runSelection({ repo, range: "HEAD~1..HEAD", graphPath, minDensity: 0, ignore: ["^graph\\.json$"] });
+        expect(sel.kind).toBe("all");
+      });
+    }
 
     it("still fails open on a dependency change", () => {
       const { repo, graphPath } = range({ pkg: pkg({ test: "vitest run", "docs:check": "x" }, "15.1.0") });
