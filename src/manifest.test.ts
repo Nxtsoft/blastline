@@ -66,6 +66,13 @@ describe("inertScriptAddition", () => {
     expect(addedScriptsOnly(BASE, scriptsSwapped)).toBeNull();
   });
 
+  it("refuses a new script whose name splits on other separators", () => {
+    for (const name of ["test/e2e", "test.e2e", "test e2e"]) {
+      const withIt = manifest({ test: "vitest run", lint: "eslint .", [name]: "playwright test" });
+      expect(inertScriptAddition("package.json", BASE, withIt, (n) => declarations("package.json", withIt, n), isCode)).toBeNull();
+    }
+  });
+
   it("does not let a prototype name skip the check", () => {
     const withIt = manifest({ test: "vitest run", lint: "eslint .", constructor: "node ci.js" });
     expect(addedScriptsOnly(BASE, withIt)).toEqual(new Map([["constructor", "node ci.js"]]));

@@ -170,6 +170,9 @@ export function inertScriptAddition(
   if (scripts === null) return null;
   const added = [...scripts.keys()];
   if (added.some((name) => RUN_BY_CONVENTION.test(name))) return null;
+  // Patterns are matched on `:`, `-` and `_`; a name split some other way
+  // (`test/e2e`, `test.e2e`) could fall under a pattern this cannot read.
+  if (added.some((name) => !/^[A-Za-z0-9:_-]+$/.test(name))) return null;
   const segments = [...new Set(added.flatMap((n) => { const segs = segmentsOf(n); return [segs[0] ?? n, segs[segs.length - 1] ?? n]; }))];
   const hits = mentions([...new Set([...added, ...segments, ...PATTERN_RUNNERS])]);
   const readers: { file: string; line: number }[] = [];
