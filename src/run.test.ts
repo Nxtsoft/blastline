@@ -222,6 +222,8 @@ index 3..4 100644
       ["package.json", ""],
       ["scripts/ci.sh", "for s in $SUITES; do echo $s; done | xargs -I{} npm run {}\n"],
       ["justfile", "e2e suite:\n  npm run {{suite}}\n"],
+      ["scripts/ws.sh", 'for s in $SUITES; do npm run -w web "$s"; done\n'],
+      ["scripts/pipe.sh", "echo $SUITES | xargs -n1 pnpm run\n"],
     ] as const) {
       it(`fails open when ${file} runs scripts by a name chosen at run time`, () => {
         const scripts: Record<string, string> = { test: "vitest run", "docs:check": "bun run scripts/docs.ts" };

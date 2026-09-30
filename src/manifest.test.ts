@@ -193,6 +193,19 @@ describe("inertScriptAddition", () => {
       ["Taskfile.yml", "      - npm run {{.SUITE}}"],
       ["scripts/ci.sh", '  "$PM" run "$s"'],
       ["scripts/ci.sh", '  ${PM:-npm} run "$s"'],
+      // Review of #52, round 5.
+      ["scripts/ci.sh", '  npm run -w web "$s"'],
+      ["scripts/ci.sh", '  npm run --workspace web "$s"'],
+      ["scripts/ci.sh", '  pnpm run --filter web "$s"'],
+      ["scripts/ci.sh", "  echo $SUITES | xargs -n1 pnpm run"],
+      ["scripts/ci.sh", "  echo $SUITES | xargs -n1 bun run"],
+      ["scripts/ci.sh", "  echo $SUITES | xargs -n1 yarn"],
+      ["scripts/ci.sh", '  npm run "${s//-/:}"'],
+      ["scripts/ci.sh", "  npm run `cat suite.txt`"],
+      ["ci/run.cmd", "npm run !SUITE!"],
+      // A computed path could be anything, so it errs wide.
+      [".github/workflows/ci.yml", '        run: bun run "scripts/$TOOL.ts"'],
+      [".github/workflows/ci.yml", "          npm run \\"],
     ];
     for (const [file, text] of cases) {
       const mentions = (n: string[]) => {
@@ -206,7 +219,8 @@ describe("inertScriptAddition", () => {
 
   // Found on a real repo: a file run with an expanded argument is not a script run.
   it("does not read a file run's arguments as a script name", () => {
-    for (const text of ['        run: bun run scripts/select-e2e.ts --base "$BASE_SHA"', '        run: bun run "scripts/$TOOL.ts"', "  pnpm -r run scripts/sync.ts --env $ENV"]) {
+    // Found on a real repo: the GitHub CLI's `workflow run` runs no package script.
+    for (const text of ['        run: bun run scripts/select-e2e.ts --base "$BASE_SHA"', "  pnpm -r run scripts/sync.ts --env $ENV", '  gh workflow run promote.yml --repo "$repo" -f target=staging', "  docker run --rm $IMAGE", "  <Button onClick={() => go(id)}>Dry run {count}</Button>", "    return `Enforce ${noun}? The backfill must have run for this org.`;"]) {
       const mentions = (n: string[]) => {
         const hits = declarations("package.json", head, n);
         for (const needle of n) if (text.includes(needle)) hits.set(needle, [...(hits.get(needle) ?? []), { file: ".github/workflows/test.yml", line: 239, text }]);

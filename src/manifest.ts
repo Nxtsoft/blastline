@@ -89,38 +89,65 @@ const PM_SCRIPT_ARG = new RegExp(
 const RUNS_SCRIPT_TOOL = new RegExp(`${COMMAND_START}(${SCRIPT_TOOLS.join("|")})(@\\S*)?(\\s|$)`);
 
 /** Placeholders a shell, CI, task runner or xargs fills in at run time. */
-const PLACEHOLDER = /\$|\{|:::|%\w+%/;
+const PLACEHOLDER = /\$|\{|:::|%\w+%|!\w+!|`/;
 
-/** The argument after each `run` / `run-script`, past flags and `--`. */
-const RUN_ARGUMENT = /\brun(?:-script)?\s+(?:(?:-{1,2}[\w-]*(?:=\S+)?)\s+)*([^\s]+)/g;
+/** A word that runs package scripts: a package manager (by path, with a version) or a placeholder standing for one. */
+function runsPackages(word: string): boolean {
+  // A variable, not any brace: JSX `{count}` before "run" is not a runner.
+  // Quotes may arrive escaped, as inside a package.json string (`\\"$npm_execpath\\"`).
+  const bare = word.replace(/^(\\?["'])+|(\\?["'])+$/g, "");
+  return /^(?:[\w./-]*\/)?(npm|pnpm|yarn|bun)(@\S*)?$/.test(bare) || /^(\$\{?\w+(?::?-[^}]*)?\}?|%\w+%)$/.test(bare);
+}
 
 /**
- * A script run whose name is decided at run time. Whatever word comes before
- * it -- `npm`, `pnpm -r`, `"$npm_execpath"`, `${PM:-npm}`, `xargs -I{} npm` --
- * the argument after every `run` or `run-script` is judged: a placeholder in it
+ * A script run whose name is decided at run time. For every `run` or
+ * `run-script` that a package manager or a placeholder for one precedes in its
+ * command -- `npm`, `pnpm -r`, `"$npm_execpath"`, `${PM:-npm}`, `xargs -I{} npm`
+ * -- every argument up to the end of the command is judged: a placeholder in it
  * (`"$s"`, `${{ matrix.app }}:e2e`, `{}`, `{{suite}}`, `%SUITE%`) or a pnpm
  * `/regex/` means no search for a new name can rule it out. So does a
  * placeholder or regex as a package manager's first argument (`yarn "$s"`),
- * or any placeholder given to a script tool. This errs wide -- `docker run
- * $IMAGE` counts -- except that a file path after `run`
+ * or any placeholder given to a script tool. `gh workflow run` and `docker run`
+ * run no package scripts. This errs wide -- `npm run build -- --env=$ENV`
+ * counts -- except that a file path with no placeholder after `run`
  * (`bun run scripts/x.ts --base "$SHA"`) runs a file, not a script.
  */
 function runsDynamically(text: string): boolean {
   const decidedAtRunTime = (raw: string): boolean => {
-    const arg = raw.replace(/^["'`]+|["'`,;)]+$/g, "");
+    // A trailing backtick closes a template literal; a leading one opens a command substitution.
+    const arg = raw.replace(/^["']+|["'`,;).]+$/g, "");
     if (arg === "run" || arg === "run-script") return false;
-    // A path, even a computed one, is a file; a new script named with `/` fails open anyway.
-    const isFile = !arg.startsWith("/") && (arg.includes("/") || /\.(m?[jt]sx?|c[jt]s)$/.test(arg));
-    return !isFile && (PLACEHOLDER.test(arg) || /^\/.+\/$/.test(arg));
+    return PLACEHOLDER.test(arg) || /^\/.+\/$/.test(arg);
   };
-  for (const m of text.matchAll(RUN_ARGUMENT)) if (decidedAtRunTime(m[1] ?? "")) return true;
+  // Each command on the line: a `run` counts when a package manager, or a
+  // placeholder for one, comes before it (`pnpm -r run`, `"$PM" run`,
+  // `xargs -I{} npm run`); `gh workflow run` and `docker run` do not.
+  for (const command of text.split(/[;&|]+/)) {
+    const at = /\brun(?:-script)?(?=\s|$)/.exec(command);
+    if (at === null) continue;
+    const before = command.slice(0, at.index).trim().split(/\s+/);
+    if (!before.some(runsPackages)) continue;
+    const rest = command.slice(at.index + at[0].length);
+    // `run \` continues on the next line, which this line cannot see.
+    if (/^\s*\\\s*$/.test(rest)) return true;
+    const args = rest.trim().split(/\s+/).filter((a) => a !== "");
+    const first = args.find((a) => !a.startsWith("-"))?.replace(/^["'`]+|["'`]+$/g, "") ?? "";
+    // A path with no placeholder runs a file (`bun run scripts/x.ts --base "$SHA"`).
+    if (!PLACEHOLDER.test(first) && !first.startsWith("/") && (first.includes("/") || /\.(m?[jt]sx?|c[jt]s)$/.test(first))) continue;
+    // Otherwise any placeholder in the command counts, so a flag's value cannot hide the name.
+    if (args.some(decidedAtRunTime)) return true;
+  }
   for (const m of text.matchAll(PM_SCRIPT_ARG)) if (decidedAtRunTime(m[4] ?? "")) return true;
   return RUNS_SCRIPT_TOOL.test(text) && PLACEHOLDER.test(text);
 }
 
 /** A line that enumerates a manifest's scripts (`.scripts | keys`, `Object.keys(pkg.scripts)`), to run or filter them. */
 function listsScripts(text: string): boolean {
-  return /\.scripts\b|\[\s*["']scripts["']\s*\]|\bscripts\s*\|\s*(keys|to_entries)|\bnpm\s+run\s*(-l|--list)?\s*$/.test(text);
+  return (
+    /\.scripts\b|\[\s*["']scripts["']\s*\]|\bscripts\s*\|\s*(keys|to_entries)|\bnpm\s+run\s*(-l|--list)?\s*$/.test(text) ||
+    // Names piped in: `xargs -n1 pnpm run`, `parallel yarn`.
+    /\b(xargs|parallel)\b.*\b(npm|pnpm|yarn|bun)(\s+run(-script)?)?\s*$/.test(text)
+  );
 }
 
 /** Needles that find the lines `runsDynamically` and `listsScripts` judge. */
