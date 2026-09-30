@@ -196,6 +196,16 @@ index 3..4 100644
       ]);
     });
 
+    // Review of #52: code running scripts through a variable runner is walked.
+    it("walks code that runs scripts through a variable runner", () => {
+      const runner = lib("x").replace("// x", "execSync(`${pm} run ${name}`);");
+      const { repo, graphPath } = range({ pkg: pkg({ test: "vitest run", "docs:check": "bun run scripts/docs.ts" }), lib: runner });
+      const sel = runSelection({ repo, range: "HEAD~1..HEAD", graphPath, minDensity: 0, ignore: ["^graph\\.json$"] });
+      expect(sel.kind).toBe("subset");
+      if (sel.kind !== "subset") return;
+      expect(sel.tests).toEqual(["/repo/src/lib.test.ts"]);
+    });
+
     it("still fails open when a workflow runs the new script", () => {
       const { repo, graphPath } = range({
         pkg: pkg({ test: "vitest run", "docs:check": "bun run scripts/docs.ts" }),
@@ -224,6 +234,8 @@ index 3..4 100644
       ["justfile", "e2e suite:\n  npm run {{suite}}\n"],
       ["scripts/ws.sh", 'for s in $SUITES; do npm run -w web "$s"; done\n'],
       ["scripts/pipe.sh", "echo $SUITES | xargs -n1 pnpm run\n"],
+      [".github/workflows/suites.yml", "jobs:\n  e2e:\n    steps:\n      - run: ${{ env.PM }} run ${{ matrix.suite }}\n"],
+      ["Makefile", "NPM ?= npm\ne2e:\n\t$(NPM) run $(SUITE)\n"],
     ] as const) {
       it(`fails open when ${file} runs scripts by a name chosen at run time`, () => {
         const scripts: Record<string, string> = { test: "vitest run", "docs:check": "bun run scripts/docs.ts" };

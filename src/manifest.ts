@@ -93,10 +93,11 @@ const PLACEHOLDER = /\$|\{|:::|%\w+%|!\w+!|`/;
 
 /** A word that runs package scripts: a package manager (by path, with a version) or a placeholder standing for one. */
 function runsPackages(word: string): boolean {
-  // A variable, not any brace: JSX `{count}` before "run" is not a runner.
-  // Quotes may arrive escaped, as inside a package.json string (`\\"$npm_execpath\\"`).
+  // Any variable may hold a runner (`$PM`, `${{ env.PM }}`, `$(NPM)`, `${pm}`,
+  // `$(which pnpm)`, `%PM%`); a bare brace (JSX `{count}`) is not one. Quotes
+  // may arrive escaped, as inside a package.json string (`\\"$npm_execpath\\"`).
   const bare = word.replace(/^(\\?["'])+|(\\?["'])+$/g, "");
-  return /^(?:[\w./-]*\/)?(npm|pnpm|yarn|bun)(@\S*)?$/.test(bare) || /^(\$\{?\w+(?::?-[^}]*)?\}?|%\w+%)$/.test(bare);
+  return /^(?:[\w./-]*\/)?(npm|pnpm|yarn|bun)(@\S*)?$/.test(bare) || /\$|%\w+%/.test(word);
 }
 
 /**

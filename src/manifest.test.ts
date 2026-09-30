@@ -193,6 +193,10 @@ describe("inertScriptAddition", () => {
       ["Taskfile.yml", "      - npm run {{.SUITE}}"],
       ["scripts/ci.sh", '  "$PM" run "$s"'],
       ["scripts/ci.sh", '  ${PM:-npm} run "$s"'],
+      // Review of #52, round 6: a runner held in other kinds of variable.
+      [".github/workflows/ci.yml", "      - run: ${{ env.PM }} run ${{ matrix.suite }}"],
+      ["Makefile", "\t$(NPM) run $(SUITE)"],
+      ["scripts/ci.sh", '  $(which pnpm) run "$s"'],
       // Review of #52, round 5.
       ["scripts/ci.sh", '  npm run -w web "$s"'],
       ["scripts/ci.sh", '  npm run --workspace web "$s"'],
@@ -239,7 +243,7 @@ describe("inertScriptAddition", () => {
 
   it("walks code that lists the scripts or runs one by a computed name", () => {
     const head2 = manifest({ test: "vitest run", lint: "eslint .", "web:e2e": "playwright test" });
-    for (const text of ["  const names = Object.keys(pkg.scripts).filter((n) => n.endsWith(':e2e'));", "  execSync(`npm run ${name}`);"]) {
+    for (const text of ["  const names = Object.keys(pkg.scripts).filter((n) => n.endsWith(':e2e'));", "  execSync(`npm run ${name}`);", "  execSync(`${pm} run ${name}`);"]) {
       const mentions = (n: string[]) => {
         const hits = declarations("package.json", head2, n);
         for (const needle of n) if (text.includes(needle)) hits.set(needle, [...(hits.get(needle) ?? []), { file: "tools/run.ts", line: 12, text }]);
