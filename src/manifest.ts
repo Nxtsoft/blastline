@@ -96,13 +96,25 @@ const RUNS_SCRIPT_TOOL = new RegExp(`${COMMAND_START}(${SCRIPT_TOOLS.join("|")})
  * is not one.
  */
 function runsDynamically(text: string): boolean {
-  for (const m of text.matchAll(PM_SCRIPT_ARG)) {
-    const arg = (m[4] ?? "").replace(/^["'`]|["'`]$/g, "");
+  const dynamicName = (raw: string): boolean => {
+    const arg = raw.replace(/^["'`]|["'`]$/g, "");
     const isFile = !arg.startsWith("/") && (arg.includes("/") || /\.(m?[jt]sx?|c[jt]s)$/.test(arg));
-    if (!isFile && (arg.includes("$") || /^\/.+\/$/.test(arg))) return true;
+    return !isFile && (arg.includes("$") || arg.includes("%") || /^\/.+\/$/.test(arg));
+  };
+  for (const m of text.matchAll(PM_SCRIPT_ARG)) if (dynamicName(m[4] ?? "")) return true;
+  // A package manager, or a variable standing for one (`$PM run "$s"`), with a
+  // later `run` (`yarn workspaces foreach -A run "$s"`): judge every run's name.
+  if (PM_WORD.test(text) || /(^|[\s;&|(])(\$\{?\w+\}?|%\w+%)\s+run\b/.test(text)) {
+    for (const m of text.matchAll(RUN_ARG)) if (dynamicName(m[1] ?? "")) return true;
   }
   return RUNS_SCRIPT_TOOL.test(text) && text.includes("$");
 }
+
+/** A package manager as a command word. */
+const PM_WORD = new RegExp(`${COMMAND_START}(${PACKAGE_MANAGERS.join("|")})(@\\S*)?\\s`);
+
+/** The argument after each `run` / `run-script`, past flags. */
+const RUN_ARG = /\brun(?:-script)?\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+)*(\S+)/g;
 
 /** A line that enumerates a manifest's scripts (`.scripts | keys`, `Object.keys(pkg.scripts)`), to run or filter them. */
 function listsScripts(text: string): boolean {
@@ -110,7 +122,7 @@ function listsScripts(text: string): boolean {
 }
 
 /** Needles that find the lines `runsDynamically` and `listsScripts` judge. */
-const DYNAMIC_NEEDLES = [...PACKAGE_MANAGERS, ...SCRIPT_TOOLS, "scripts"];
+const DYNAMIC_NEEDLES = [...PACKAGE_MANAGERS, ...SCRIPT_TOOLS, "scripts", "run $", 'run "$', "run '$", "run ${", "run %"];
 
 /**
  * Files nothing ever runs from, however they spell a pattern: git's own files,

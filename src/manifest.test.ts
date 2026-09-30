@@ -178,6 +178,9 @@ describe("inertScriptAddition", () => {
       ["scripts/ci.sh", '  npm run "$s"'],
       [".github/workflows/ci.yml", '      - run: pnpm run "/:e2e$/"'],
       [".github/workflows/ci.yml", '      - run: pnpm run "/^(web|api):/"'],
+      ["scripts/ci.sh", '$PM run "$s"'],
+      [".github/workflows/ci.yml", '      - run: yarn workspaces foreach -A run "$SUITE"'],
+      ["ci/run.bat", "npm run %SUITE%"],
     ];
     for (const [file, text] of cases) {
       const mentions = (n: string[]) => {
