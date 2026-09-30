@@ -199,6 +199,15 @@ index 3..4 100644
       expect(sel.reasons.map((r) => r.kind === "unmapped-file" && r.path)).toContain("package.json");
     });
 
+    // Review of #52: the range said "script added", the supplied diff said
+    // "dependency bumped", and the range's verdict won.
+    it("judges a supplied diff as supplied, not by the range beside it", () => {
+      const { repo, graphPath } = range({ pkg: pkg({ test: "vitest run", "docs:check": "x" }) });
+      const bump = `diff --git a/package.json b/package.json\nindex 1..2 100644\n--- a/package.json\n+++ b/package.json\n@@ -6,1 +6,1 @@\n-    "next": "15.0.0"\n+    "next": "16.0.0"\n`;
+      const sel = runSelection({ repo, range: "HEAD~1..HEAD", diffText: bump, graphPath, minDensity: 0 });
+      expect(sel.kind).toBe("all");
+    });
+
     it("still fails open on a dependency change", () => {
       const { repo, graphPath } = range({ pkg: pkg({ test: "vitest run", "docs:check": "x" }, "15.1.0") });
       const sel = runSelection({ repo, range: "HEAD~1..HEAD", graphPath, minDensity: 0, ignore: ["^graph\\.json$"] });

@@ -122,7 +122,9 @@ export function runSelection(o: RunOptions): Selection {
     // cgraph writes paths.json beside graph.json. Absent (an older cgraph, or a
     // hand-built graph) simply means no verdicts and today's behaviour.
     const pathVerdicts = loadPathVerdicts(graphPath);
-    const inert = inertManifests(diffText, git, o.range, (p) => nodesInFile(graph, p).length > 0);
+    // A supplied diff is judged as supplied: the range, if any, is not what changed.
+    const suppliedDiff = o.diffText !== undefined || o.diffFile !== undefined;
+    const inert = inertManifests(diffText, git, suppliedDiff ? undefined : o.range, (p) => nodesInFile(graph, p).length > 0);
     const references = readersOf(diffText, graph, { repo, git, head, regexes, pathVerdicts, inert });
 
     selection = select(diffText, {

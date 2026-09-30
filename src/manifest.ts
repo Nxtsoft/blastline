@@ -1,4 +1,5 @@
-import { isComment, neverRuns } from "./references.js";
+import { isComment } from "./references.js";
+import { isLockfile } from "./unnamed.js";
 
 /**
  * Recognize a `package.json` change that cannot affect a test except through
@@ -20,9 +21,10 @@ import { isComment, neverRuns } from "./references.js";
  *     name (`pretest`, `postinstall`, `prepare`, `test`, `build`, ...);
  *   - no non-code file names it (a CI workflow, a Makefile, a husky hook,
  *     turbo.json, an existing script), outside Markdown and outside the
- *     manifest's own new declarations -- and none names a pattern it matches:
- *     its first segment followed by a wildcard (`run-s "test:*"`,
- *     `turbo run test*`, `/^test:.*\/`), or a pattern runner with any `*`;
+ *     manifest's own new declarations -- and none names a pattern it falls
+ *     under: its first segment with a wildcard, anchor or open string
+ *     (`run-s "test:*"`, `/^test:/`, `"test:" + kind`), its last with a
+ *     leading wildcard (`*:e2e`), or a pattern runner command with any `*`;
  *   - a code line that names it (a helper spawning `bun run docs:check`, or a
  *     usage message) is returned as a reader, so the tests that depend on it
  *     are selected. A comment that names it is not a reader.
@@ -33,20 +35,49 @@ import { isComment, neverRuns } from "./references.js";
 /** Tools that run every script matching a pattern; searched as fixed strings, then checked as commands. */
 const PATTERN_RUNNERS = ["run-s", "run-p", "npm-run-all", "turbo", "nx", "lerna", "wireit", "concurrently", "pnpm", "yarn"];
 
-/** One of PATTERN_RUNNERS as a command word (`turbo run`), not inside another (`bunx`, `yarn-debug.log`). */
-const RUNNER_COMMAND = new RegExp(`(^|[\\s"'\`(;&|])(${PATTERN_RUNNERS.join("|")})\\s`);
+/**
+ * One of PATTERN_RUNNERS as a command (`turbo run`, `npx nx@latest run-many`,
+ * `node_modules/.bin/run-p`), not inside another word (`bunx`, `yarn-debug.log`).
+ */
+const RUNNER_COMMAND = new RegExp(`(^|[\\s"'\`(;&|/])(${PATTERN_RUNNERS.join("|")})(@\\S*)?(\\s|$)`);
 
-/** The first segment of a script name: `test` in `test:unit`, `lint` in `lint-css`. */
-function firstSegment(name: string): string {
-  return /^[^:\-/._]+/.exec(name)?.[0] ?? name;
+/** The segments of a script name, split where pattern runners split it: `web`, `e2e` in `web:e2e`. */
+function segmentsOf(name: string): string[] {
+  return name.split(/[:\-_]/).filter((seg) => seg.length > 0);
 }
 
-/** A line that runs scripts by a pattern this new name falls under. */
+function escape(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * A line that may run this new script without naming it. Pattern runners pick
+ * scripts by their first segment (`test:*`, `test*`, `/^test:/`,
+ * `` `test:${kind}` ``, `"test:" + kind`) or their last (`*:e2e`), with the
+ * separators script names use (`:`, `-`, `_`); a pattern runner command with
+ * any wildcard counts too. A path such as `/shared-docs/${id}` is not a
+ * script pattern: `/` and `.` are not script separators.
+ */
 function matchesByPattern(text: string, name: string): boolean {
-  const seg = firstSegment(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  if (new RegExp(`(^|[^A-Za-z0-9_])${seg}[:\\-/._]?(\\*|\\.\\*|\\{|\\$)`).test(text)) return true;
+  const segs = segmentsOf(name);
+  const first = escape(segs[0] ?? name);
+  const last = escape(segs[segs.length - 1] ?? name);
+  const edge = "(^|[^A-Za-z0-9_])";
+  const after = "(?![A-Za-z0-9_])";
+  if (new RegExp(`${edge}${first}[:\\-_]?(\\*|\\.\\*|\\{|\\$\\{)`).test(text)) return true; // test:*  test*  test:${
+  if (new RegExp(`\\^${first}${after}`).test(text)) return true; // /^test:/
+  if (new RegExp(`${edge}${first}[:\\-_]["'\`]`).test(text)) return true; // "test:" + kind
+  if (segs.length > 1 && new RegExp(`\\*[:\\-_]?${last}${after}`).test(text)) return true; // *:e2e
   return text.includes("*") && RUNNER_COMMAND.test(text);
 }
+
+/**
+ * Files nothing ever runs from, however they spell a pattern: git's own files,
+ * editor and review-bot settings, licences, lockfiles. Skipped for pattern
+ * matches only -- a literal mention anywhere still counts, and CI helpers under
+ * `.github/` or a pre-commit config do run commands.
+ */
+const NEVER_RUNS_ANYTHING = /(^|\/)(\.gitignore|\.gitattributes|\.mailmap|\.editorconfig|CODEOWNERS|LICENSE[^/]*|\.coderabbit\.ya?ml)$/;
 
 /** Script names a package manager or host runs without being asked by name. */
 const RUN_BY_CONVENTION =
@@ -58,15 +89,12 @@ function isObject(v: Json | undefined): v is { [key: string]: Json } {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** Structural equality, key order ignored. */
+/**
+ * Structural equality, key ORDER included: Node resolves `exports` conditions
+ * and Jest applies `moduleNameMapper` entries in the order they are written.
+ */
 function same(a: Json | undefined, b: Json | undefined): boolean {
-  if (a === b) return true;
-  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((x, i) => same(x, b[i]));
-  if (isObject(a) && isObject(b)) {
-    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-    return [...keys].every((k) => same(a[k], b[k]));
-  }
-  return false;
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function parse(text: string): { [key: string]: Json } | null {
@@ -94,11 +122,14 @@ export function addedScriptsOnly(base: string, head: string): Map<string, string
   const now = newScripts ?? {};
   if (!isObject(was) || !isObject(now)) return null;
   for (const [name, command] of Object.entries(was)) {
-    if (now[name] !== command) return null;
+    if (!Object.hasOwn(now, name) || now[name] !== command) return null;
   }
+  // The scripts that existed keep their order: a pattern runner runs them in it.
+  const kept = Object.keys(now).filter((name) => Object.hasOwn(was, name));
+  if (kept.join("\0") !== Object.keys(was).join("\0")) return null;
   const added = new Map<string, string>();
   for (const name of Object.keys(now).sort()) {
-    if (name in was) continue;
+    if (Object.hasOwn(was, name)) continue;
     const command = now[name];
     if (typeof command !== "string") return null;
     added.set(name, command);
@@ -139,12 +170,15 @@ export function inertScriptAddition(
   if (scripts === null) return null;
   const added = [...scripts.keys()];
   if (added.some((name) => RUN_BY_CONVENTION.test(name))) return null;
-  const segments = [...new Set(added.map(firstSegment))];
+  const segments = [...new Set(added.flatMap((n) => { const segs = segmentsOf(n); return [segs[0] ?? n, segs[segs.length - 1] ?? n]; }))];
   const hits = mentions([...new Set([...added, ...segments, ...PATTERN_RUNNERS])]);
   const readers: { file: string; line: number }[] = [];
   for (const name of added) {
     // Lines naming it, and lines whose pattern it falls under.
-    const byPattern = [firstSegment(name), ...PATTERN_RUNNERS].flatMap((n) => hits.get(n) ?? []).filter((h) => matchesByPattern(h.text, name));
+    const segs = segmentsOf(name);
+    const byPattern = [segs[0] ?? name, segs[segs.length - 1] ?? name, ...PATTERN_RUNNERS]
+      .flatMap((n) => hits.get(n) ?? [])
+      .filter((h) => !NEVER_RUNS_ANYTHING.test(h.file) && !isLockfile(h.file) && matchesByPattern(h.text, name));
     const seen = new Set<string>();
     for (const hit of [...(hits.get(name) ?? []), ...byPattern]) {
       const key = `${hit.file}\0${hit.line}`;
@@ -153,7 +187,7 @@ export function inertScriptAddition(
       // A new script's own declaration line is not an invocation, and neither
       // is one new script calling another: nothing runs either of them.
       if (hit.file === path && declaresNewScript(hit.text, scripts)) continue;
-      if (isComment(hit.text) || neverRuns(hit.file)) continue;
+      if (isComment(hit.text)) continue;
       // Code that names it may run it; the graph can say who depends on that.
       if (hit.file !== path && isCode(hit.file)) {
         readers.push({ file: hit.file, line: hit.line });

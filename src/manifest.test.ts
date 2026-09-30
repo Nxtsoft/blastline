@@ -51,9 +51,24 @@ describe("inertScriptAddition", () => {
     });
   });
 
-  it("calls a formatting-only change inert", () => {
-    const reordered = `${JSON.stringify({ dependencies: { next: "15.0.0" }, scripts: { lint: "eslint .", test: "vitest run" }, name: "app" })}\n`;
-    expect(inertScriptAddition("package.json", BASE, reordered, () => new Map(), isCode)).toEqual({ why: "changes formatting only", readers: [] });
+  it("calls a whitespace-only change inert", () => {
+    const reindented = BASE.replace(/\n  /g, "\n    ");
+    expect(inertScriptAddition("package.json", BASE, reindented, () => new Map(), isCode)).toEqual({ why: "changes formatting only", readers: [] });
+  });
+
+  // Review of #52: Node picks the first matching `exports` condition, and Jest
+  // the first matching `moduleNameMapper` entry, so order is behaviour.
+  it("refuses a change that only reorders keys", () => {
+    const before = manifest({ test: "vitest run" }, { exports: { ".": { node: "./node.js", default: "./browser.js" } } });
+    const after = manifest({ test: "vitest run" }, { exports: { ".": { default: "./browser.js", node: "./node.js" } } });
+    expect(inertScriptAddition("package.json", before, after, () => new Map(), isCode)).toBeNull();
+    const scriptsSwapped = manifest({ lint: "eslint .", test: "vitest run", x: "y" });
+    expect(addedScriptsOnly(BASE, scriptsSwapped)).toBeNull();
+  });
+
+  it("does not let a prototype name skip the check", () => {
+    const withIt = manifest({ test: "vitest run", lint: "eslint .", constructor: "node ci.js" });
+    expect(addedScriptsOnly(BASE, withIt)).toEqual(new Map([["constructor", "node ci.js"]]));
   });
 
   // npm and bun run `pretest` before `test`; hosts run `build` and friends.
@@ -106,6 +121,57 @@ describe("inertScriptAddition", () => {
     const base = manifest({ test: "vitest run", lint: "run-s lint:*", "lint:js": "eslint ." });
     const withIt = manifest({ test: "vitest run", lint: "run-s lint:*", "lint:js": "eslint .", "lint:css": "stylelint ." });
     expect(inertScriptAddition("package.json", base, withIt, (n) => declarations("package.json", withIt, n), isCode)).toBeNull();
+  });
+
+  // Review of #52: each of these runs `web:e2e` or `test:e2e` without naming it.
+  it("refuses every pattern form found in review", () => {
+    const cases: [string, string, string][] = [
+      ["test:e2e", "package.json", '    "test": "pnpm run \\"/^test:/\\"",'],
+      ["web:test", "package.json", '    "all": "node_modules/.bin/run-p \\"*:test\\"",'],
+      ["web:e2e", ".github/workflows/ci.yml", '            "*:e2e"'],
+      ["web:e2e", ".github/workflows/ci.yml", '      - run: npx nx@latest run-many -t "*:e2e"'],
+      ["test:e2e", ".github/scripts/ci.sh", "npm run test:e2e --if-present"],
+      ["lint:types", ".pre-commit-config.yaml", "    entry: npm run lint:types"],
+    ];
+    for (const [name, file, text] of cases) {
+      const head2 = manifest({ test: "vitest run", lint: "eslint .", [name]: "run it" });
+      const mentions = (n: string[]) => {
+        const hits = declarations("package.json", head2, n);
+        for (const needle of n) if (text.includes(needle)) hits.set(needle, [...(hits.get(needle) ?? []), { file, line: 5, text }]);
+        return hits;
+      };
+      expect([name, file, inertScriptAddition("package.json", BASE, head2, mentions, isCode)]).toEqual([name, file, null]);
+    }
+  });
+
+  // Found on a real PR: URL paths such as `/shared-docs/${id}` and a CI
+  // ignore pattern `^docs/` matched a middle segment of `user-docs:check`.
+  it("does not read a path or a middle segment as a script pattern", () => {
+    const head2 = manifest({ test: "vitest run", lint: "eslint .", "user-docs:check": "bun run scripts/docs.ts" });
+    const lines: [string, string][] = [
+      ["src/api.ts", "  return apiFetch<Doc>(`/shared-docs/${id}`);"],
+      ["src/types.d.ts", '  "/api/v1/health-check/{name}": {'],
+      [".github/workflows/test-impact.yml", "            ^docs/"],
+      ["src/tab.tsx", "  C: 'Tell the user.',"],
+    ];
+    const mentions = (n: string[]) => {
+      const hits = declarations("package.json", head2, n);
+      for (const [file, text] of lines) for (const needle of n) if (text.includes(needle)) hits.set(needle, [...(hits.get(needle) ?? []), { file, line: 3, text }]);
+      return hits;
+    };
+    expect(inertScriptAddition("package.json", BASE, head2, mentions, isCode)).toEqual({ why: "only adds scripts nothing runs: user-docs:check", readers: [] });
+  });
+
+  it("walks code that concatenates or filters by the name", () => {
+    const head2 = manifest({ test: "vitest run", lint: "eslint .", "test:e2e": "playwright test" });
+    for (const text of ['  spawnSync("npm", ["run", "test:" + kind]);', "  const all = names.filter((s) => /^test:/.test(s));"]) {
+      const mentions = (n: string[]) => {
+        const hits = declarations("package.json", head2, n);
+        for (const needle of n) if (text.includes(needle)) hits.set(needle, [...(hits.get(needle) ?? []), { file: "src/lib.ts", line: 5, text }]);
+        return hits;
+      };
+      expect(inertScriptAddition("package.json", BASE, head2, mentions, isCode)?.readers).toEqual([{ file: "src/lib.ts", line: 5 }]);
+    }
   });
 
   it("refuses a new script a workflow runs by pattern, and walks code that builds its name", () => {

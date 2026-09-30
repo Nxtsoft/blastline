@@ -140,11 +140,6 @@ function shapesTestRuns(path: string): boolean {
 const REPOSITORY_METADATA =
   /^\.github\/(?!workflows\/|actions\/)|(^|\/)(\.coderabbit\.ya?ml|CODEOWNERS|\.gitattributes|\.gitignore|\.mailmap|\.editorconfig|renovate\.json5?|\.pre-commit-config\.yaml|LICENSE[^/]*)$/;
 
-/** True for a file only a hosted service or git reads, or a lockfile: neither reads nor runs anything. */
-export function neverRuns(path: string): boolean {
-  return REPOSITORY_METADATA.test(path) || isLockfile(path);
-}
-
 function basename(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
 }
