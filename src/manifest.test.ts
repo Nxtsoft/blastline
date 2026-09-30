@@ -181,6 +181,18 @@ describe("inertScriptAddition", () => {
       ["scripts/ci.sh", '$PM run "$s"'],
       [".github/workflows/ci.yml", '      - run: yarn workspaces foreach -A run "$SUITE"'],
       ["ci/run.bat", "npm run %SUITE%"],
+      // Review of #52: flags before `run`, a runner in a variable, and placeholders other than `$`.
+      ["scripts/ci.sh", '  pnpm -r run "$s"'],
+      ["scripts/ci.sh", '  pnpm --filter web run "$s"'],
+      ["scripts/ci.sh", '  npm -w web run "$s"'],
+      ["scripts/ci.sh", '  npm --prefix app run "$s"'],
+      ["scripts/ci.sh", "  bun --filter '*' run \"$s\""],
+      ["scripts/ci.sh", "  echo $SUITES | xargs -I{} npm run {}"],
+      ["scripts/ci.sh", "  parallel npm run {} ::: $SUITES"],
+      ["justfile", "  npm run {{suite}}"],
+      ["Taskfile.yml", "      - npm run {{.SUITE}}"],
+      ["scripts/ci.sh", '  "$PM" run "$s"'],
+      ["scripts/ci.sh", '  ${PM:-npm} run "$s"'],
     ];
     for (const [file, text] of cases) {
       const mentions = (n: string[]) => {
@@ -194,7 +206,7 @@ describe("inertScriptAddition", () => {
 
   // Found on a real repo: a file run with an expanded argument is not a script run.
   it("does not read a file run's arguments as a script name", () => {
-    for (const text of ['        run: bun run scripts/select-e2e.ts --base "$BASE_SHA"', '        run: bun run "scripts/$TOOL.ts"']) {
+    for (const text of ['        run: bun run scripts/select-e2e.ts --base "$BASE_SHA"', '        run: bun run "scripts/$TOOL.ts"', "  pnpm -r run scripts/sync.ts --env $ENV"]) {
       const mentions = (n: string[]) => {
         const hits = declarations("package.json", head, n);
         for (const needle of n) if (text.includes(needle)) hits.set(needle, [...(hits.get(needle) ?? []), { file: ".github/workflows/test.yml", line: 239, text }]);
@@ -202,6 +214,13 @@ describe("inertScriptAddition", () => {
       };
       expect([text, inertScriptAddition("package.json", BASE, head, mentions, isCode)?.why]).toEqual([text, "only adds scripts nothing runs: docs:check"]);
     }
+  });
+
+  // A script re-invoking its package manager through $npm_execpath, in the manifest itself.
+  it("refuses when an existing script runs scripts by a computed name", () => {
+    const base = manifest({ test: "vitest run", ci: 'for s in $SUITES; do "$npm_execpath" run $s; done' });
+    const withIt = manifest({ test: "vitest run", ci: 'for s in $SUITES; do "$npm_execpath" run $s; done', "web:e2e": "playwright test" });
+    expect(inertScriptAddition("package.json", base, withIt, (n) => declarations("package.json", withIt, n), isCode)).toBeNull();
   });
 
   it("walks code that lists the scripts or runs one by a computed name", () => {

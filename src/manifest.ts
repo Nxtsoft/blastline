@@ -88,33 +88,35 @@ const PM_SCRIPT_ARG = new RegExp(
 /** A script tool as a command, by path or with a version. */
 const RUNS_SCRIPT_TOOL = new RegExp(`${COMMAND_START}(${SCRIPT_TOOLS.join("|")})(@\\S*)?(\\s|$)`);
 
+/** Placeholders a shell, CI, task runner or xargs fills in at run time. */
+const PLACEHOLDER = /\$|\{|:::|%\w+%/;
+
+/** The argument after each `run` / `run-script`, past flags and `--`. */
+const RUN_ARGUMENT = /\brun(?:-script)?\s+(?:(?:-{1,2}[\w-]*(?:=\S+)?)\s+)*([^\s]+)/g;
+
 /**
- * A script run whose name is decided at run time: `npm run "$s"`,
- * `npm run ${{ matrix.app }}:e2e`, `pnpm run "/:e2e$/"`, or a script tool
- * given any expansion. Whatever it picks, no search for a new name can rule it
- * out. `bun run scripts/x.ts --base "$SHA"` runs a file with an argument, and
- * is not one.
+ * A script run whose name is decided at run time. Whatever word comes before
+ * it -- `npm`, `pnpm -r`, `"$npm_execpath"`, `${PM:-npm}`, `xargs -I{} npm` --
+ * the argument after every `run` or `run-script` is judged: a placeholder in it
+ * (`"$s"`, `${{ matrix.app }}:e2e`, `{}`, `{{suite}}`, `%SUITE%`) or a pnpm
+ * `/regex/` means no search for a new name can rule it out. So does a
+ * placeholder or regex as a package manager's first argument (`yarn "$s"`),
+ * or any placeholder given to a script tool. This errs wide -- `docker run
+ * $IMAGE` counts -- except that a file path after `run`
+ * (`bun run scripts/x.ts --base "$SHA"`) runs a file, not a script.
  */
 function runsDynamically(text: string): boolean {
-  const dynamicName = (raw: string): boolean => {
-    const arg = raw.replace(/^["'`]|["'`]$/g, "");
+  const decidedAtRunTime = (raw: string): boolean => {
+    const arg = raw.replace(/^["'`]+|["'`,;)]+$/g, "");
+    if (arg === "run" || arg === "run-script") return false;
+    // A path, even a computed one, is a file; a new script named with `/` fails open anyway.
     const isFile = !arg.startsWith("/") && (arg.includes("/") || /\.(m?[jt]sx?|c[jt]s)$/.test(arg));
-    return !isFile && (arg.includes("$") || arg.includes("%") || /^\/.+\/$/.test(arg));
+    return !isFile && (PLACEHOLDER.test(arg) || /^\/.+\/$/.test(arg));
   };
-  for (const m of text.matchAll(PM_SCRIPT_ARG)) if (dynamicName(m[4] ?? "")) return true;
-  // A package manager, or a variable standing for one (`$PM run "$s"`), with a
-  // later `run` (`yarn workspaces foreach -A run "$s"`): judge every run's name.
-  if (PM_WORD.test(text) || /(^|[\s;&|(])(\$\{?\w+\}?|%\w+%)\s+run\b/.test(text)) {
-    for (const m of text.matchAll(RUN_ARG)) if (dynamicName(m[1] ?? "")) return true;
-  }
-  return RUNS_SCRIPT_TOOL.test(text) && text.includes("$");
+  for (const m of text.matchAll(RUN_ARGUMENT)) if (decidedAtRunTime(m[1] ?? "")) return true;
+  for (const m of text.matchAll(PM_SCRIPT_ARG)) if (decidedAtRunTime(m[4] ?? "")) return true;
+  return RUNS_SCRIPT_TOOL.test(text) && PLACEHOLDER.test(text);
 }
-
-/** A package manager as a command word. */
-const PM_WORD = new RegExp(`${COMMAND_START}(${PACKAGE_MANAGERS.join("|")})(@\\S*)?\\s`);
-
-/** The argument after each `run` / `run-script`, past flags. */
-const RUN_ARG = /\brun(?:-script)?\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+)*(\S+)/g;
 
 /** A line that enumerates a manifest's scripts (`.scripts | keys`, `Object.keys(pkg.scripts)`), to run or filter them. */
 function listsScripts(text: string): boolean {
@@ -122,7 +124,7 @@ function listsScripts(text: string): boolean {
 }
 
 /** Needles that find the lines `runsDynamically` and `listsScripts` judge. */
-const DYNAMIC_NEEDLES = [...PACKAGE_MANAGERS, ...SCRIPT_TOOLS, "scripts", "run $", 'run "$', "run '$", "run ${", "run %"];
+const DYNAMIC_NEEDLES = [...PACKAGE_MANAGERS, ...SCRIPT_TOOLS, "scripts", " run", "run-script"];
 
 /**
  * Files nothing ever runs from, however they spell a pattern: git's own files,
