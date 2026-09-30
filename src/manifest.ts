@@ -71,6 +71,47 @@ function matchesByPattern(text: string, name: string): boolean {
   return text.includes("*") && RUNNER_COMMAND.test(text);
 }
 
+/** Package managers: their first argument (after `run`) is a script name, or a file they run. */
+const PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"];
+
+/** Tools whose arguments are script names or patterns over them. */
+const SCRIPT_TOOLS = ["run-s", "run-p", "run-z", "npm-run-all", "turbo", "nx", "lerna", "wireit", "concurrently"];
+
+const COMMAND_START = `(^|[\\s"'\`(;&|/])`;
+
+/** A package manager and the argument in its script-name position (`npm run X`, `yarn X`), past any flags. */
+const PM_SCRIPT_ARG = new RegExp(
+  `${COMMAND_START}(${PACKAGE_MANAGERS.join("|")})(@\\S*)?\\s+(?:(?:run|run-script)\\s+)?(?:-{1,2}[\\w-]+(?:=\\S+)?\\s+)*(\\S+)`,
+  "g",
+);
+
+/** A script tool as a command, by path or with a version. */
+const RUNS_SCRIPT_TOOL = new RegExp(`${COMMAND_START}(${SCRIPT_TOOLS.join("|")})(@\\S*)?(\\s|$)`);
+
+/**
+ * A script run whose name is decided at run time: `npm run "$s"`,
+ * `npm run ${{ matrix.app }}:e2e`, `pnpm run "/:e2e$/"`, or a script tool
+ * given any expansion. Whatever it picks, no search for a new name can rule it
+ * out. `bun run scripts/x.ts --base "$SHA"` runs a file with an argument, and
+ * is not one.
+ */
+function runsDynamically(text: string): boolean {
+  for (const m of text.matchAll(PM_SCRIPT_ARG)) {
+    const arg = (m[4] ?? "").replace(/^["'`]|["'`]$/g, "");
+    const isFile = !arg.startsWith("/") && (arg.includes("/") || /\.(m?[jt]sx?|c[jt]s)$/.test(arg));
+    if (!isFile && (arg.includes("$") || /^\/.+\/$/.test(arg))) return true;
+  }
+  return RUNS_SCRIPT_TOOL.test(text) && text.includes("$");
+}
+
+/** A line that enumerates a manifest's scripts (`.scripts | keys`, `Object.keys(pkg.scripts)`), to run or filter them. */
+function listsScripts(text: string): boolean {
+  return /\.scripts\b|\[\s*["']scripts["']\s*\]|\bscripts\s*\|\s*(keys|to_entries)|\bnpm\s+run\s*(-l|--list)?\s*$/.test(text);
+}
+
+/** Needles that find the lines `runsDynamically` and `listsScripts` judge. */
+const DYNAMIC_NEEDLES = [...PACKAGE_MANAGERS, ...SCRIPT_TOOLS, "scripts"];
+
 /**
  * Files nothing ever runs from, however they spell a pattern: git's own files,
  * editor and review-bot settings, licences, lockfiles. Skipped for pattern
@@ -174,8 +215,22 @@ export function inertScriptAddition(
   // (`test/e2e`, `test.e2e`) could fall under a pattern this cannot read.
   if (added.some((name) => !/^[A-Za-z0-9:_-]+$/.test(name))) return null;
   const segments = [...new Set(added.flatMap((n) => { const segs = segmentsOf(n); return [segs[0] ?? n, segs[segs.length - 1] ?? n]; }))];
-  const hits = mentions([...new Set([...added, ...segments, ...PATTERN_RUNNERS])]);
+  const hits = mentions([...new Set([...added, ...segments, ...PATTERN_RUNNERS, ...DYNAMIC_NEEDLES])]);
   const readers: { file: string; line: number }[] = [];
+  // A run by a name decided at run time, or a listing of the scripts, may pick
+  // up ANY new script: code doing it is walked, anything else fails open.
+  const dynamic = new Map<string, Mention>();
+  for (const needle of DYNAMIC_NEEDLES) {
+    for (const hit of hits.get(needle) ?? []) {
+      if (isComment(hit.text) || NEVER_RUNS_ANYTHING.test(hit.file) || isLockfile(hit.file)) continue;
+      if (hit.file === path && declaresNewScript(hit.text, scripts)) continue;
+      if (runsDynamically(hit.text) || listsScripts(hit.text)) dynamic.set(`${hit.file}\0${hit.line}`, hit);
+    }
+  }
+  for (const hit of dynamic.values()) {
+    if (hit.file !== path && isCode(hit.file)) readers.push({ file: hit.file, line: hit.line });
+    else return null;
+  }
   for (const name of added) {
     // Lines naming it, and lines whose pattern it falls under.
     const segs = segmentsOf(name);

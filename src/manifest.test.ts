@@ -169,6 +169,50 @@ describe("inertScriptAddition", () => {
     expect(inertScriptAddition("package.json", BASE, head2, mentions, isCode)).toEqual({ why: "only adds scripts nothing runs: user-docs:check", readers: [] });
   });
 
+  // Review of #52: CI running a name built at run time picks up any new script.
+  it("refuses when anything outside code runs scripts by a name decided at run time", () => {
+    const head2 = manifest({ test: "vitest run", lint: "eslint .", "web:e2e": "playwright test" });
+    const cases: [string, string][] = [
+      [".github/workflows/ci.yml", "      - run: npm run ${{ matrix.app }}:e2e --if-present"],
+      ["scripts/ci.sh", "for s in $(jq -r '.scripts|keys[]|select(endswith(\":e2e\"))' package.json); do npm run \"$s\"; done"],
+      ["scripts/ci.sh", '  npm run "$s"'],
+      [".github/workflows/ci.yml", '      - run: pnpm run "/:e2e$/"'],
+      [".github/workflows/ci.yml", '      - run: pnpm run "/^(web|api):/"'],
+    ];
+    for (const [file, text] of cases) {
+      const mentions = (n: string[]) => {
+        const hits = declarations("package.json", head2, n);
+        for (const needle of n) if (text.includes(needle)) hits.set(needle, [...(hits.get(needle) ?? []), { file, line: 4, text }]);
+        return hits;
+      };
+      expect([text, inertScriptAddition("package.json", BASE, head2, mentions, isCode)]).toEqual([text, null]);
+    }
+  });
+
+  // Found on a real repo: a file run with an expanded argument is not a script run.
+  it("does not read a file run's arguments as a script name", () => {
+    for (const text of ['        run: bun run scripts/select-e2e.ts --base "$BASE_SHA"', '        run: bun run "scripts/$TOOL.ts"']) {
+      const mentions = (n: string[]) => {
+        const hits = declarations("package.json", head, n);
+        for (const needle of n) if (text.includes(needle)) hits.set(needle, [...(hits.get(needle) ?? []), { file: ".github/workflows/test.yml", line: 239, text }]);
+        return hits;
+      };
+      expect([text, inertScriptAddition("package.json", BASE, head, mentions, isCode)?.why]).toEqual([text, "only adds scripts nothing runs: docs:check"]);
+    }
+  });
+
+  it("walks code that lists the scripts or runs one by a computed name", () => {
+    const head2 = manifest({ test: "vitest run", lint: "eslint .", "web:e2e": "playwright test" });
+    for (const text of ["  const names = Object.keys(pkg.scripts).filter((n) => n.endsWith(':e2e'));", "  execSync(`npm run ${name}`);"]) {
+      const mentions = (n: string[]) => {
+        const hits = declarations("package.json", head2, n);
+        for (const needle of n) if (text.includes(needle)) hits.set(needle, [...(hits.get(needle) ?? []), { file: "tools/run.ts", line: 12, text }]);
+        return hits;
+      };
+      expect(inertScriptAddition("package.json", BASE, head2, mentions, isCode)?.readers).toEqual([{ file: "tools/run.ts", line: 12 }]);
+    }
+  });
+
   it("walks code that concatenates or filters by the name", () => {
     const head2 = manifest({ test: "vitest run", lint: "eslint .", "test:e2e": "playwright test" });
     for (const text of ['  spawnSync("npm", ["run", "test:" + kind]);', "  const all = names.filter((s) => /^test:/.test(s));"]) {
