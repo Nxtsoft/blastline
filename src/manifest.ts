@@ -1,4 +1,4 @@
-import { isComment } from "./references.js";
+import { isComment, neverRuns } from "./references.js";
 
 /**
  * Recognize a `package.json` change that cannot affect a test except through
@@ -30,8 +30,11 @@ import { isComment } from "./references.js";
  * Everything else still fails open, and so does anything this cannot parse.
  */
 
-/** Tools that run every script matching a pattern. */
-const PATTERN_RUNNERS = ["run-s", "run-p", "npm-run-all", "turbo", "nx ", "lerna", "wireit", "concurrently", "pnpm", "yarn"];
+/** Tools that run every script matching a pattern; searched as fixed strings, then checked as commands. */
+const PATTERN_RUNNERS = ["run-s", "run-p", "npm-run-all", "turbo", "nx", "lerna", "wireit", "concurrently", "pnpm", "yarn"];
+
+/** One of PATTERN_RUNNERS as a command word (`turbo run`), not inside another (`bunx`, `yarn-debug.log`). */
+const RUNNER_COMMAND = new RegExp(`(^|[\\s"'\`(;&|])(${PATTERN_RUNNERS.join("|")})\\s`);
 
 /** The first segment of a script name: `test` in `test:unit`, `lint` in `lint-css`. */
 function firstSegment(name: string): string {
@@ -42,7 +45,7 @@ function firstSegment(name: string): string {
 function matchesByPattern(text: string, name: string): boolean {
   const seg = firstSegment(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (new RegExp(`(^|[^A-Za-z0-9_])${seg}[:\\-/._]?(\\*|\\.\\*|\\{|\\$)`).test(text)) return true;
-  return text.includes("*") && PATTERN_RUNNERS.some((tool) => text.includes(tool));
+  return text.includes("*") && RUNNER_COMMAND.test(text);
 }
 
 /** Script names a package manager or host runs without being asked by name. */
@@ -150,7 +153,7 @@ export function inertScriptAddition(
       // A new script's own declaration line is not an invocation, and neither
       // is one new script calling another: nothing runs either of them.
       if (hit.file === path && declaresNewScript(hit.text, scripts)) continue;
-      if (isComment(hit.text)) continue;
+      if (isComment(hit.text) || neverRuns(hit.file)) continue;
       // Code that names it may run it; the graph can say who depends on that.
       if (hit.file !== path && isCode(hit.file)) {
         readers.push({ file: hit.file, line: hit.line });

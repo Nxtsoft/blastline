@@ -89,6 +89,18 @@ describe("inertScriptAddition", () => {
     expect(inertScriptAddition("package.json", base, withIt, (n) => declarations("package.json", withIt, n), isCode)).toBeNull();
   });
 
+  // Found on a real PR: `.gitignore` lines such as `yarn-debug.log*`, and
+  // `bunx playwright` in a comment, read as pattern runners.
+  it("ignores runner names inside other words and files that never run anything", () => {
+    const mentions = (n: string[]) => {
+      const hits = declarations("package.json", head, n);
+      hits.set("yarn", [{ file: ".gitignore", line: 30, text: "yarn-error.log*" }]);
+      hits.set("nx", [{ file: "e2e/a.spec.ts", line: 9, text: "const cmd = `bunx playwright test --update-snapshots *`;" }]);
+      return hits;
+    };
+    expect(inertScriptAddition("package.json", BASE, head, mentions, isCode)?.why).toBe("only adds scripts nothing runs: docs:check");
+  });
+
   // `run-s "lint:*"` starts running a new `lint:css` without naming it.
   it("refuses a new script an existing pattern runner picks up", () => {
     const base = manifest({ test: "vitest run", lint: "run-s lint:*", "lint:js": "eslint ." });
