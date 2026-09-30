@@ -71,6 +71,89 @@ function matchesByPattern(text: string, name: string): boolean {
   return text.includes("*") && RUNNER_COMMAND.test(text);
 }
 
+/** Package managers: their first argument (after `run`) is a script name, or a file they run. */
+const PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"];
+
+/** Tools whose arguments are script names or patterns over them. */
+const SCRIPT_TOOLS = ["run-s", "run-p", "run-z", "npm-run-all", "turbo", "nx", "lerna", "wireit", "concurrently"];
+
+const COMMAND_START = `(^|[\\s"'\`(;&|/])`;
+
+/** A package manager and the argument in its script-name position (`npm run X`, `yarn X`), past any flags. */
+const PM_SCRIPT_ARG = new RegExp(
+  `${COMMAND_START}(${PACKAGE_MANAGERS.join("|")})(@\\S*)?\\s+(?:(?:run|run-script)\\s+)?(?:-{1,2}[\\w-]+(?:=\\S+)?\\s+)*(\\S+)`,
+  "g",
+);
+
+/** A script tool as a command, by path or with a version. */
+const RUNS_SCRIPT_TOOL = new RegExp(`${COMMAND_START}(${SCRIPT_TOOLS.join("|")})(@\\S*)?(\\s|$)`);
+
+/** Placeholders a shell, CI, task runner or xargs fills in at run time. */
+const PLACEHOLDER = /\$|\{|:::|%\w+%|!\w+!|`/;
+
+/** A word that runs package scripts: a package manager (by path, with a version) or a placeholder standing for one. */
+function runsPackages(word: string): boolean {
+  // Any variable may hold a runner (`$PM`, `${{ env.PM }}`, `$(NPM)`, `${pm}`,
+  // `$(which pnpm)`, `%PM%`); a bare brace (JSX `{count}`) is not one. Quotes
+  // may arrive escaped, as inside a package.json string (`\\"$npm_execpath\\"`).
+  const bare = word.replace(/^(\\?["'])+|(\\?["'])+$/g, "");
+  return /^(?:[\w./-]*\/)?(npm|pnpm|yarn|bun)(@\S*)?$/.test(bare) || /\$|%\w+%/.test(word);
+}
+
+/**
+ * A script run whose name is decided at run time. For every `run` or
+ * `run-script` that a package manager or a placeholder for one precedes in its
+ * command -- `npm`, `pnpm -r`, `"$npm_execpath"`, `${PM:-npm}`, `xargs -I{} npm`
+ * -- every argument up to the end of the command is judged: a placeholder in it
+ * (`"$s"`, `${{ matrix.app }}:e2e`, `{}`, `{{suite}}`, `%SUITE%`) or a pnpm
+ * `/regex/` means no search for a new name can rule it out. So does a
+ * placeholder or regex as a package manager's first argument (`yarn "$s"`),
+ * or any placeholder given to a script tool. `gh workflow run` and `docker run`
+ * run no package scripts. This errs wide -- `npm run build -- --env=$ENV`
+ * counts -- except that a file path with no placeholder after `run`
+ * (`bun run scripts/x.ts --base "$SHA"`) runs a file, not a script.
+ */
+function runsDynamically(text: string): boolean {
+  const decidedAtRunTime = (raw: string): boolean => {
+    // A trailing backtick closes a template literal; a leading one opens a command substitution.
+    const arg = raw.replace(/^["']+|["'`,;).]+$/g, "");
+    if (arg === "run" || arg === "run-script") return false;
+    return PLACEHOLDER.test(arg) || /^\/.+\/$/.test(arg);
+  };
+  // Each command on the line: a `run` counts when a package manager, or a
+  // placeholder for one, comes before it (`pnpm -r run`, `"$PM" run`,
+  // `xargs -I{} npm run`); `gh workflow run` and `docker run` do not.
+  for (const command of text.split(/[;&|]+/)) {
+    const at = /\brun(?:-script)?(?=\s|$)/.exec(command);
+    if (at === null) continue;
+    const before = command.slice(0, at.index).trim().split(/\s+/);
+    if (!before.some(runsPackages)) continue;
+    const rest = command.slice(at.index + at[0].length);
+    // `run \` continues on the next line, which this line cannot see.
+    if (/^\s*\\\s*$/.test(rest)) return true;
+    const args = rest.trim().split(/\s+/).filter((a) => a !== "");
+    const first = args.find((a) => !a.startsWith("-"))?.replace(/^["'`]+|["'`]+$/g, "") ?? "";
+    // A path with no placeholder runs a file (`bun run scripts/x.ts --base "$SHA"`).
+    if (!PLACEHOLDER.test(first) && !first.startsWith("/") && (first.includes("/") || /\.(m?[jt]sx?|c[jt]s)$/.test(first))) continue;
+    // Otherwise any placeholder in the command counts, so a flag's value cannot hide the name.
+    if (args.some(decidedAtRunTime)) return true;
+  }
+  for (const m of text.matchAll(PM_SCRIPT_ARG)) if (decidedAtRunTime(m[4] ?? "")) return true;
+  return RUNS_SCRIPT_TOOL.test(text) && PLACEHOLDER.test(text);
+}
+
+/** A line that enumerates a manifest's scripts (`.scripts | keys`, `Object.keys(pkg.scripts)`), to run or filter them. */
+function listsScripts(text: string): boolean {
+  return (
+    /\.scripts\b|\[\s*["']scripts["']\s*\]|\bscripts\s*\|\s*(keys|to_entries)|\bnpm\s+run\s*(-l|--list)?\s*$/.test(text) ||
+    // Names piped in: `xargs -n1 pnpm run`, `parallel yarn`.
+    /\b(xargs|parallel)\b.*\b(npm|pnpm|yarn|bun)(\s+run(-script)?)?\s*$/.test(text)
+  );
+}
+
+/** Needles that find the lines `runsDynamically` and `listsScripts` judge. */
+const DYNAMIC_NEEDLES = [...PACKAGE_MANAGERS, ...SCRIPT_TOOLS, "scripts", " run", "run-script"];
+
 /**
  * Files nothing ever runs from, however they spell a pattern: git's own files,
  * editor and review-bot settings, licences, lockfiles. Skipped for pattern
@@ -174,8 +257,22 @@ export function inertScriptAddition(
   // (`test/e2e`, `test.e2e`) could fall under a pattern this cannot read.
   if (added.some((name) => !/^[A-Za-z0-9:_-]+$/.test(name))) return null;
   const segments = [...new Set(added.flatMap((n) => { const segs = segmentsOf(n); return [segs[0] ?? n, segs[segs.length - 1] ?? n]; }))];
-  const hits = mentions([...new Set([...added, ...segments, ...PATTERN_RUNNERS])]);
+  const hits = mentions([...new Set([...added, ...segments, ...PATTERN_RUNNERS, ...DYNAMIC_NEEDLES])]);
   const readers: { file: string; line: number }[] = [];
+  // A run by a name decided at run time, or a listing of the scripts, may pick
+  // up ANY new script: code doing it is walked, anything else fails open.
+  const dynamic = new Map<string, Mention>();
+  for (const needle of DYNAMIC_NEEDLES) {
+    for (const hit of hits.get(needle) ?? []) {
+      if (isComment(hit.text) || NEVER_RUNS_ANYTHING.test(hit.file) || isLockfile(hit.file)) continue;
+      if (hit.file === path && declaresNewScript(hit.text, scripts)) continue;
+      if (runsDynamically(hit.text) || listsScripts(hit.text)) dynamic.set(`${hit.file}\0${hit.line}`, hit);
+    }
+  }
+  for (const hit of dynamic.values()) {
+    if (hit.file !== path && isCode(hit.file)) readers.push({ file: hit.file, line: hit.line });
+    else return null;
+  }
   for (const name of added) {
     // Lines naming it, and lines whose pattern it falls under.
     const segs = segmentsOf(name);
