@@ -20,13 +20,30 @@ import { isComment } from "./references.js";
  *     name (`pretest`, `postinstall`, `prepare`, `test`, `build`, ...);
  *   - no non-code file names it (a CI workflow, a Makefile, a husky hook,
  *     turbo.json, an existing script), outside Markdown and outside the
- *     manifest's own new declarations;
+ *     manifest's own new declarations -- and none names a pattern it matches:
+ *     its first segment followed by a wildcard (`run-s "test:*"`,
+ *     `turbo run test*`, `/^test:.*\/`), or a pattern runner with any `*`;
  *   - a code line that names it (a helper spawning `bun run docs:check`, or a
  *     usage message) is returned as a reader, so the tests that depend on it
  *     are selected. A comment that names it is not a reader.
  *
  * Everything else still fails open, and so does anything this cannot parse.
  */
+
+/** Tools that run every script matching a pattern. */
+const PATTERN_RUNNERS = ["run-s", "run-p", "npm-run-all", "turbo", "nx ", "lerna", "wireit", "concurrently", "pnpm", "yarn"];
+
+/** The first segment of a script name: `test` in `test:unit`, `lint` in `lint-css`. */
+function firstSegment(name: string): string {
+  return /^[^:\-/._]+/.exec(name)?.[0] ?? name;
+}
+
+/** A line that runs scripts by a pattern this new name falls under. */
+function matchesByPattern(text: string, name: string): boolean {
+  const seg = firstSegment(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (new RegExp(`(^|[^A-Za-z0-9_])${seg}[:\\-/._]?(\\*|\\.\\*|\\{|\\$)`).test(text)) return true;
+  return text.includes("*") && PATTERN_RUNNERS.some((tool) => text.includes(tool));
+}
 
 /** Script names a package manager or host runs without being asked by name. */
 const RUN_BY_CONVENTION =
@@ -119,10 +136,17 @@ export function inertScriptAddition(
   if (scripts === null) return null;
   const added = [...scripts.keys()];
   if (added.some((name) => RUN_BY_CONVENTION.test(name))) return null;
-  const hits = mentions(added);
+  const segments = [...new Set(added.map(firstSegment))];
+  const hits = mentions([...new Set([...added, ...segments, ...PATTERN_RUNNERS])]);
   const readers: { file: string; line: number }[] = [];
   for (const name of added) {
-    for (const hit of hits.get(name) ?? []) {
+    // Lines naming it, and lines whose pattern it falls under.
+    const byPattern = [firstSegment(name), ...PATTERN_RUNNERS].flatMap((n) => hits.get(n) ?? []).filter((h) => matchesByPattern(h.text, name));
+    const seen = new Set<string>();
+    for (const hit of [...(hits.get(name) ?? []), ...byPattern]) {
+      const key = `${hit.file}\0${hit.line}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       // A new script's own declaration line is not an invocation, and neither
       // is one new script calling another: nothing runs either of them.
       if (hit.file === path && declaresNewScript(hit.text, scripts)) continue;

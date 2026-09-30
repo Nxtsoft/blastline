@@ -89,6 +89,29 @@ describe("inertScriptAddition", () => {
     expect(inertScriptAddition("package.json", base, withIt, (n) => declarations("package.json", withIt, n), isCode)).toBeNull();
   });
 
+  // `run-s "lint:*"` starts running a new `lint:css` without naming it.
+  it("refuses a new script an existing pattern runner picks up", () => {
+    const base = manifest({ test: "vitest run", lint: "run-s lint:*", "lint:js": "eslint ." });
+    const withIt = manifest({ test: "vitest run", lint: "run-s lint:*", "lint:js": "eslint .", "lint:css": "stylelint ." });
+    expect(inertScriptAddition("package.json", base, withIt, (n) => declarations("package.json", withIt, n), isCode)).toBeNull();
+  });
+
+  it("refuses a new script a workflow runs by pattern, and walks code that builds its name", () => {
+    const head2 = manifest({ test: "vitest run", lint: "eslint .", "test:e2e": "playwright test" });
+    const withLine = (file: string, text: string) => (n: string[]) => {
+      const hits = declarations("package.json", head2, n);
+      for (const needle of n) if (text.includes(needle)) hits.set(needle, [...(hits.get(needle) ?? []), { file, line: 7, text }]);
+      return hits;
+    };
+    for (const line of ["      - run: npx turbo run test*", "      - run: npx npm-run-all 'test:*'", "      - run: pnpm run /^test:.*/"]) {
+      expect(inertScriptAddition("package.json", BASE, head2, withLine(".github/workflows/ci.yml", line), isCode)).toBeNull();
+    }
+    expect(inertScriptAddition("package.json", BASE, head2, withLine("scripts/run.ts", "  await run(`test:${kind}`);"), isCode)).toEqual({
+      why: "only adds scripts: test:e2e; code naming them is walked",
+      readers: [{ file: "scripts/run.ts", line: 7 }],
+    });
+  });
+
   // Nothing runs either new script, so one calling the other runs nothing.
   it("allows one new script to call another", () => {
     const chained = manifest({ test: "vitest run", lint: "eslint .", "docs:check": "bun run scripts/docs.ts", "docs:all": "bun run docs:check" });
