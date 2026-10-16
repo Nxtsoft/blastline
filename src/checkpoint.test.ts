@@ -473,6 +473,9 @@ describe("windowsOf and narrationIn", () => {
     expect(windowsOf(t, undefined, ["src/round-size.ts"]).ask).toBe("");
     const typed = [rec("user", stamp(1), [user("[Image: source: /Users/t/Desktop/s.png]"), user("the cap is wrong on this screen")]), rec("assistant", stamp(2), [edit("src/round-size.ts", "x")])].join("\n");
     expect(windowsOf(typed, undefined, ["src/round-size.ts"]).ask).toBe("the cap is wrong on this screen");
+    // A session launched through `agents run` opens with its preamble, which names a local path.
+    const launched = [rec("user", stamp(1), [user("You are in a git worktree of blastline on branch fix/x at /home/t/wt.\nfix the login redirect")]), rec("assistant", stamp(2), [edit("src/round-size.ts", "x")])].join("\n");
+    expect(windowsOf(launched, undefined, ["src/round-size.ts"]).ask).toBe("fix the login redirect");
   });
 
   it("asks of the new part's last prompt when the commit's files were edited where the transcript cannot see", () => {

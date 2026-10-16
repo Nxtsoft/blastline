@@ -215,6 +215,14 @@ export function typedByPerson(text: string): boolean {
   return first !== "" && !HARNESS_PROMPTS.some((prefix) => first.startsWith(prefix));
 }
 
+/** The first line of a prompt that is neither blank, the `agents run` preamble, nor an image caption. */
+function firstTypedLine(text: string): string | undefined {
+  return text
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l !== "" && !l.startsWith("You are in a git worktree of ") && !l.startsWith("[Image:"));
+}
+
 /**
  * The line of a prompt that states the intent, capped at 200 characters.
  * `0/prompt.txt` holds every prompt of the turn, separated by `---` lines. A
@@ -226,11 +234,7 @@ export function typedByPerson(text: string): boolean {
  */
 export function promptLine(prompt: string): string {
   for (const block of prompt.split(/^---\s*$/m)) {
-    const lines = block
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l !== "" && !l.startsWith("You are in a git worktree of ") && !l.startsWith("[Image:"));
-    const first = lines[0];
+    const first = firstTypedLine(block);
     if (first === undefined || !typedByPerson(first)) continue;
     return first.slice(0, 200);
   }
@@ -453,15 +457,13 @@ function humanTurn(record: TranscriptRecord): boolean {
  * What a person's turn asked, capped at 200 characters: the first line of the
  * first text block a person typed. Each block is judged on its own, so a block
  * the harness appended to the turn (a reminder, an attachment) never supplies
- * the line, however it is laid out; an image caption is skipped.
+ * the line, however it is laid out; the `agents run` preamble and an image
+ * caption are skipped, as `promptLine` skips them.
  */
 function askOf(record: TranscriptRecord): string {
   for (const block of record.content ?? []) {
     if (typeof block.text !== "string") continue;
-    const first = block.text
-      .split("\n")
-      .map((l) => l.trim())
-      .find((l) => l !== "" && !l.startsWith("[Image:"));
+    const first = firstTypedLine(block.text);
     if (first !== undefined && typedByPerson(first)) return first.slice(0, 200);
   }
   return "";
