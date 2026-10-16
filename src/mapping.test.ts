@@ -76,11 +76,6 @@ describe("mapDiffToSeeds", () => {
   });
 });
 
-// A CMakeLists has no graph node, so touching one used to fail the whole
-// selection open — which made selection blind on exactly the PRs that ADD
-// tests, since registering a test means editing the file that declares it
-// (issue #22). A purely additive registration hunk is not opaque: it names the
-// tests that appeared, and their sources seed the walk.
 describe("mapDiffToSeeds: files loaded by convention", () => {
   // The shape cgraph bin-v0.9.4 gives a Spring service: application.yml has a
   // file node and an Actuator child, build.gradle.kts a file node, and a
@@ -131,6 +126,11 @@ describe("mapDiffToSeeds: files loaded by convention", () => {
   });
 });
 
+// A CMakeLists has no graph node, so touching one used to fail the whole
+// selection open — which made selection blind on exactly the PRs that ADD
+// tests, since registering a test means editing the file that declares it
+// (issue #22). A purely additive registration hunk is not opaque: it names the
+// tests that appeared, and their sources seed the walk.
 describe("mapDiffToSeeds: CMake test registration", () => {
   const cg = loadGraph(fileURLToPath(new URL("./testdata/cmake-graph.json", import.meta.url)));
 

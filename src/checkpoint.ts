@@ -20,6 +20,8 @@ export interface Checkpoint {
    * What a person asked for, at most 200 characters: the first line of the
    * prompt that starts the commit's own turn in the transcript, else the first
    * line a person typed in the first session's `prompt.txt` that has one.
+   * `brief --local` has no transcript: the first line a person typed in the
+   * session's first message.
    */
   prompt: string;
   /** What the agent said in the part of the compact transcript that belongs to this checkpoint. */
@@ -412,8 +414,10 @@ export interface Windows {
   hash: string;
   /** Whether the transcript extends what the previous checkpoint read, so that part was skipped. */
   extended: boolean;
-  /** `promptLine` of the prompt a person typed that starts the commit's own turn; "" when the transcript has none before the commit's work. */
+  /** The first line a person typed in the prompt that starts the commit's own turn, at most 200 characters; "" when it cannot be told. */
   ask: string;
+  /** Whether a tool call in the new part works on one of the commit's files. */
+  worked: boolean;
 }
 
 /**
@@ -445,9 +449,22 @@ function humanTurn(record: TranscriptRecord): boolean {
   return record.type === "user" && typedByPerson(record.content?.find((c) => typeof c.text === "string")?.text ?? "");
 }
 
-/** The text blocks of a record, joined, for `promptLine`. */
-function recordText(record: TranscriptRecord): string {
-  return (record.content ?? []).flatMap((c) => (typeof c.text === "string" ? [c.text] : [])).join("\n");
+/**
+ * What a person's turn asked, capped at 200 characters: the first line of the
+ * first text block a person typed. Each block is judged on its own, so a block
+ * the harness appended to the turn (a reminder, an attachment) never supplies
+ * the line, however it is laid out; an image caption is skipped.
+ */
+function askOf(record: TranscriptRecord): string {
+  for (const block of record.content ?? []) {
+    if (typeof block.text !== "string") continue;
+    const first = block.text
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l !== "" && !l.startsWith("[Image:"));
+    if (first !== undefined && typedByPerson(first)) return first.slice(0, 200);
+  }
+  return "";
 }
 
 /**
@@ -500,10 +517,19 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   let turnStart = firstWork === -1 ? sinceStart : firstWork;
   while (turnStart > 0 && !(records[turnStart] !== undefined && humanTurn(records[turnStart]!))) turnStart--;
   const stepStart = Math.max(sinceStart, turnStart);
-  // With no work on the files and nothing read before, the turn is unknown, and so is what was asked.
-  const opening = firstWork === -1 && !extended ? undefined : records[turnStart];
+  // What was asked: the turn's opening prompt. With no work on the files, the commit closes the
+  // transcript's last turn, so the last prompt in the new part, else (the same step as an earlier
+  // commit) the turn it continues; with nothing read before either, the turn is unknown.
+  let opening: TranscriptRecord | undefined;
+  if (firstWork !== -1) opening = records[turnStart];
+  else if (extended) {
+    let last = records.length - 1;
+    while (last >= sinceStart && !(records[last] !== undefined && humanTurn(records[last]!))) last--;
+    opening = records[last >= sinceStart ? last : turnStart];
+  }
   return {
-    ask: opening !== undefined && humanTurn(opening) ? promptLine(recordText(opening)) : "",
+    ask: opening !== undefined && humanTurn(opening) ? askOf(opening) : "",
+    worked: firstWork !== -1,
     sinceWindow: lines.slice(sinceStart).join("\n"),
     stepWindow: lines.slice(stepStart).join("\n"),
     turnWindow: lines.slice(turnStart).join("\n"),
@@ -600,7 +626,9 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
         return "";
       }
     };
+    // The ask of a session that worked on the commit's files wins over one that only ran alongside.
     let ask = "";
+    let askWorked = false;
     const testCommands = new Set<string>();
     let narration: Narration = { started: "", ended: "", texts: 0, tools: 0 };
     const sessions: CheckpointSession[] = [];
@@ -620,8 +648,11 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     for (let i = 0; i < sessionCount; i++) {
       const sessionId = (i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata)).session_id ?? "";
       const before = sessionId === "" ? undefined : read.get(sessionId);
-      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
-      if (ask === "") ask = opened;
+      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
+      if (opened !== "" && (ask === "" || (worked && !askWorked))) {
+        ask = opened;
+        askWorked = worked;
+      }
       if (extended) readBefore++;
       sessions.push({ id: sessionId, lines, hash });
       for (const c of testCommandsIn(turnWindow)) testCommands.add(c);

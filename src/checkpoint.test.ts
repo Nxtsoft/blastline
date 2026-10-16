@@ -412,6 +412,17 @@ describe("checkpointFor on the branch backend", () => {
     expect(again?.sameStepAs).toBe(commitC);
   });
 
+  it("takes the ask from the session that worked on the commit's files, not one that ran alongside", () => {
+    // Session 0 extends what commit C read and only talks; the other session edits the file.
+    const HEX_F = "5f0a1c2d3e4b";
+    const talk = [...CUMULATIVE_C, rec("user", stamp(40), [user("other session: tidy the README")]), rec("assistant", stamp(41), [text("Tidying.")])];
+    const files = branchFiles(HEX_F, stamp(42), talk, "", { session: OTHER, transcript: [rec("user", stamp(20), [user("put the minimum back")]), rec("assistant", stamp(21), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 1;")])] });
+    writeBranchCheckpoint(HEX_F, files);
+    const f = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 12;\n", `fix: two sessions, one at work\n\nEntire-Checkpoint: ${HEX_F}\n`);
+    const cp = checkpointFor(repo, f, [], new Map([[SESSION, { sha: commitC, lines: 13, hash: HASH_C }]]), ["src/round-size.ts"]);
+    expect(cp?.prompt).toBe("put the minimum back");
+  });
+
   it("finds a symbol's reason in the since-window even when the narration window starts later", () => {
     const cp = checkpointFor(repo, commitA, [{ path: "src/round-size.ts", label: "ROUND_SIZE_MAX" }], new Map(), ["src/round-size.ts"]);
     expect(cp?.reasons).toEqual([{ path: "src/round-size.ts", label: "ROUND_SIZE_MAX", turn: 4, why: "I'll start by reading the ticket, then set up a worktree off dev." }]);
@@ -453,10 +464,31 @@ describe("windowsOf and narrationIn", () => {
     expect(windowsOf(t, undefined, ["src/elsewhere.ts"]).ask).toBe("");
   });
 
+  it("never takes the ask from a block the harness appended to a person's turn", () => {
+    // An image sent with no typed text, and a reminder whose body has a --- rule and a line that reads like a request.
+    const t = [
+      rec("user", stamp(1), [user("[Image: source: /Users/t/Desktop/s.png]"), user("<system-reminder>\nCLAUDE.md says:\n---\nNever push to main without review\n</system-reminder>")]),
+      rec("assistant", stamp(2), [edit("src/round-size.ts", "x")]),
+    ].join("\n");
+    expect(windowsOf(t, undefined, ["src/round-size.ts"]).ask).toBe("");
+    const typed = [rec("user", stamp(1), [user("[Image: source: /Users/t/Desktop/s.png]"), user("the cap is wrong on this screen")]), rec("assistant", stamp(2), [edit("src/round-size.ts", "x")])].join("\n");
+    expect(windowsOf(typed, undefined, ["src/round-size.ts"]).ask).toBe("the cap is wrong on this screen");
+  });
+
+  it("asks of the new part's last prompt when the commit's files were edited where the transcript cannot see", () => {
+    const before = [rec("user", stamp(1), [user("turn A: move the cap")]), rec("assistant", stamp(2), [edit("src/round-size.ts", "x")])];
+    const after = [...before, rec("assistant", stamp(3), [text("Committed A.")]), rec("user", stamp(4), [user("turn B: drop the dead flag")]), rec("assistant", stamp(5), [text("Handing it to a subagent.")])];
+    const read = { sha: "a", lines: 2, hash: transcriptHash(before) };
+    expect(windowsOf(after.join("\n"), read, ["src/flags.ts"])).toMatchObject({ ask: "turn B: drop the dead flag", worked: false, extended: true });
+    // Nothing typed since the last read: the same step as the earlier commit, so its turn's ask.
+    const same = [...before, rec("assistant", stamp(3), [text("Committed A.")])];
+    expect(windowsOf(same.join("\n"), read, ["src/flags.ts"]).ask).toBe("turn A: move the cap");
+  });
+
   it("keeps an unstamped transcript whole and counts texts and tool calls", () => {
     const t = [JSON.stringify({ type: "assistant", content: [text("a"), bash("ls")] }), "not json", JSON.stringify({ type: "assistant", content: [text("b")] })].join("\n");
     const lines = t.split("\n");
-    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "" });
+    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "", worked: false });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: transcriptHash(lines.slice(0, 2)) }, ["x.ts"])).toMatchObject({ sinceWindow: lines[2], extended: true });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: "not the prefix" }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
     expect(windowsOf(t, { sha: "a", lines: 9, hash: transcriptHash(lines) }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
