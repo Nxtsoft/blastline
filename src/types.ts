@@ -41,6 +41,11 @@ export type FailOpenReason =
        */
       unnamed?: true;
       /**
+       * The graph has nodes for this file, but something loads it by convention
+       * (`loadedByConvention` in `unnamed.ts`), so it fails open all the same.
+       */
+      convention?: true;
+      /**
        * Advice, never selection (see `references.ts`): code that reads this
        * file, the test files those readers reach (absolute, like `tests`), and
        * why that list may be incomplete. The verdict stays the full suite.

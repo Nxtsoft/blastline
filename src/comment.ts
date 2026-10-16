@@ -401,9 +401,13 @@ function renderUnmapped(reasons: Extract<FailOpenReason, { kind: "unmapped-file"
   const rest = rows.length > top.length ? `\n_and ${rows.length - top.length} more directories_\n` : "";
   const listed = paths.slice(0, 50).join("\n");
   const more = paths.length > 50 ? `\n… ${paths.length - 50} more` : "";
+  const loaded = reasons.filter((r) => r.convention).length;
+  const nodeless = paths.length - loaded;
   return [
-    `**${paths.length} file${paths.length === 1 ? " has" : "s have"} no graph node** (config, asset, or unextracted).`,
-    "",
+    ...(nodeless > 0 ? [`**${nodeless} file${nodeless === 1 ? " has" : "s have"} no graph node** (config, asset, or unextracted).`, ""] : []),
+    ...(loaded > 0
+      ? [`**${loaded} file${loaded === 1 ? " is" : "s are"} loaded by convention** (framework config, a build or dependency manifest, toolchain config): the graph has nodes for ${loaded === 1 ? "it" : "them"}, but every test may depend on ${loaded === 1 ? "it" : "them"}.`, ""]
+      : []),
     "If these files cannot change which tests should run, add a pattern for them to `ignore`. If they feed tests (fixtures, data), this outcome is correct.",
     "",
     ...suggestIgnores(reasons.filter((r) => r.unnamed).map((r) => r.path)),

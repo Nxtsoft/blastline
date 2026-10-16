@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.0
+
+The Intent column reads the whole turn behind a commit, and a file loaded by convention runs the full suite even when the graph has nodes for it.
+
+- `typedByPerson` in `src/checkpoint.ts` no longer takes a Stop hook's feedback for a person's turn. A blocking Stop hook sends "Stop hook feedback:" after every reply, so each commit's turn began at its last reply and the cell showed one response of the session. Interrupt markers, compaction summaries and usage-limit notices are harness text too, and an attached image's caption is skipped. On a web app's checkpoint branch (272 transcripts) Stop hook feedback alone opened 1,532 user records.
+- A checkpoint whose session has no `prompt.txt` is read. Entire leaves the file out of some sessions (25 of 250 checkpoints on that branch), and reading it threw, which dropped the whole checkpoint and showed `not fetched`.
+- A commit whose agent said nothing shows what the person asked at the start of its turn, not the session's first prompt. When no tool call works on the commit's files and nothing bounds the transcript, no ask is guessed and `prompt.txt` is used as before.
+- Over four real web-app PRs (40 commits): checkpoints read went from 21 to 28, `not fetched` from 13 to 6 (the six are not on the remote), and one commit's cell now shows the user's correction that started its turn.
+- `mapDiffToSeeds` in `src/mapping.ts` fails a file on the loaded-by-convention list in `src/unnamed.ts` open whatever the graph holds for it, and the comment says the graph has nodes for it. cgraph bin-v0.9.4 gives Spring `application*.yml` nodes, and bin-v0.5.0 (the Action's default) already gives `build.gradle.kts` a file node; seeding those nodes selected 5, 7 and 0 tests for three real config commits on a Spring service, and 1 test for a Gradle dependency bump. Under this release all four run the full suite with either cgraph version, while a controller-only commit still selects the two specs that call its endpoint. Test-runner config with a graph node (`vitest.config.ts`, `jest.config.js`, `playwright.config.ts`, `next.config.ts`) now runs the full suite too: 20 of 1,469 commits on a web app in six months.
+
 ## 0.18.0
 
 A `package.json` change that only adds scripts no longer runs the full suite.

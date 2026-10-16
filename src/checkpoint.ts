@@ -16,7 +16,11 @@ export interface Checkpoint {
   agent: string;
   /** `0/metadata.json.model`, e.g. "claude-sonnet-5". */
   model: string;
-  /** The first line a person typed in `0/prompt.txt`, at most 200 characters. */
+  /**
+   * What a person asked for, at most 200 characters: the first line of the
+   * prompt that starts the commit's own turn in the transcript, else the first
+   * line a person typed in the first session's `prompt.txt` that has one.
+   */
   prompt: string;
   /** What the agent said in the part of the compact transcript that belongs to this checkpoint. */
   narration: Narration;
@@ -179,15 +183,34 @@ function git(repo: string, args: string[]): string {
 }
 
 /**
- * Whether prompt text was typed by a person. The harness delivers its own
- * text as prompts too: a tag (`<task-notification>`, `<system-reminder>`) or
- * a skill's instructions, which Claude Code injects starting "Base directory
- * for this skill:". A slash command's expanded body is not told apart; it
- * carries no mark in the compact transcript.
+ * How text the harness delivers as a prompt begins. Counted over the user
+ * records with text in turing-webapp's checkpoint transcripts (272 of them):
+ * 5,408 began with a tag (`<task-notification>`, `<system-reminder>`),
+ * 1,532 with a Stop hook's feedback, which Claude Code sends after every reply a
+ * blocking Stop hook stops, 357 with a skill's instructions, and the rest of
+ * these with a usage-limit notice, an interrupt marker or a compaction summary.
+ * Each of them, taken as a person's turn, ended the commit's turn at the last
+ * reply.
+ */
+const HARNESS_PROMPTS = [
+  "<",
+  "Base directory for this skill:",
+  "Stop hook feedback:",
+  "[Request interrupted by user",
+  "This session is being continued from a previous conversation",
+  "[Usage limit reached",
+  "[Earlier usage-limit notes",
+  "Your claude.ai usage limit has reset",
+];
+
+/**
+ * Whether prompt text was typed by a person rather than delivered by the
+ * harness (`HARNESS_PROMPTS`). A slash command's expanded body is not told
+ * apart; it carries no mark in the compact transcript.
  */
 export function typedByPerson(text: string): boolean {
   const first = text.trim();
-  return first !== "" && !first.startsWith("<") && !first.startsWith("Base directory for this skill:");
+  return first !== "" && !HARNESS_PROMPTS.some((prefix) => first.startsWith(prefix));
 }
 
 /**
@@ -195,15 +218,16 @@ export function typedByPerson(text: string): boolean {
  * `0/prompt.txt` holds every prompt of the turn, separated by `---` lines. A
  * prompt the harness delivered (`typedByPerson`) is skipped whole; so is the
  * preamble a session launched through `agents run` starts with ("You are in
- * a git worktree of <repo> on branch <b>…", one line). The reviewer sees the
- * first line a person typed.
+ * a git worktree of <repo> on branch <b>…", one line), and the caption Claude
+ * Code puts before an attached image ("[Image: source: …]"). The reviewer sees
+ * the first line a person typed.
  */
 export function promptLine(prompt: string): string {
   for (const block of prompt.split(/^---\s*$/m)) {
     const lines = block
       .split("\n")
       .map((l) => l.trim())
-      .filter((l) => l !== "" && !l.startsWith("You are in a git worktree of "));
+      .filter((l) => l !== "" && !l.startsWith("You are in a git worktree of ") && !l.startsWith("[Image:"));
     const first = lines[0];
     if (first === undefined || !typedByPerson(first)) continue;
     return first.slice(0, 200);
@@ -388,6 +412,8 @@ export interface Windows {
   hash: string;
   /** Whether the transcript extends what the previous checkpoint read, so that part was skipped. */
   extended: boolean;
+  /** `promptLine` of the prompt a person typed that starts the commit's own turn; "" when the transcript has none before the commit's work. */
+  ask: string;
 }
 
 /**
@@ -417,6 +443,11 @@ export function transcriptHash(lines: string[]): string {
 /** Whether a user record carries text a person typed (`typedByPerson`). */
 function humanTurn(record: TranscriptRecord): boolean {
   return record.type === "user" && typedByPerson(record.content?.find((c) => typeof c.text === "string")?.text ?? "");
+}
+
+/** The text blocks of a record, joined, for `promptLine`. */
+function recordText(record: TranscriptRecord): string {
+  return (record.content ?? []).flatMap((c) => (typeof c.text === "string" ? [c.text] : [])).join("\n");
 }
 
 /**
@@ -469,7 +500,10 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   let turnStart = firstWork === -1 ? sinceStart : firstWork;
   while (turnStart > 0 && !(records[turnStart] !== undefined && humanTurn(records[turnStart]!))) turnStart--;
   const stepStart = Math.max(sinceStart, turnStart);
+  // With no work on the files and nothing read before, the turn is unknown, and so is what was asked.
+  const opening = firstWork === -1 && !extended ? undefined : records[turnStart];
   return {
+    ask: opening !== undefined && humanTurn(opening) ? promptLine(recordText(opening)) : "",
     sinceWindow: lines.slice(sinceStart).join("\n"),
     stepWindow: lines.slice(stepStart).join("\n"),
     turnWindow: lines.slice(turnStart).join("\n"),
@@ -542,7 +576,7 @@ export function testCommandsIn(transcript: string): string[] {
  * commit's part of a cumulative transcript, not the whole session's.
  *
  * The paths read are Entire's layout, spelled out here: `<i>/metadata.json`,
- * `<i>/prompt.txt` and `<i>/transcript.jsonl` per session, `metadata.json` at
+ * `<i>/transcript.jsonl` and, when present, `<i>/prompt.txt` per session, `metadata.json` at
  * the root, under the place `checkpointPlaces` names for the id's shape.
  * `metadata.json` also lists per-session paths; those are not followed, so no
  * checkpoint can point this reader at `<i>/full.jsonl`.
@@ -557,7 +591,16 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     const meta = JSON.parse(show("metadata.json")) as CheckpointMetadata;
     const sessionCount = Math.max(1, meta.sessions?.length ?? 1);
     const session = JSON.parse(show("0/metadata.json")) as SessionMetadata;
-    const prompt = promptLine(show("0/prompt.txt"));
+    // Entire does not write `prompt.txt` for every session (25 of 250 checkpoints on
+    // turing-webapp's branch have none under `0/`), so its absence costs only the line.
+    const typed = (i: number): string => {
+      try {
+        return promptLine(show(`${i}/prompt.txt`));
+      } catch {
+        return "";
+      }
+    };
+    let ask = "";
     const testCommands = new Set<string>();
     let narration: Narration = { started: "", ended: "", texts: 0, tools: 0 };
     const sessions: CheckpointSession[] = [];
@@ -577,7 +620,8 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     for (let i = 0; i < sessionCount; i++) {
       const sessionId = (i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata)).session_id ?? "";
       const before = sessionId === "" ? undefined : read.get(sessionId);
-      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
+      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
+      if (ask === "") ask = opened;
       if (extended) readBefore++;
       sessions.push({ id: sessionId, lines, hash });
       for (const c of testCommandsIn(turnWindow)) testCommands.add(c);
@@ -591,6 +635,8 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
       };
     }
     if (narration.ended === narration.started) narration.ended = "";
+    let prompt = ask;
+    for (let i = 0; prompt === "" && i < sessionCount; i++) prompt = typed(i);
     // The same step: every session's transcript extends what an earlier commit read, and nothing came after.
     const sameStep = readBefore > 0 && readBefore === sessions.length && narration.texts === 0 && narration.tools === 0 ? read.get(sessions[0]!.id)?.sha : undefined;
     return {

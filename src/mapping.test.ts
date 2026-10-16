@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { loadGraph } from "./graph.js";
+import { indexGraph, loadGraph } from "./graph.js";
 import { mapDiffToSeeds } from "./mapping.js";
 import type { ChangedFile } from "./types.js";
 
@@ -81,6 +81,56 @@ describe("mapDiffToSeeds", () => {
 // tests, since registering a test means editing the file that declares it
 // (issue #22). A purely additive registration hunk is not opaque: it names the
 // tests that appeared, and their sources seed the walk.
+describe("mapDiffToSeeds: files loaded by convention", () => {
+  // The shape cgraph bin-v0.9.4 gives a Spring service: application.yml has a
+  // file node and an Actuator child, build.gradle.kts a file node, and a
+  // controller test depends on the Actuator node.
+  const spring = indexGraph(
+    [
+      { id: "f_app_yml", label: "application.yml", type: "file", source_file: "core/src/main/resources/application.yml" },
+      { id: "actuator_exposure", label: "actuator_exposure", type: "config", source_file: "core/src/main/resources/application.yml", source_location: { start_line: 3, end_line: 6 } },
+      { id: "f_gradle", label: "build.gradle.kts", type: "file", source_file: "core/build.gradle.kts" },
+      { id: "f_health_test", label: "HealthTest.kt", type: "file", source_file: "core/src/test/kotlin/HealthTest.kt" },
+      { id: "fn_health", label: "health", type: "function", source_file: "core/src/main/kotlin/Health.kt", source_location: { start_line: 1, end_line: 10 } },
+    ],
+    [{ source: "f_health_test", target: "actuator_exposure", relation: "references" }],
+  );
+
+  it("fails open on application.yml even though the graph has nodes for it", () => {
+    const { seeds, failOpen } = mapDiffToSeeds(spring, [change("core/src/main/resources/application.yml", 4, 4)]);
+    expect(seeds.size).toBe(0);
+    expect(failOpen).toEqual([{ kind: "unmapped-file", path: "core/src/main/resources/application.yml", convention: true }]);
+  });
+
+  it("fails open on a Gradle build file that has a file node", () => {
+    const { seeds, failOpen } = mapDiffToSeeds(spring, [change("core/build.gradle.kts", 12, 12)]);
+    expect(seeds.size).toBe(0);
+    expect(failOpen).toEqual([{ kind: "unmapped-file", path: "core/build.gradle.kts", convention: true }]);
+  });
+
+  it("marks nothing as convention when the graph has no node for the file", () => {
+    const { failOpen } = mapDiffToSeeds(spring, [change("core/src/main/resources/application-dev.yml", 1, 1)]);
+    expect(failOpen).toEqual([{ kind: "unmapped-file", path: "core/src/main/resources/application-dev.yml" }]);
+  });
+
+  it("fails open when a file is renamed away from a convention name", () => {
+    const renamed: ChangedFile = { ...change("core/src/main/resources/settings.yml", 1, 1), oldPath: "core/src/main/resources/application.yml", status: "renamed" };
+    const { failOpen } = mapDiffToSeeds(spring, [renamed]);
+    expect(failOpen).toEqual([{ kind: "unmapped-file", path: "core/src/main/resources/application.yml" }]);
+  });
+
+  it("still maps ordinary code beside a convention file", () => {
+    const { seeds, failOpen } = mapDiffToSeeds(spring, [change("core/src/main/resources/application.yml", 4, 4), change("core/src/main/kotlin/Health.kt", 5, 5)]);
+    expect(failOpen).toHaveLength(1);
+    expect(seeds).toEqual(new Set(["fn_health"]));
+  });
+
+  it("leaves a convention file to `ignore` when the workflow declares it", () => {
+    const { failOpen } = mapDiffToSeeds(spring, [change("core/build.gradle.kts", 1, 1)], { ignore: (p) => p.endsWith(".kts") });
+    expect(failOpen).toEqual([]);
+  });
+});
+
 describe("mapDiffToSeeds: CMake test registration", () => {
   const cg = loadGraph(fileURLToPath(new URL("./testdata/cmake-graph.json", import.meta.url)));
 
