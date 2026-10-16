@@ -92,7 +92,7 @@ const TOOLS = [
   {
     name: "blastline_brief",
     description:
-      "The PR brief for a range, before you push it: what each commit did (from its Entire checkpoint: first prompt line, " +
+      "The PR brief for a range, before you push it: what each commit did (from its Entire checkpoint: the request that opened the commit's turn, " +
       "agent, model, files touched, test commands run; never the transcript), symbol changes from cgraph change-context, " +
       "reach, and claims checked against the graph and the diff (refuted | partial | consistent, never verified), " +
       "including the narrative's: a name in code font the diff does not carry, changed code it never names, placeholder text. " +

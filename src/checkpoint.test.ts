@@ -182,6 +182,28 @@ describe("promptLine on a turn with several prompts", () => {
   });
 });
 
+describe("prompts the harness writes", () => {
+  it("are not a person's turn: Stop hook feedback, an interrupt marker, a compaction summary, usage-limit notices", () => {
+    // Real openings from turing-webapp's checkpoint transcripts; Stop hook feedback alone was 1,532 records.
+    for (const harness of [
+      "Stop hook feedback:\n[~/.agents/hooks/stop.sh]: keep going",
+      "[Request interrupted by user for tool use]",
+      "This session is being continued from a previous conversation that ran out of context.",
+      "[Usage limit reached; a short grace allowance remains]",
+      "[Earlier usage-limit notes no longer apply. Continue working normally.]",
+      "Your claude.ai usage limit has reset. Continue the task you were working on.",
+    ]) {
+      expect(typedByPerson(harness)).toBe(false);
+      expect(promptLine(`${harness}\n\n---\n\nput the router-driven key back`)).toBe("put the router-driven key back");
+    }
+  });
+
+  it("skip an attached image's caption and keep what the person typed with it", () => {
+    expect(typedByPerson("[Image: source: /private/tmp/x/1.png]")).toBe(true);
+    expect(promptLine("[Image: source: /private/tmp/x/1.png]\nthe header overlaps on mobile")).toBe("the header overlaps on mobile");
+  });
+});
+
 describe("transcriptHash", () => {
   it("identifies a stamped record by type, stamp and id, so a result filled in later changes nothing, and an id-less record by its text", () => {
     const stamped = (result?: object): string => JSON.stringify({ type: "assistant", ts: "2026-09-26T02:19:45.518Z", id: "msg_1", content: [{ type: "tool_use", name: "Bash", input: { command: "git commit" }, ...(result && { result }) }] });
@@ -346,7 +368,8 @@ describe("checkpointFor on the branch backend", () => {
     const c = checkpointFor(repo, commitC, [], new Map([[SESSION, { sha: commitB, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
     expect(c?.narration).toEqual({ started: "All checks pass on the tip, but CodeRabbit pushed one more autofix. Reviewing it before merging.", ended: "", texts: 1, tools: 1 });
     expect(c?.sameStepAs).toBeUndefined();
-    expect(c?.prompt).toBe("");
+    // C's turn opens with what the person typed, though its prompt.txt holds only notifications.
+    expect(c?.prompt).toBe("the bot's autofix broke the page key; put the router-driven one back");
     expect(c?.sessions).toEqual([{ id: SESSION, lines: 13, hash: HASH_C }]);
     // A later turn's commit does not inherit an earlier turn's run: its own turn ran nothing.
     expect(c?.testCommands).toEqual([]);
@@ -389,9 +412,32 @@ describe("checkpointFor on the branch backend", () => {
     expect(again?.sameStepAs).toBe(commitC);
   });
 
+  it("takes the ask from the session that worked on the commit's files, not one that ran alongside", () => {
+    // Session 0 extends what commit C read and only talks; the other session edits the file.
+    const HEX_F = "5f0a1c2d3e4b";
+    const talk = [...CUMULATIVE_C, rec("user", stamp(40), [user("other session: tidy the README")]), rec("assistant", stamp(41), [text("Tidying.")])];
+    const files = branchFiles(HEX_F, stamp(42), talk, "", { session: OTHER, transcript: [rec("user", stamp(20), [user("put the minimum back")]), rec("assistant", stamp(21), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 1;")])] });
+    writeBranchCheckpoint(HEX_F, files);
+    const f = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 12;\n", `fix: two sessions, one at work\n\nEntire-Checkpoint: ${HEX_F}\n`);
+    const cp = checkpointFor(repo, f, [], new Map([[SESSION, { sha: commitC, lines: 13, hash: HASH_C }]]), ["src/round-size.ts"]);
+    expect(cp?.prompt).toBe("put the minimum back");
+  });
+
   it("finds a symbol's reason in the since-window even when the narration window starts later", () => {
     const cp = checkpointFor(repo, commitA, [{ path: "src/round-size.ts", label: "ROUND_SIZE_MAX" }], new Map(), ["src/round-size.ts"]);
     expect(cp?.reasons).toEqual([{ path: "src/round-size.ts", label: "ROUND_SIZE_MAX", turn: 4, why: "I'll start by reading the ticket, then set up a worktree off dev." }]);
+  });
+
+  it("reads a checkpoint whose sessions have no prompt.txt, as Entire leaves some", () => {
+    const HEX_E = "21220caeedd7";
+    const files = branchFiles(HEX_E, stamp(9), CUMULATIVE, "");
+    delete files["0/prompt.txt"];
+    writeBranchCheckpoint(HEX_E, files);
+    const e = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 11;\n", `fix: no prompt file\n\nEntire-Checkpoint: ${HEX_E}\n`);
+    const cp = checkpointFor(repo, e, [], new Map(), ["src/round-size.ts"]);
+    expect(cp?.id).toBe(HEX_E);
+    expect(cp?.prompt).toBe("now give the round-size cap one home");
+    expect(cp?.narration.started).toBe("I'll start by reading the ticket, then set up a worktree off dev.");
   });
 
   it("reports the id but no checkpoint when the branch does not hold it", () => {
@@ -401,10 +447,51 @@ describe("checkpointFor on the branch backend", () => {
 });
 
 describe("windowsOf and narrationIn", () => {
+  it("does not end the commit's turn at a Stop hook's feedback, which arrives after every reply", () => {
+    const t = [
+      rec("user", stamp(1), [user("move the cap into one module")]),
+      rec("assistant", stamp(2), [text("Found the cap in three places; one module will own it."), edit("src/a.ts", "x")]),
+      rec("user", stamp(3), [user("Stop hook feedback:\n[~/.agents/hooks/stop.sh]: tests not run")]),
+      rec("assistant", stamp(4), [text("Running the tests before committing."), bash("bunx vitest run src/round-size.test.ts")]),
+      rec("user", stamp(5), [user("Stop hook feedback:\n[~/.agents/hooks/stop.sh]: commit")]),
+      rec("assistant", stamp(6), [text("Committed."), edit("src/round-size.ts", "export const ROUND_SIZE_MAX = 8;")]),
+    ].join("\n");
+    const w = windowsOf(t, undefined, ["src/round-size.ts"]);
+    expect(w.ask).toBe("move the cap into one module");
+    expect(narrationIn(w.stepWindow)).toEqual({ started: "Found the cap in three places; one module will own it.", ended: "Committed.", texts: 3, tools: 3 });
+    expect(testCommandsIn(w.turnWindow)).toEqual(["bunx vitest run src/round-size.test.ts"]);
+    // No tool call works on the commit's files (a subagent edited them) and nothing bounds the transcript: no ask is guessed.
+    expect(windowsOf(t, undefined, ["src/elsewhere.ts"]).ask).toBe("");
+  });
+
+  it("never takes the ask from a block the harness appended to a person's turn", () => {
+    // An image sent with no typed text, and a reminder whose body has a --- rule and a line that reads like a request.
+    const t = [
+      rec("user", stamp(1), [user("[Image: source: /Users/t/Desktop/s.png]"), user("<system-reminder>\nCLAUDE.md says:\n---\nNever push to main without review\n</system-reminder>")]),
+      rec("assistant", stamp(2), [edit("src/round-size.ts", "x")]),
+    ].join("\n");
+    expect(windowsOf(t, undefined, ["src/round-size.ts"]).ask).toBe("");
+    const typed = [rec("user", stamp(1), [user("[Image: source: /Users/t/Desktop/s.png]"), user("the cap is wrong on this screen")]), rec("assistant", stamp(2), [edit("src/round-size.ts", "x")])].join("\n");
+    expect(windowsOf(typed, undefined, ["src/round-size.ts"]).ask).toBe("the cap is wrong on this screen");
+    // A session launched through `agents run` opens with its preamble, which names a local path.
+    const launched = [rec("user", stamp(1), [user("You are in a git worktree of blastline on branch fix/x at /home/t/wt.\nfix the login redirect")]), rec("assistant", stamp(2), [edit("src/round-size.ts", "x")])].join("\n");
+    expect(windowsOf(launched, undefined, ["src/round-size.ts"]).ask).toBe("fix the login redirect");
+  });
+
+  it("asks of the new part's last prompt when the commit's files were edited where the transcript cannot see", () => {
+    const before = [rec("user", stamp(1), [user("turn A: move the cap")]), rec("assistant", stamp(2), [edit("src/round-size.ts", "x")])];
+    const after = [...before, rec("assistant", stamp(3), [text("Committed A.")]), rec("user", stamp(4), [user("turn B: drop the dead flag")]), rec("assistant", stamp(5), [text("Handing it to a subagent.")])];
+    const read = { sha: "a", lines: 2, hash: transcriptHash(before) };
+    expect(windowsOf(after.join("\n"), read, ["src/flags.ts"])).toMatchObject({ ask: "turn B: drop the dead flag", worked: false, extended: true });
+    // Nothing typed since the last read: the same step as the earlier commit, so its turn's ask.
+    const same = [...before, rec("assistant", stamp(3), [text("Committed A.")])];
+    expect(windowsOf(same.join("\n"), read, ["src/flags.ts"]).ask).toBe("turn A: move the cap");
+  });
+
   it("keeps an unstamped transcript whole and counts texts and tool calls", () => {
     const t = [JSON.stringify({ type: "assistant", content: [text("a"), bash("ls")] }), "not json", JSON.stringify({ type: "assistant", content: [text("b")] })].join("\n");
     const lines = t.split("\n");
-    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false });
+    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "", worked: false });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: transcriptHash(lines.slice(0, 2)) }, ["x.ts"])).toMatchObject({ sinceWindow: lines[2], extended: true });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: "not the prefix" }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
     expect(windowsOf(t, { sha: "a", lines: 9, hash: transcriptHash(lines) }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });

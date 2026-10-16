@@ -5,6 +5,7 @@ import { nodesInFile } from "./graph.js";
 import type { ScriptAddition } from "./manifest.js";
 import type { Reader } from "./references.js";
 import type { ChangedFile, FailOpenReason } from "./types.js";
+import { loadedByConvention } from "./unnamed.js";
 
 export interface MappingResult {
   /** node ids seeding the impact walk */
@@ -141,6 +142,18 @@ export function mapDiffToSeeds(
         continue;
       }
       for (const ids of byReader.values()) for (const id of ids) seed(id);
+      continue;
+    }
+
+    // A file something loads by convention (Spring config, a build or dependency
+    // manifest, toolchain config) shapes every test run, whether or not the graph
+    // has nodes for it: cgraph bin-v0.9.4 gives `application.yml` nodes, and
+    // bin-v0.5.0 already gives `build.gradle.kts` a file node, yet seeding those
+    // nodes selects a handful of tests or none.
+    const loaded = [file.path, file.oldPath].find(loadedByConvention);
+    if (loaded !== undefined) {
+      const hasNodes = nodesInFile(graph, file.path).length > 0 || (opts.baseGraph !== undefined && nodesInFile(opts.baseGraph, file.oldPath).length > 0);
+      failOpen.push(hasNodes ? { kind: "unmapped-file", path: loaded, convention: true } : { kind: "unmapped-file", path: loaded });
       continue;
     }
 

@@ -41,7 +41,8 @@ export function isTestPath(path: string): boolean {
  * scripts such as `build.gradle.kts`) deliberately does NOT match. A test helper
  * or abstract base under `src/test/` that does not match these names is not a
  * runnable test on its own — a change to it still selects the tests that use it
- * through the dependents walk, exactly like conftest.py and Rust's `mod.rs`.
+ * through the dependents walk, exactly like Rust's `mod.rs`. (`conftest.py` is
+ * loaded by convention and fails selection open instead; see `unnamed.ts`.)
  *
  * Selection is at file granularity, but Gradle/Maven select tests by
  * fully-qualified class name, not path — so the runner recipe maps a selected

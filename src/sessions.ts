@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Checkpoint, SymbolAt, SymbolReason } from "./checkpoint.js";
-import { editNames, transcriptHash, writtenWithin } from "./checkpoint.js";
+import { editNames, promptLine, transcriptHash, writtenWithin } from "./checkpoint.js";
 
 /**
  * The fleet's session index (agents-cli), read-only. One row per agent session
@@ -356,7 +356,7 @@ export function localCheckpoint(index: SessionsIndex, repo: string, sha: string,
     commit: git(repo, ["rev-parse", `${sha}^{commit}`]),
     agent: intent.session.agent,
     model: intent.session.model ?? "",
-    prompt: (intent.session.firstUserMessage ?? "").split("\n")[0]!.slice(0, 200),
+    prompt: promptLine(intent.session.firstUserMessage ?? ""),
     narration: { started: step, ended: "", texts: step === "" ? 0 : 1, tools: 0 },
     sessions: [{ id: intent.session.id, lines: 0, hash: transcriptHash([]) }],
     filesTouched: files,

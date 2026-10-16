@@ -214,6 +214,23 @@ describe("renderComment: fail-open", () => {
     expect(md).toContain("more");
   });
 
+  it("says a convention-loaded file has graph nodes instead of claiming it has none", () => {
+    const md = renderComment(
+      {
+        kind: "all",
+        reasons: [
+          { kind: "unmapped-file", path: "core/src/main/resources/application.yml", convention: true },
+          { kind: "unmapped-file", path: "assets/logo.svg" },
+        ],
+      },
+      ctx,
+    );
+    expect(md).toContain("**1 file has no graph node**");
+    expect(md).toContain("**1 file is loaded by convention**");
+    expect(md).toContain("the graph has nodes for it, but every test may depend on it");
+    expect(md).toContain("All 2 unmapped files");
+  });
+
   it("offers the unmapped files nothing names as ignore patterns, and only those", () => {
     const md = renderComment(
       {
