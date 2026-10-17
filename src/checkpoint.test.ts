@@ -444,13 +444,27 @@ describe("checkpointFor on the branch backend", () => {
     const a = checkpointFor(repo, commitA, [], new Map(), ["src/round-size.ts"]);
     // The earlier turn about the ticket list is not this commit's, and its own opening request is the Intent column's.
     expect(a?.decisions).toEqual([]);
+    // Commit C's part holds no tool call on its files (a revert by commit id), so it is read for nothing.
     const c = checkpointFor(repo, commitC, [], new Map([[SESSION, { sha: commitB, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
-    expect(c?.decisions.map((d) => [d.kind, d.text])).toEqual([
-      ["steered", "the bot's autofix broke the page key; put the router-driven one back"],
-      ["reverted", "git revert"],
-    ]);
+    expect(c?.decisions).toEqual([]);
     // A commit whose files no tool call touched, with nothing read before: the turn is unknown, so no decisions.
     expect(checkpointFor(repo, commitA, [], new Map(), ["src/elsewhere.ts"])?.decisions).toEqual([]);
+  });
+
+  it("reads none of an unrelated task between two checkpoints, and calls only what follows the commit's own opening request steering", () => {
+    const HEX_U = "7c3e9a1b2d4f";
+    const between = [
+      ...CUMULATIVE,
+      rec("user", stamp(50), [user("unrelated: draft the reply about the Q4 list")]),
+      rec("assistant", stamp(51), [text("I chose to leave out the numbers because they are not cleared yet.")]),
+      rec("user", stamp(52), [user("now back to the cap, also handle zero")]),
+      rec("assistant", stamp(53), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 0;")]),
+      rec("user", stamp(54), [user("keep the minimum at one for the eval harness")]),
+    ];
+    writeBranchCheckpoint(HEX_U, branchFiles(HEX_U, stamp(55), between, ""));
+    const u = commitFile("src/round-size.ts", "export const ROUND_SIZE_MIN = 1;\n", `fix: the cap handles zero\n\nEntire-Checkpoint: ${HEX_U}\n`);
+    const cp = checkpointFor(repo, u, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
+    expect(cp?.decisions.map((d) => [d.kind, d.text])).toEqual([["steered", "keep the minimum at one for the eval harness"]]);
   });
 
   it("reports the id but no checkpoint when the branch does not hold it", () => {
@@ -504,7 +518,7 @@ describe("windowsOf and narrationIn", () => {
   it("keeps an unstamped transcript whole and counts texts and tool calls", () => {
     const t = [JSON.stringify({ type: "assistant", content: [text("a"), bash("ls")] }), "not json", JSON.stringify({ type: "assistant", content: [text("b")] })].join("\n");
     const lines = t.split("\n");
-    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "", worked: false, decisionWindow: "" });
+    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "", worked: false, decisionWindow: "", opensTurn: true });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: transcriptHash(lines.slice(0, 2)) }, ["x.ts"])).toMatchObject({ sinceWindow: lines[2], extended: true });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: "not the prefix" }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
     expect(windowsOf(t, { sha: "a", lines: 9, hash: transcriptHash(lines) }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });

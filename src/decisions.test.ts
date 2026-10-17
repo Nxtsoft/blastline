@@ -27,6 +27,8 @@ describe("decisionsIn: what a person said", () => {
 
   it("drops operating instructions: git authors, staging, merges, other PRs", () => {
     expect(texts(window(person("you used the wrong git author since vercel failed"), person("move BUG-82 to staging"), person("fix the author on #742")), [], false)).toEqual([]);
+    expect(texts(window(person("close #742 when this lands please")), [], false)).toEqual([]);
+    expect(findingIn("The fix for #742 regressed because the key was dropped.")).toBeUndefined();
   });
 });
 
@@ -58,7 +60,7 @@ describe("findingIn: what the agent found or chose", () => {
 describe("decisionsIn: tests", () => {
   it("names the runner and the test files the change carries, never the command", () => {
     const d = texts(
-      window(bash("cd web && GITHUB_TOKEN=ghp_abcdef123456 bunx vitest run src/cap.test.ts 2>&1 | tail -5", "error"), bash("bunx vitest run src/cap.test.ts", "success")),
+      window(bash("cd web && GITHUB_TOKEN=ghp_abcdef123456 bunx vitest run src/cap.test.ts 2>&1", "error"), bash("bunx vitest run src/cap.test.ts", "success")),
       ["src/cap.test.ts"],
     );
     expect(d).toEqual(["tests: `vitest` on `src/cap.test.ts` failed, then passed"]);
@@ -73,6 +75,11 @@ describe("decisionsIn: tests", () => {
     expect(texts(window(bash("bun build x.ts && echo ok || bun test evals/n.test.ts 2>&1 | tail -3", "error")))).toEqual([]);
     expect(texts(window(bash("python3 - <<'EOF'\nprint(1)\nEOF\nbunx vitest run", "error")))).toEqual([]);
     expect(texts(window(bash("bunx vitest run a.test.ts && git push", "error")))).toEqual([]);
+  });
+
+  it("reads no status from a piped run: the status is the last pipe's", () => {
+    // grep exits 1 when a passing run prints no FAIL; tail exits 0 after a failing one.
+    expect(texts(window(bash("bunx vitest run src/cap.test.ts | grep FAIL", "error"), bash("bunx vitest run 2>&1 | tail -5", "error")), ["src/cap.test.ts"])).toEqual([]);
   });
 
   it("counts a run only with the runner in command position", () => {
@@ -118,10 +125,40 @@ describe("shareable", () => {
       "the taylor@example.com credential is dead",
       "here is the key sk-ant-api03-XXXXXXXX use it",
       "set API_KEY=abc because the old one expired",
+      "no, the .env is at C:\\Users\\bob\\acme\\.env not the repo one",
+      "it lives on \\\\fileserver\\share\\keys",
+      "check ~bob/notes because they differ",
+      "it reads $HOME/.ssh/id_rsa instead",
+      "the runner checks out to /github/workspace/src because of actions",
+      "the data sits in /srv/acme/secrets instead",
+      "the file **/home/taylor/x.ts** is wrong",
+      "see [/home/taylor/x] because it broke",
+      "see github.com/Acme/secret-repo/pull/12 instead",
+      "open www.acme-internal.com/admin because it is down",
+      "the dashboard at acme-internal.com broke",
+      "![x](//evil.example/p.png)",
+      "Revert the change that exposed glpat-AbCdEfGhIjKlMnOp",
+      "use rk_live_AbCdEfGh1234 instead",
+      "npm_AbCdEfGh1234567890 is the publish token",
+      "hf_AbCdEfGhIjKlMnOp works",
+      "send Bearer abcdef0123456789xyz with it",
+      "-----BEGIN RSA PRIVATE KEY----- was pasted",
+      "the AWS secret wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY is set",
+      "the password is hunter2-prod, use that instead",
+      "The root cause is the DB at 10.20.0.7:5432 rejecting us because the role lacks CONNECT.",
+      "the API on localhost:3000 broke because the port moved",
+      "the hash 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 matched",
     ]) {
       expect(shareable(line), line).toBe(false);
     }
-    expect(shareable("I kept warn instead of stop, so steps 4 and 9 behave the same.")).toBe(true);
+    for (const line of [
+      "I kept warn instead of stop, so steps 4 and 9 behave the same.",
+      "The cap moved to src/round-size.ts because two modules each had one.",
+      "I chose `useRoundSizeCap` over a context so `openspec/changes/cap/design.md` stays the source.",
+      "The fix for the 2/3 split is in src/a/b.ts because the ratio was inverted.",
+    ]) {
+      expect(shareable(line), line).toBe(true);
+    }
   });
 
   it("is applied to everything a person or the agent says", () => {

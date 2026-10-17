@@ -531,6 +531,12 @@ describe("renderBrief: what the agent decided", () => {
     expect(md).toContain("ask @\u200bdevyn whether &lt;details> is fine, like in #\u200b742");
   });
 
+  it("never autolinks GH-123 or renders a link or image from a quoted line", () => {
+    const md = decided([{ kind: "found", text: "Same bug as GH-12, see [notes](x) and ![](y) because it broke", at: 1, commit: sha }]);
+    expect(md).not.toMatch(/GH-12|\[notes\]\(|!\[\]\(/);
+    expect(md).toContain("GH-\u200b12, see &#91;notes&#93;(x) and !&#91;&#93;(y)");
+  });
+
   it("has no section when no checkpoint held a decision", () => {
     expect(decided([])).not.toContain("What the agent decided");
   });

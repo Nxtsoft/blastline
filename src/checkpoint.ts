@@ -427,11 +427,14 @@ export interface Windows {
   /** Whether a tool call in the new part works on one of the commit's files. */
   worked: boolean;
   /**
-   * Where the commit's decisions are read: everything since the previous
-   * checkpoint of the session, or, with none, from the commit's own turn;
-   * "" when that turn cannot be told (no work on the files, nothing read before).
+   * Where the commit's decisions are read: the commit's own turn, inside what
+   * the previous checkpoint of the session left unread; "" when no tool call
+   * in the new part works on the commit's files, so a session that only ran
+   * alongside, or talked about something else, contributes nothing.
    */
   decisionWindow: string;
+  /** Whether `decisionWindow` starts at the prompt that opened the turn, which the Intent column shows. */
+  opensTurn: boolean;
 }
 
 /**
@@ -542,7 +545,8 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   return {
     ask: opening !== undefined && humanTurn(opening) ? askOf(opening) : "",
     worked: firstWork !== -1,
-    decisionWindow: firstWork === -1 && !extended ? "" : lines.slice(extended ? sinceStart : turnStart).join("\n"),
+    decisionWindow: firstWork === -1 ? "" : lines.slice(stepStart).join("\n"),
+    opensTurn: turnStart >= sinceStart,
     sinceWindow: lines.slice(sinceStart).join("\n"),
     stepWindow: lines.slice(stepStart).join("\n"),
     turnWindow: lines.slice(turnStart).join("\n"),
@@ -663,8 +667,8 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     for (let i = 0; i < sessionCount; i++) {
       const sessionId = (i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata)).session_id ?? "";
       const before = sessionId === "" ? undefined : read.get(sessionId);
-      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
-      decisions.push(...decisionsIn(decisionWindow, changed.length > 0 ? changed : files, !extended));
+      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, decisionWindow, opensTurn } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
+      decisions.push(...decisionsIn(decisionWindow, changed.length > 0 ? changed : files, opensTurn));
       if (opened !== "" && (ask === "" || (worked && !askWorked))) {
         ask = opened;
         askWorked = worked;

@@ -59,25 +59,60 @@ export function cap(text: string, n = LINE): string {
 
 /**
  * Whether a line may leave the ref: it names no place on a machine (an
- * absolute or home path, a `file:` URL), no URL at all (a link can carry
- * credentials, and a link to an issue or PR notifies it), no email address,
- * and nothing shaped like a secret (a token prefix, `key=`, `password:`).
+ * absolute, home, Windows or UNC path, an env-rooted path), no URL or host
+ * (with or without a scheme, a bare domain, an IP address, `localhost:port`;
+ * a link can carry credentials, and a link to an issue or PR notifies it), no
+ * email address, and nothing shaped like a secret (a known token prefix, a
+ * bearer token, a private key, `key=`, "the password is …", or a long random
+ * run of letters and digits). Shapes, not lists of names: a list of root
+ * folders or token vendors misses the next one.
  */
 const UNSHAREABLE = [
+  // Places on a machine.
+  /(?:^|[^\w.\/-])\/[\w.@-]+\/[\w.@-]/,
+  /\b[A-Za-z]:\\/,
+  /\\\\[\w.-]+\\/,
+  /(?:^|[^\w])~[\w-]*\//,
+  /\$\{?\w+\}?[\/\\]/,
+  // URLs and hosts.
   /:\/\//,
-  /(?:^|[\s(`'"=:])(?:~\/|\/(?:Users|home|private|tmp|var|etc|opt|root|mnt|Volumes)\/)/,
+  /(?:^|[^\w:])\/\/[\w-]+\./,
+  /\bwww\./i,
+  /\b[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\/[\w#?%~-]/,
+  /\b[\w-]+\.(?:com|net|org|io|ai|dev|app|co|cloud|internal|local|corp)\b/i,
+  /\b\d{1,3}(?:\.\d{1,3}){3}\b/,
+  /\b(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}\b/i,
+  /\blocalhost:\d/i,
+  // Email addresses.
   /[\w.+-]+@[\w-]+\.[A-Za-z]{2,}/,
-  /\b(?:gh[pousr]_|github_pat_|sk-|sk_live_|xox[abpr]-|AKIA|AIza|eyJ)[A-Za-z0-9_-]{6,}/,
-  /\b[\w-]*(?:api[_-]?key|token|secret|passw(?:or)?d|pwd|credential)s?\s*[=:]/i,
+  // Secrets.
+  /\b(?:gh[pousr]_|github_pat_|glpat-|sk-|[sprk]k_(?:live|test)_|xox[abpr]-|AKIA|ASIA|AIza|ya29\.|eyJ|npm_|hf_|shpat_|dop_v1_)[A-Za-z0-9_-]{6,}/,
+  /\bbearer\s+\S{8,}/i,
+  /-----BEGIN [A-Z ]*PRIVATE KEY/,
+  /\b[\w-]*(?:api[_-]?key|token|secret|passw(?:or)?d|passphrase|pwd|credential)s?\s*[=:]/i,
+  /\b(?:api[_ -]?key|token|secret|passw(?:or)?d|passphrase|pwd|credential)s?\s+(?:is|was|are|were)\s+\S/i,
 ];
 
+/** A run of letters and digits as random as a key: mixed case with a digit at 30 or more characters, or with three digits at 20 or more; or 32 or more hex digits. */
+function secretShaped(line: string): boolean {
+  for (const [run] of line.matchAll(/[A-Za-z0-9+/=]{20,}/g)) {
+    const bare = run.replace(/=+$/, "");
+    if (/^[0-9a-f]{32,}$/i.test(bare)) return true;
+    // A path's segments are words; a key's slashes, when it has any, are rare.
+    if ((bare.match(/\//g) ?? []).length > 2) continue;
+    const digits = (bare.match(/\d/g) ?? []).length;
+    if (/[A-Z]/.test(bare) && /[a-z]/.test(bare) && digits >= (bare.length >= 30 ? 1 : 3)) return true;
+  }
+  return false;
+}
+
 export function shareable(line: string): boolean {
-  return !UNSHAREABLE.some((r) => r.test(line));
+  return !UNSHAREABLE.some((r) => r.test(line)) && !secretShaped(line);
 }
 
 /** About operating the change, not the change: authors, CI, environments, merges, other PRs. */
 const OPERATIONAL =
-  /\b(?:git author|author(?:ed)?|staging|production|merge[ds]?|meregd|deploy\w*|promot\w*|rebase\w*|cherry-pick\w*|vercel|CI|e2e|lint\w*|eslint|typecheck\w*|watcher|pipeline|dependabot|push(?:ed|ing)?|PR\s?#?\d+|pull request|#\d+)\b/i;
+  /\b(?:git author|author(?:ed)?|staging|production|merge[ds]?|meregd|deploy\w*|promot\w*|rebase\w*|cherry-pick\w*|vercel|CI|e2e|lint\w*|eslint|typecheck\w*|watcher|pipeline|dependabot|push(?:ed|ing)?|PR\s?#?\d+|pull request)\b|(?:^|[\s(])#\d+\b/i;
 
 /** A reply that only says go on: it steers nothing a reviewer needs. */
 const ASSENT = /^(?:y(?:es|eah|ep)?|ok(?:ay)?|sure|go ahead|continue|proceed|sounds good|do it|lgtm|thanks?|thank you|done|great|perfect|nice)\b[\s!.,]*(?:let'?s (?:do|go)(?: (?:it|ahead))?)?[\s!.]*$/i;
@@ -138,24 +173,21 @@ export function findingIn(text: string): string | undefined {
 const RUN =
   /^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:npx|bunx|pnpm(?:\s+exec)?|yarn|npm(?:\s+exec)?|bun(?:\s+x)?|uv\s+run|poetry\s+run|python3?\s+-m)\s+)?(vitest|jest|mocha|pytest|go\s+test|cargo\s+test|ctest|\.?\/?gradlew?\s+test|mvn\s+(?:verify|test)|(?:npm|bun|pnpm|yarn)(?:\s+run)?\s+test)\b/;
 
-/** What follows a run without changing its result: a pipe into something that only trims or saves the output. */
-const TRIM = /^(?:tail|head|grep|tee|cat|less|sed\s+-n)\b/;
-
 /**
  * The test run a Bash command is, when its status is the run's own: a single
- * line, `cd` steps before it allowed, nothing after it but output trimming,
- * and the runner in command position. Returns the runner and the command's
- * words, or undefined. A run inside a script, or followed by `&&`/`||`/`;`
- * steps, is not read: the call's status would be the script's.
+ * line, `cd` steps before it allowed, nothing after it, and the runner in
+ * command position. Returns the runner and the command's words, or
+ * undefined. A run inside a script, followed by `&&`/`||`/`;` steps, or piped
+ * anywhere is not read: the call's status would be the script's or the last
+ * pipe's (`vitest | grep FAIL` exits 1 on a pass, `vitest | tail` 0 on a fail).
  */
 function testRun(command: string): { runner: string; words: string[] } | undefined {
   if (command.includes("\n")) return undefined;
   const steps = command.split(/\s*(?:&&|\|\||;)\s*/);
   const last = steps[steps.length - 1]!;
   if (!steps.slice(0, -1).every((s) => /^cd\s+\S+$/.test(s))) return undefined;
-  const [run, ...pipes] = last.split(/\s*\|\s*/);
-  if (!pipes.every((p) => TRIM.test(p))) return undefined;
-  const bare = run!.replace(/\s*\d?>&?\d?\S*/g, "");
+  if (last.includes("|")) return undefined;
+  const bare = last.replace(/\s*\d?>&?\d?\S*/g, "");
   const m = RUN.exec(bare);
   if (m === null) return undefined;
   return { runner: m[1]!.replace(/\s+/g, " ").replace(/^\.?\/?/, ""), words: bare.split(/\s+/) };

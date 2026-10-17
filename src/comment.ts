@@ -48,12 +48,20 @@ function cell(s: string): string {
 
 /**
  * A line quoted from an agent's session: an `@name` would notify that GitHub
- * user, a `#123` or `owner/repo#123` would put a "mentioned this" event on
- * that issue or PR, and a `<tag>` would open HTML. The first two get a
- * zero-width space after the `@` or `#`, the third an entity.
+ * user, a `#123`, `GH-123` or `owner/repo#123` would put a "mentioned this"
+ * event on that issue or PR, a `<tag>` would open HTML, and `[text](target)`
+ * or `![](target)` would become a live link or image. Mentions get a
+ * zero-width space after the `@`, `#` or `GH-`; the rest get entities.
  */
 function quoted(s: string): string {
-  return s.replace(/</g, "&lt;").replace(/@(?=[A-Za-z0-9-])/g, "@\u200b").replace(/#(?=\d)/g, "#\u200b");
+  // Mentions first: the entities below carry a `#` before digits.
+  return s
+    .replace(/@(?=[A-Za-z0-9-])/g, "@\u200b")
+    .replace(/#(?=\d)/g, "#\u200b")
+    .replace(/\bGH-(?=\d)/gi, (m) => `${m}\u200b`)
+    .replace(/</g, "&lt;")
+    .replace(/\[/g, "&#91;")
+    .replace(/\]/g, "&#93;");
 }
 
 function plural(n: number, one: string, many = `${one}s`): string {
