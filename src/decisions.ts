@@ -61,8 +61,8 @@ export function cap(text: string, n = LINE): string {
 
 /** What a decision line is checked against, beyond common English: what is already public on the PR. */
 export interface Quoting {
-  /** Whether the diff carries a name: a changed symbol, a changed path, or text in a changed line. */
-  carries?: (name: string) => boolean;
+  /** Whether the diff carries a word whole: a changed symbol, a changed path or file name, or a whole token in a changed line. */
+  carries?: (word: string) => boolean;
   /** Logins already on the PR: its author and reviewers (bots included, `coderabbitai[bot]`). */
   people?: string[];
 }
@@ -73,8 +73,8 @@ export interface Quoting {
  * never masked. Common English is SCOWL's size-50 list (`src/words.ts`); a
  * random string is not in it, and neither is a person's or a company's name.
  * A capitalised word inside a sentence is a name whatever it spells (Acme,
- * Smith, React), so it passes only when the diff carries it or a login on
- * the PR starts with it. Also allowed: an acronym, a small number or
+ * Smith), so it passes only when the diff carries it, a login on the PR
+ * starts with it, or it names public software (React, Postgres). Also allowed: an acronym, a small number or
  * version, a few abbreviations and joiners, a path or file name the change
  * carries, a camelCase or snake_case name built of words or carried by the
  * diff, and in code font a call or accessor chain of such names (never all
@@ -87,7 +87,16 @@ const DEVELOPER = new Set(
     "api args arg ascii async auth autofix backend bool boolean bot cli codebase config cors cron crud csrf cwd debounce dedupe dep deps deserialize dev dropdown enum env " +
     "eval falsy flaky frontend getter hotfix html http iframe impl init iterator json lib linter localhost login logout middleware monorepo mutex namespace " +
     "nullable oauth param parser prefetch prod readme refetch regex repo rerender runtime schema setter signup src stderr stdin stdout subagent " +
-    "smtp teardown todo tooltip truthy typecheck typed upsert uri url util utils uuid webhook workflow yaml"
+    "smtp teardown todo tooltip truthy typecheck typed upsert uri url util utils uuid webhook workflow yaml " +
+    "max min jest vitest pytest mocha npm pnpm bun node lockfile linting minified bundler transpile codegen"
+  ).split(" "),
+);
+/** Public software, by name: libraries, runtimes, languages and tools, never a person or a client. */
+const SOFTWARE = new Set(
+  (
+    "react next.js nextjs vue svelte angular node node.js deno bun typescript javascript python rust golang java kotlin swift ruby rails django flask " +
+    "fastapi express nestjs postgres postgresql mysql sqlite redis mongodb kafka graphql prisma drizzle zod yup tailwind vite webpack esbuild rollup " +
+    "eslint prettier vitest jest playwright cypress storybook docker kubernetes terraform github gitlab linux macos windows chrome safari firefox"
   ).split(" "),
 );
 const DICTIONARY = new Set(WORDS.split("\n"));
@@ -134,7 +143,7 @@ export function shareable(line: string, files: string[] = [], quoting: Quoting =
     if (parts.filter((p) => /^[A-Z]{2,}$/.test(p) && !english(p)).length > 1) return false;
     return parts.length > 1 && parts.every((p) => (/^\d/.test(p) ? p.length <= 2 : p.length >= 2 && (english(p) || ACRONYM.test(p))));
   };
-  const other = (t: string): boolean => t === "" || NUMBER.test(t) || ABBREVIATION.test(t) || JOINER.test(t) || carried(t) || known(t);
+  const other = (t: string): boolean => t === "" || NUMBER.test(t) || ABBREVIATION.test(t) || JOINER.test(t) || carried(t) || known(t) || SOFTWARE.has(t.toLowerCase());
   // A word in prose; `opens` when it starts a sentence, where a capital is not a name.
   const prose = (t: string, opens: boolean): boolean => {
     if (other(t)) return true;

@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { changedDeclarationClaims, declares, decisionsOf, narrativeClaims, buildBrief, commandRuns, concurrentPrs, othersIn, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
+import { changedDeclarationClaims, declares, decisionsOf, diffWords, narrativeClaims, buildBrief, commandRuns, concurrentPrs, othersIn, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
 import { parseUnifiedDiff } from "./diff.js";
 import { loadGraph } from "./graph.js";
 import { checkpointRef } from "./checkpoint.js";
+import { shareable } from "./decisions.js";
 import { DatabaseSync } from "node:sqlite";
 
 // src/testdata/brief/ is real cgraph bin-v0.4.0 output over the six-file repo
@@ -513,6 +514,41 @@ describe("declares", () => {
     expect(declares("parse", "  parse(input);")).toBe(false);
     expect(declares("parse", "  const n = parse(input) + 1;")).toBe(false);
     expect(declares("parse", "export function parseAll(inputs: string[]): number {")).toBe(false);
+  });
+});
+
+describe("diffWords", () => {
+  const diff = [
+    "diff --git a/src/users.ts b/src/users.ts",
+    "--- a/src/users.ts",
+    "+++ b/src/users.ts",
+    "@@ -1,0 +1,3 @@",
+    "+const users = await db.query(sql, { prod: false });",
+    "+export const key = process.env.KEY;",
+    "+// docs: https://example.com/help",
+    "",
+  ].join("\n");
+  const parsed = parseUnifiedDiff(diff);
+  const carries = diffWords(parsed, [], new Set(["src/users.ts"]));
+
+  it("makes a word public only whole: a changed-line token, a changed file's name or a changed path", () => {
+    expect(["users", "query", "KEY", "users.ts", "src/users.ts"].map(carries)).toEqual([true, true, true, true, true]);
+    expect(["taylor@example.com", "example.com", "prod-db", "key-3f9a", "users.query"].map(carries)).toEqual([false, false, false, false, false]);
+  });
+
+  it("never passes a quoted line whose email, host, port or key has one part in the diff", () => {
+    for (const line of [
+      "The root cause is that taylor@example.com was disabled.",
+      "It broke because acme-prod-db.internal:5432 refused the connection.",
+      "It broke because the replica at prod-db.acme.lan was stale.",
+      // Built at run time: the literal has the shape of a vendor key, which push protection rejects.
+      `It broke because key-${"3f9a8b7c6d5e4f3a"}${"2b1c0d9e8f7a6b5c"} expired.`,
+      "It broke because prod-hunter2-xkqz was rotated.",
+      "It broke because users-acmecorp-prod.query was cached.",
+    ]) {
+      expect(shareable(line, ["src/users.ts"], { carries }), line).toBe(false);
+    }
+    expect(shareable("The users query ran twice because the prod flag was read late.", ["src/users.ts"], { carries })).toBe(true);
   });
 });
 

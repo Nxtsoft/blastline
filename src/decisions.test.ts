@@ -182,6 +182,7 @@ describe("shareable", () => {
       "Devyn chose the old cache because the new one is slow.",
       "use qwhtnzmr instead",
       "the value xkcdpq broke the import",
+      "the export for Target failed because the totals were off",
     ]) {
       expect(shareable(line), line).toBe(false);
     }
@@ -209,6 +210,12 @@ describe("shareable", () => {
       "I kept the webhook handler in the backend because the frontend has no config for it.",
       "Taylor asked for warn instead of stop, so I kept React state local.",
       "The JSON parse failed because the API returns HTML on a 500.",
+      "I chose a floor instead of rounding because the cap must never exceed the max.",
+      "This regressed because React 19 batches the state update.",
+      "I went with Postgres instead of Redis because the rows need joins.",
+      "I chose Zod instead of Yup because the schema is shared with the server.",
+      "It flaked because vitest runs hooks in parallel.",
+      "Next.js caches the route, so I opted out because the summary changes per tab.",
     ]) {
       expect(shareable(line, files, quoting), line).toBe(true);
     }

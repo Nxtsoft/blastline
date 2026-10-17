@@ -564,6 +564,20 @@ function diffCarries(files: ChangedFile[], symbols: SymbolChange[] | undefined, 
 }
 
 /**
+ * Whether a word of a quoted decision line is already public in the diff, as
+ * a whole: a single identifier that is a changed symbol, a changed file's
+ * name, or a whole token in a changed line, or exactly a changed path. Unlike
+ * `diffCarries`, never by one of its parts, so `taylor@example.com` is not
+ * public because `com` is in a changed line.
+ */
+export function diffWords(files: ChangedFile[], symbols: SymbolChange[] | undefined, changedPaths: Set<string>): (word: string) => boolean {
+  const names = new Set([...changedPaths].map((p) => p.slice(p.lastIndexOf("/") + 1)));
+  const words = new Set<string>((symbols ?? []).map((s) => s.label));
+  for (const line of files.flatMap((f) => [...(f.added ?? []), ...(f.removed ?? [])])) for (const t of line.match(/[A-Za-z_$][\w$]*/g) ?? []) words.add(t);
+  return (word) => changedPaths.has(word) || names.has(word) || (/^[A-Za-z_$][\w$]*$/.test(word) && words.has(word));
+}
+
+/**
  * What the narratives (the PR body, each commit's message) claim against what
  * the diff carries. Refuted: a name in code font that no changed symbol bears
  * and no changed line contains (a phantom change); placeholder text. Partial:
@@ -716,7 +730,7 @@ export function buildBrief(o: BriefOptions): Brief {
   const rangePaths = parsed.map((f) => f.path);
   // A decision line may quote what is already public on the PR: names the diff carries, and its author's and reviewers' logins.
   const quoting = {
-    carries: diffCarries(parsed, changeContext?.symbols, changedPaths),
+    carries: diffWords(parsed, changeContext?.symbols, changedPaths),
     people: [...(author !== undefined ? [author] : []), ...(reviews ?? []).map((r) => r.login)],
   };
   let commits: CommitBrief[];

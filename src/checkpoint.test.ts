@@ -533,6 +533,25 @@ describe("checkpointFor on the branch backend", () => {
     expect(cp?.decisions.map((d) => d.text)).toEqual(["I kept the cap at eight because the round planner pages by eight."]);
   });
 
+  it("quotes nothing the agent says after it leaves the repo inside a turn, until it works at the root again", () => {
+    const HEX_M = "d4e5f6a1b2c3";
+    const mixed = [
+      ...CUMULATIVE,
+      rec("user", stamp(100), [user("let the cap take zero, and compare billing")]),
+      rec("assistant", stamp(101), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 0;")]),
+      rec("assistant", stamp(102), [bash("cd /Users/x/billing && cat package.json")]),
+      rec("assistant", stamp(103), [text("The root cause is the refund rounding because it truncates before tax.")]),
+      rec("assistant", stamp(104), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 1;")]),
+      rec("assistant", stamp(105), [text("I kept the minimum at one because the eval harness divides by it.")]),
+      rec("assistant", stamp(106), [bash("diff /Users/x/wt/src/round-size.ts /Users/x/billing/src/round-size.ts")]),
+      rec("assistant", stamp(107), [text("The billing cap rounds down because the ledger expects whole cents.")]),
+    ];
+    writeBranchCheckpoint(HEX_M, branchFiles(HEX_M, stamp(108), mixed, ""));
+    const m = commitFile("src/round-size.ts", "export const ROUND_SIZE_MIN = 1;\n", `fix: the cap minimum is one\n\nEntire-Checkpoint: ${HEX_M}\n`);
+    const cp = checkpointFor(repo, m, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
+    expect(cp?.decisions.map((d) => d.text)).toEqual(["I kept the minimum at one because the eval harness divides by it."]);
+  });
+
   it("reads nothing when edits name two checkouts of the same layout", () => {
     const HEX_Y = "b2c3d4e5f6a1";
     const two = [

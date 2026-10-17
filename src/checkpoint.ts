@@ -556,10 +556,45 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
     // The first segment can start inside a turn the previous checkpoint read part of: the whole turn says whether it worked on the files, only the unread part is quoted.
     let opened = from;
     while (opened > 0 && !(records[opened] !== undefined && humanTurn(records[opened]!))) opened--;
-    if (records.slice(opened, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOnPath(block, files, root)))) kept.push(...lines.slice(from, i));
+    if (records.slice(opened, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOnPath(block, files, root)))) {
+      // Inside the turn, what the agent says after it leaves this repo is not quoted until it works at the root again.
+      let away = false;
+      for (let k = from; k < i; k++) {
+        if (!away) kept.push(lines[k]!);
+        for (const block of records[k]?.type === "assistant" ? (records[k]!.content ?? []) : []) {
+          if (leaves(block, root)) away = true;
+          else if (worksOnPath(block, files, root)) away = false;
+        }
+      }
+    }
     from = i;
   }
   return kept.join("\n");
+}
+
+/**
+ * Whether a tool call leaves the repo at `root`: an edit outside it, or a
+ * Bash command that changes directory anywhere but the root or names an
+ * absolute path outside it (device and temp paths aside, which belong to no
+ * repo).
+ */
+function leaves(block: NonNullable<TranscriptRecord["content"]>[number], root: string): boolean {
+  if (block.type !== "tool_use" || block.name === undefined) return false;
+  const inside = (path: string): boolean => path.startsWith(root) || path === root.slice(0, -1);
+  if (EDIT_TOOLS.has(block.name)) {
+    const path = block.input?.file_path;
+    return typeof path === "string" && !inside(path);
+  }
+  const command = block.name === "Bash" ? block.input?.command : undefined;
+  if (typeof command !== "string") return false;
+  for (const [, target] of command.matchAll(/(?:^|[;&|(]\s*)cd(?:\s+("[^"]*"|'[^']*'|[^\s;&|)]+))?/gm)) {
+    if (target === undefined || !inside(target.replace(/^["']|["']$/g, ""))) return true;
+  }
+  // A path starts with a name after its slash, so a regex (`/^x/`) or a URL's `//` is not one; scratch and device paths belong to no repo.
+  for (const [, path] of command.matchAll(/(?:^|[\s'"=(:])((?:\/|~\/)[\w.~-][^\s'"`;|&)]*)/g)) {
+    if (!/^\/(?:dev|tmp|private\/tmp|var\/folders)\//.test(path!) && !inside(path!)) return true;
+  }
+  return false;
 }
 
 /**
