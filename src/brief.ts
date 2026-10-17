@@ -714,6 +714,11 @@ export function buildBrief(o: BriefOptions): Brief {
   };
   const sessions = o.sessionsDb === undefined ? undefined : new SessionsIndex(o.sessionsDb);
   const rangePaths = parsed.map((f) => f.path);
+  // A decision line may quote what is already public on the PR: names the diff carries, and its author's and reviewers' logins.
+  const quoting = {
+    carries: diffCarries(parsed, changeContext?.symbols, changedPaths),
+    people: [...(author !== undefined ? [author] : []), ...(reviews ?? []).map((r) => r.login)],
+  };
   let commits: CommitBrief[];
   try {
     // What earlier commits' checkpoints already read of each session's transcript: the next one reads what came after.
@@ -724,7 +729,7 @@ export function buildBrief(o: BriefOptions): Brief {
       const checkpointId = checkpointTrailer(repo, sha);
       const own = (changeContext?.symbols ?? []).filter((s) => files.includes(s.path)).map((s) => ({ path: s.path, label: s.label, ...rangeOf(s) }));
       const checkpoint =
-        checkpointId !== undefined ? checkpointFor(repo, sha, own, read, files, rangePaths) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files, own);
+        checkpointId !== undefined ? checkpointFor(repo, sha, own, read, files, rangePaths, quoting) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files, own);
       for (const s of checkpoint?.sessions ?? []) if (s.id !== "" && s.lines > 0) read.set(s.id, { sha, lines: s.lines, hash: s.hash });
       // Only for a commit with no trailer at all: a dangling trailer stays "not fetched", which names the fix (push the checkpoints).
       const provenance = checkpointId === undefined && checkpoint === undefined ? provenanceOf(repo, sha) : undefined;

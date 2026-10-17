@@ -1,3 +1,5 @@
+import { WORDS } from "./words.js";
+
 /**
  * What the agent decided while making a commit, read from the compact
  * transcript of its checkpoint, without a model. Each line is something the
@@ -12,12 +14,13 @@
  * operating the change rather than the change itself (git authors, CI,
  * staging, merges, other PRs).
  *
- * Privacy: a line leaves the ref only when `shareable` passes every word in
- * it, so a line holding a path, a URL, an email address, a token or anything
- * but plain words, names and the change's own paths is dropped, never masked. Tool output never leaves: a test is read
- * by its runner, the test files the change carries, and its call's status; a
- * revert by the agent's description of it or a fixed label; design notes by
- * the change's own path.
+ * Privacy: a line leaves the ref only when `shareable` finds every word in
+ * it common English or already public on the PR (a name the diff carries, a
+ * reviewer's login), so a path, URL, email, token, random string or a name
+ * not on the PR drops the line, never masked. Tool output never leaves: a
+ * test is read by its runner, the test files the change carries, and its
+ * call's status; a revert by the agent's description of it or a fixed label;
+ * design notes by the change's own path.
  */
 export type DecisionKind = "found" | "tests" | "reverted" | "alternatives";
 
@@ -56,85 +59,121 @@ export function cap(text: string, n = LINE): string {
   return `${cut}…`;
 }
 
+/** What a decision line is checked against, beyond common English: what is already public on the PR. */
+export interface Quoting {
+  /** Whether the diff carries a name: a changed symbol, a changed path, or text in a changed line. */
+  carries?: (name: string) => boolean;
+  /** Logins already on the PR: its author and reviewers (bots included, `coderabbitai[bot]`). */
+  people?: string[];
+}
+
 /**
- * Whether a line may leave the ref: every word in it is one a reader can see
- * is harmless, and one word that is not drops the whole line. A deny-list of
- * path, host and token shapes always has a remainder, so words are allowed
- * by shape instead: a word (with an apostrophe or hyphens), a camelCase or
- * snake_case name whose parts are words, a small number or version, a few
- * abbreviations and joiners, a path or file name the change carries, and in
- * code font a call or accessor chain of such names. Everything else (a path,
- * URL, host, IP, port, email, entity, token, a word mixing letters and
- * digits like a password, a run no word looks like) is dropped, never
- * masked. A secret built of words (a passphrase, a PIN, a recovery code) no
- * shape can tell apart, so a line that says what one is goes too.
+ * Whether a line may leave the ref: every word in it is common English or
+ * already public on the PR, and one word that is not drops the whole line,
+ * never masked. Common English is SCOWL's size-50 list (`src/words.ts`); a
+ * random string is not in it, and neither is a person's or a company's name.
+ * A capitalised word inside a sentence is a name whatever it spells (Acme,
+ * Smith, React), so it passes only when the diff carries it or a login on
+ * the PR starts with it. Also allowed: an acronym, a small number or
+ * version, a few abbreviations and joiners, a path or file name the change
+ * carries, a camelCase or snake_case name built of words or carried by the
+ * diff, and in code font a call or accessor chain of such names (never all
+ * digits, never a dotted host). A line that says what a password, PIN or OTP
+ * is, or sets a key, token or secret, goes too.
  */
+/** Software words SCOWL lacks, each with -s, -es, -ed, -d and -ing forms; a missing one only drops a line. */
+const DEVELOPER = new Set(
+  (
+    "api args arg ascii async auth autofix backend bool boolean bot cli codebase config cors cron crud csrf cwd debounce dedupe dep deps deserialize dev dropdown enum env " +
+    "eval falsy flaky frontend getter hotfix html http iframe impl init iterator json lib linter localhost login logout middleware monorepo mutex namespace " +
+    "nullable oauth param parser prefetch prod readme refetch regex repo rerender runtime schema setter signup src stderr stdin stdout subagent " +
+    "smtp teardown todo tooltip truthy typecheck typed upsert uri url util utils uuid webhook workflow yaml"
+  ).split(" "),
+);
+const DICTIONARY = new Set(WORDS.split("\n"));
 const NUMBER = /^(?:\d{1,4}(?:st|nd|rd|th|s|x|ms|px|%)?|\d{1,3}(?:,\d{3})+|\d+\.\d+%?|v\d{1,2}|\d{1,2}(?:\.\d{1,3}){1,2})$/;
 const ABBREVIATION = /^(?:e\.g|i\.e|etc|vs|a\.k\.a|e2e|i18n|l10n|a11y)$/i;
 const JOINER = /^(?:[-–—&+=→]|->)$/;
-const SAYS_SECRET = /\b(?:pass(?:word|phrase|code)?|pwd|pin|otp|secret|token|api[_ -]?key|key|code|credential)s?\s*(?:is|was|are|were|=|:)\s*\S/i;
-/** The last label of a dotted name in code font that makes it a host, not an accessor chain. */
-const TLD = /^(?:com|net|org|io|ai|dev|app|co|cloud|internal|local|corp|tech|xyz|us|uk|de|fr|in|me|info|biz|sh|so|gg|tv)$/i;
+/** Two or three capitals pass as an acronym (`CI`, `SSR`); four or five only as a known word (`JSON`, `SMTP`), so a code group (`ABCDE-FGHIJ`) does not. */
+const ACRONYM = /^[A-Z]{2,3}s?$/;
+const SAYS_SECRET = /\b(?:pass(?:word|phrase|code)?|pwd|pin|otp)s?\s*(?:is|was|are|were|=|:)\s*\S|\b(?:secret|token|api[_ -]?key|key|code|credential)s?\s*[=:]\s*\S/i;
 
-/** Letters a word is made of: Latin, with a vowel, no run of five consonants (`qwhtnzmr` is not a word). */
-function wordish(part: string): boolean {
-  return /[aeiouy]/i.test(part) && !/[b-df-hj-np-tv-xz]{5}/i.test(part);
+/** A common English word: in the list or the developer words, as a contraction or possessive of one, or two list words of four letters or more joined (`callback`, `checkbox`). */
+function english(word: string): boolean {
+  const w = word.toLowerCase().replace(/['’](?:s|d|ll|re|ve|m)$/, "");
+  if (DICTIONARY.has(w) || /^(?:can|won|shan)['’]t$/.test(w)) return true;
+  if ([w, w.replace(/(?:es|s|ed|d|ing)$/, ""), w.replace(/(?:ed|ing)$/, "e"), w.replace(/(.)\1(?:ed|ing)$/, "$1")].some((base) => DEVELOPER.has(base))) return true;
+  const not = /^(\w+)n['’]t$/.exec(w);
+  if (not !== null) return DICTIONARY.has(not[1]!);
+  for (let k = 4; k <= w.length - 4; k++) if (DICTIONARY.has(w.slice(0, k)) && DICTIONARY.has(w.slice(k))) return true;
+  return false;
 }
 
-/**
- * A name built of words: a lower-case or Capitalised word up to 15 letters,
- * all capitals up to 8, or camelCase whose every part is a word of three
- * letters or more, with digits only as one- or two-digit parts between
- * words. A random run (`AbCdEf`, `xY7kP2`, `hunter2`, `kqzxvbnm`) fails.
- */
-function namedLike(token: string): boolean {
-  if (/^(?:[a-z]{1,15}|[A-Z][a-z]{0,14})$/.test(token)) return token.length <= 3 || wordish(token);
-  if (/^[A-Z]{1,8}$/.test(token)) return token.length <= 3 || wordish(token);
-  if (!/^[A-Za-z][A-Za-z0-9]*$/.test(token) || !/[a-z][A-Z]|[A-Z][a-z]/.test(token.slice(1))) return false;
-  const parts = token.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+/g) ?? [];
-  if (parts.join("") !== token) return false;
-  const words = parts.filter((p) => !/^\d/.test(p));
-  if (words.length < 2) return false;
-  return parts.every((p) => (/^\d/.test(p) ? p.length <= 2 : p.length >= 3 && p.length <= 15 && wordish(p)));
+/** The words of an identifier: camelCase and snake_case parts, digits as their own parts. */
+function partsOf(name: string): string[] | undefined {
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) return undefined;
+  const parts = name.split("_").filter((p) => p !== "").flatMap((p) => p.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+/g) ?? []);
+  return parts.join("") === name.replace(/_/g, "") ? parts : undefined;
 }
 
-/** A word, a hyphenated compound or a contraction whose every part is a name built of words. */
-function wordLike(token: string): boolean {
-  return token
-    .replace(/['’][a-z]{1,2}$/i, "")
-    .split("-")
-    .every((part) => namedLike(part));
-}
-
-export function shareable(line: string, files: string[] = []): boolean {
+export function shareable(line: string, files: string[] = [], quoting: Quoting = {}): boolean {
   if (SAYS_SECRET.test(line)) return false;
   // The path itself or its file name: a longer path ending in it (`/home/t/wt/src/a.ts`) names a machine.
   const carried = (t: string): boolean => files.some((f) => t === f || f.endsWith(`/${t}`));
-  const word = (t: string): boolean =>
-    t === "" || wordLike(t) || (/^[A-Za-z]+(?:_[A-Za-z]+)+$/.test(t) && t.split("_").every(namedLike)) || NUMBER.test(t) || ABBREVIATION.test(t) || JOINER.test(t) || carried(t);
-  // In code font, a call or accessor chain (`scenario?.summary`, `useEffect()`, `step >= 9`): each name in it a word, the chain not a host.
+  const known = (t: string): boolean => quoting.carries !== undefined && (quoting.carries(t) || quoting.carries(t.toLowerCase()));
+  const person = (t: string): boolean => {
+    const w = t.toLowerCase();
+    return w.length >= 4 && (quoting.people ?? []).some((login) => login.toLowerCase().replace(/\[bot\]$/, "").replace(/[^a-z0-9]/g, "").startsWith(w));
+  };
+  // An identifier built of words: each part common English, an acronym, or one or two digits.
+  const builtOfWords = (name: string): boolean => {
+    const parts = partsOf(name);
+    // Digits only inside a real camelCase or snake_case name (`useStep4Query`), never after one word (`hunter2`).
+    if (parts === undefined || (parts.some((p) => /^\d/.test(p)) && !/[a-z][A-Z]|_/.test(name))) return false;
+    // At most one acronym part (`getHTTPResponse`); random mixed case splits into several (`nagWJNVetSIS`).
+    if (parts.filter((p) => /^[A-Z]{2,}$/.test(p) && !english(p)).length > 1) return false;
+    return parts.length > 1 && parts.every((p) => (/^\d/.test(p) ? p.length <= 2 : p.length >= 2 && (english(p) || ACRONYM.test(p))));
+  };
+  const other = (t: string): boolean => t === "" || NUMBER.test(t) || ABBREVIATION.test(t) || JOINER.test(t) || carried(t) || known(t);
+  // A word in prose; `opens` when it starts a sentence, where a capital is not a name.
+  const prose = (t: string, opens: boolean): boolean => {
+    if (other(t)) return true;
+    if (/^[A-Za-z]+(?:_[A-Za-z0-9]+)+$/.test(t)) return builtOfWords(t);
+    return t.split("-").every((p, i) => {
+      if (p === "" || /^\d{1,4}$/.test(p) || other(p)) return true;
+      if (/^[a-z]+(?:['’][a-z]{1,2}|n['’]t)?$/.test(p)) return english(p);
+      if (p === "I" || ACRONYM.test(p) || (/^[A-Z]{4,5}s?$/.test(p) && english(p.replace(/s$/, "")))) return true;
+      if (/^[A-Z][a-z]+(?:['’][a-z]{1,2}|n['’]t)?$/.test(p)) return ((opens && i === 0) && english(p)) || person(p);
+      // An identifier: lowerCamel built of words; PascalCase is a name unless the diff carries it.
+      if (/^[a-z]/.test(p)) return builtOfWords(p);
+      return person(p);
+    });
+  };
+  // In code font: each name in a call or accessor chain (`scenario?.summary`, `useEffect()`, `step >= 9`).
   const code = (span: string): boolean =>
     carried(span) ||
     span.split(/\s+/).every((t) => {
-      if (carried(t)) return true;
+      if (t === "" || carried(t) || JOINER.test(t) || /^[<>=!]+$/.test(t)) return true;
+      if (/[^\w.()?!<>=\[\],;{}+*&|-]/.test(t)) return false;
       const names = t.split(/[.()?!<>=\[\],;{}+*&|-]+/).filter((n) => n !== "");
-      if (/[^\w.()?!<>=\[\],;{}+*&|\s-]/.test(t)) return false;
-      if (names.length > 1 && t.includes(".") && TLD.test(names[names.length - 1]!)) return false;
-      return names.every((n) => word(n) || /^\d{1,4}$/.test(n));
+      if (names.length > 1 && names.every((n) => /^\d+$/.test(n))) return false;
+      if (t.includes(".") && !/\(|\?\./.test(t) && !names.some((n) => /[A-Z]/.test(n) || known(n)) && !NUMBER.test(t)) return false;
+      return names.every((n) => /^\d{1,4}$/.test(n) || /^[A-Za-z]$/.test(n) || known(n) || english(n) || ACRONYM.test(n) || builtOfWords(n));
     });
   const spans: string[] = [];
-  const prose = line.replace(/`([^`]*)`/g, (_, span: string) => {
+  const text = line.replace(/`([^`]*)`/g, (_, span: string) => {
     spans.push(span);
-    return " ";
+    return " , ";
   });
-  return (
-    spans.every(code) &&
-    prose
-      .replace(/[`*]|__/g, "")
-      .split(/\s+/)
-      .map((t) => t.replace(/^[(["'“‘]+/, "").replace(/[)\]"'”’.,;:!?…]+$/, ""))
-      .every(word)
-  );
+  if (!spans.every(code)) return false;
+  let opens = true;
+  for (const raw of text.replace(/\*\*|__/g, "").split(/\s+/)) {
+    if (raw === "") continue;
+    const t = raw.replace(/^[(["'“‘]+/, "").replace(/[)\]"'”’.,;:!?…]+$/, "");
+    if (!prose(t, opens)) return false;
+    opens = /[.!?:]["'”’)]*$/.test(raw) || /^[-–—*]$/.test(raw);
+  }
+  return true;
 }
 
 /** About operating the change, not the change: authors, CI, environments, merges, other PRs. */
@@ -233,12 +272,12 @@ const ALTERNATIVES = /^#{1,6}\s*(?:alternatives?(?: considered)?|options conside
  * repo-relative paths the change carries: a test file or design note is
  * named only when the change carries it. What a person typed is not read.
  */
-export function decisionsIn(window: string, files: string[]): Decision[] {
+export function decisionsIn(window: string, files: string[], quoting: Quoting = {}): Decision[] {
   const out: Decision[] = [];
   const carried = (path: string): string | undefined => files.find((f) => path === f || path.endsWith(`/${f}`));
   const tests = new Map<string, { at: number; statuses: string[] }>();
   const push = (kind: DecisionKind, text: string, at: number): void => {
-    if (shareable(text, files)) out.push({ kind, text: cap(text), at });
+    if (shareable(text, files, quoting)) out.push({ kind, text: cap(text), at });
   };
   window.split("\n").forEach((line, at) => {
     if (line.trim() === "") return;
@@ -271,7 +310,7 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
         if (revert !== undefined) {
           const described = typeof input.description === "string" ? input.description.trim() : "";
           // The fixed label is ours, not quoted, so it needs no check.
-          if (described !== "" && shareable(described, files) && !OPERATIONAL.test(described)) push("reverted", described, at);
+          if (described !== "" && shareable(described, files, quoting) && !OPERATIONAL.test(described)) push("reverted", described, at);
           else out.push({ kind: "reverted", text: revert[1], at });
         }
         continue;

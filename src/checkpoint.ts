@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { Decision } from "./decisions.js";
+import type { Decision, Quoting } from "./decisions.js";
 import { decisionsIn } from "./decisions.js";
 
 /**
@@ -502,53 +502,61 @@ function worksOn(block: NonNullable<TranscriptRecord["content"]>[number], files:
 }
 
 /**
- * Whether a tool call works on one of `files` by its repo-relative path. A
- * Bash command names the whole path, not inside a longer one
- * (`../billing/package.json` is another repo's). An edit tool's absolute
- * path is the repo root plus the file; `root` is that root when a path
- * inside a folder fixed it, else a file at the repo root (`package.json`) is
- * matched by no edit, since any repo has one. Stricter than `worksOn`, whose
+ * Whether a tool call works on one of `files` at this repo's `root`: an edit
+ * tool whose absolute path is the root plus the file, or a Bash command that
+ * names that absolute path. A relative path in a command is not read: the
+ * shell keeps its directory between calls, so `cat package.json` after an
+ * earlier `cd ../billing` reads another repo. Stricter than `worksOn`, whose
  * basename match lets a session that only read another `index.ts` count;
  * decisions quote what the agent said about the change, so they need this.
  */
-function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], files: string[], root: string | undefined): boolean {
+function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], files: string[], root: string): boolean {
   if (block.type !== "tool_use" || block.name === undefined) return false;
   if (block.name === "Bash") {
     const command = block.input?.command;
-    return typeof command === "string" && files.some((f) => new RegExp(`(?<![\\w./~-])${f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`).test(command));
+    return typeof command === "string" && files.some((f) => new RegExp(`${`${root}${f}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`).test(command));
   }
-  if (!EDIT_TOOLS.has(block.name)) return false;
   const path = block.input?.file_path;
-  if (typeof path !== "string") return false;
-  return files.some((f) => path === f || (root !== undefined ? path === `${root}${f}` : f.includes("/") && path.endsWith(`/${f}`)));
+  return EDIT_TOOLS.has(block.name) && typeof path === "string" && files.some((f) => path === `${root}${f}`);
 }
 
-/** The repo root an edit names: its absolute path less the repo path of a file inside a folder; undefined when no such edit is in `records`. */
+/**
+ * The repo root the edits name: each edit to a file of the change inside a
+ * folder gives its absolute path less the repo path. Undefined when there
+ * is none, or when two edits disagree (another checkout or worktree with the
+ * same layout), so no turn is read rather than the wrong one.
+ */
 function repoRoot(records: (TranscriptRecord | undefined)[], files: string[]): string | undefined {
+  const roots = new Set<string>();
   for (const r of records) {
     for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
       const path = block.type === "tool_use" && block.name !== undefined && EDIT_TOOLS.has(block.name) ? block.input?.file_path : undefined;
       if (typeof path !== "string") continue;
       const f = files.find((file) => file.includes("/") && path.endsWith(`/${file}`));
-      if (f !== undefined) return path.slice(0, path.length - f.length);
+      if (f !== undefined) roots.add(path.slice(0, path.length - f.length));
     }
   }
-  return undefined;
+  return roots.size === 1 ? [...roots][0] : undefined;
 }
 
 /**
  * The turns from `start` on, each a person's prompt up to the next, that hold
- * a tool call working on one of `files` by path, joined in order. A turn that
- * did no work on the files (an aside before or after the commit's work) is
- * left out whole.
+ * a tool call working on one of `files` at the repo root the edits agree on,
+ * joined in order. A turn that did no work on the files (an aside before or
+ * after the commit's work, work in another checkout) is left out whole, and
+ * with no agreed root nothing is read.
  */
 function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[], start: number, files: string[]): string {
   const kept: string[] = [];
   const root = repoRoot(records, files);
+  if (root === undefined) return "";
   let from = start;
   for (let i = start + 1; i <= records.length; i++) {
     if (i < records.length && !(records[i] !== undefined && humanTurn(records[i]!))) continue;
-    if (records.slice(from, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOnPath(block, files, root)))) kept.push(...lines.slice(from, i));
+    // The first segment can start inside a turn the previous checkpoint read part of: the whole turn says whether it worked on the files, only the unread part is quoted.
+    let opened = from;
+    while (opened > 0 && !(records[opened] !== undefined && humanTurn(records[opened]!))) opened--;
+    if (records.slice(opened, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOnPath(block, files, root)))) kept.push(...lines.slice(from, i));
     from = i;
   }
   return kept.join("\n");
@@ -566,9 +574,11 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
  * none (a commit the same step made). `turnWindow` is that turn whole, so a
  * run the turn made before an earlier commit still counts and a run from an
  * earlier turn does not; `stepWindow` is the turn's part inside
- * `sinceWindow`. Lines that are not JSON are kept; every reader skips them.
+ * `sinceWindow`. `decisionWindow` reads only the turns that work on `scope`
+ * (the PR's files; the commit's own by default) at the one repo root those
+ * edits agree on. Lines that are not JSON are kept; every reader skips them.
  */
-export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[]): Windows {
+export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[], scope: string[] = files): Windows {
   const lines = transcript.split("\n").filter((line) => line.trim() !== "");
   const records = lines.map((line): TranscriptRecord | undefined => {
     try {
@@ -597,7 +607,7 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   return {
     ask: opening !== undefined && humanTurn(opening) ? askOf(opening) : "",
     worked: firstWork !== -1,
-    decisionWindow: firstWork === -1 ? "" : workingTurns(lines, records, stepStart, files),
+    decisionWindow: firstWork === -1 ? "" : workingTurns(lines, records, stepStart, scope),
     sinceWindow: lines.slice(sinceStart).join("\n"),
     stepWindow: lines.slice(stepStart).join("\n"),
     turnWindow: lines.slice(turnStart).join("\n"),
@@ -676,7 +686,15 @@ export function testCommandsIn(transcript: string): string[] {
  * `metadata.json` also lists per-session paths; those are not followed, so no
  * checkpoint can point this reader at `<i>/full.jsonl`.
  */
-export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] = [], read: ReadSessions = new Map(), files: string[] = [], changed: string[] = []): Checkpoint | undefined {
+export function checkpointFor(
+  repo: string,
+  commit: string,
+  symbols: SymbolAt[] = [],
+  read: ReadSessions = new Map(),
+  files: string[] = [],
+  changed: string[] = [],
+  quoting: Quoting = {},
+): Checkpoint | undefined {
   const id = checkpointTrailer(repo, commit);
   if (id === undefined) return undefined;
   const place = checkpointPlace(repo, id);
@@ -718,8 +736,8 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     for (let i = 0; i < sessionCount; i++) {
       const sessionId = (i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata)).session_id ?? "";
       const before = sessionId === "" ? undefined : read.get(sessionId);
-      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
-      decisions.push(...decisionsIn(decisionWindow, changed.length > 0 ? changed : files));
+      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files, changed.length > 0 ? changed : files);
+      decisions.push(...decisionsIn(decisionWindow, changed.length > 0 ? changed : files, quoting));
       if (opened !== "" && (ask === "" || (worked && !askWorked))) {
         ask = opened;
         askWorked = worked;

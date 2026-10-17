@@ -105,7 +105,7 @@ describe("decisionsIn: reverts and design notes", () => {
 });
 
 describe("shareable", () => {
-  it("drops a line naming a local path, a URL, an email or something shaped like a secret", () => {
+  it("drops a line naming a local path, a URL, a host, an email, a name not on the PR, or something shaped like a secret", () => {
     for (const line of [
       "The root cause is in /Users/taylor/code/app/src/auth.ts because the cookie is dropped.",
       "found it in ~/.datadog-keys because the CLI reads it",
@@ -171,12 +171,24 @@ describe("shareable", () => {
       "use dyrpyeubx12yn1jr7m19ulab because it works",
       "use pass qwhtnzmr instead",
       "the host is at `acme.internal.tech` because of the move",
-      "The token is refreshed before expiry because the clock skews.",
+      // The fourth review's probes: IPs, cards and dotted hosts in code font.
+      "The DB at `10.20.0.7` rejected us because the role lacks CONNECT.",
+      "It broke because `db.payments.svc` resolves to the old replica.",
+      "It broke because `jenkins.acme.lan` has the old cert.",
+      "The card `4111-1111-1111-1111` failed because of the check.",
+      // A name not on the PR, and any random lower-case string.
+      "ask Devyn about the layoffs list instead",
+      "the reply goes to Acme Corp because the contract changed",
+      "Devyn chose the old cache because the new one is slow.",
+      "use qwhtnzmr instead",
+      "the value xkcdpq broke the import",
     ]) {
       expect(shareable(line), line).toBe(false);
     }
     const files = ["src/round-size.ts", "openspec/changes/cap/design.md"];
-    expect(shareable("the edit went to /home/taylor/wt/src/round-size.ts because of the worktree", files)).toBe(false);
+    // What is already public on the PR: names the diff carries, and its author's and reviewers' logins.
+    const quoting = { carries: (n: string) => ["ASIA_PACIFIC_REGION", "React"].includes(n), people: ["taylorg009", "coderabbitai[bot]", "mesmer-agent[bot]"] };
+    expect(shareable("the edit went to /home/taylor/wt/src/round-size.ts because of the worktree", files, quoting)).toBe(false);
     for (const line of [
       "I kept warn instead of stop, so steps 4 and 9 behave the same.",
       "The cap moved to src/round-size.ts because two modules each had one.",
@@ -191,18 +203,29 @@ describe("shareable", () => {
       "I chose v2 of the API instead because v1 is deprecated.",
       "I kept the e2e helper instead because i18n strings differ.",
       "Mesmer found a real gap: if the summary goes away while the page stays mounted, the section is never cleared.",
+      "The token is refreshed before expiry because the clock skews.",
+      "The key is the scenario id, because two tabs share one cache.",
+      "The test broke because `expect(x).toBe(1)` compares identity, so I switched to `toEqual`.",
+      "I kept the webhook handler in the backend because the frontend has no config for it.",
+      "Taylor asked for warn instead of stop, so I kept React state local.",
+      "The JSON parse failed because the API returns HTML on a 500.",
     ]) {
-      expect(shareable(line, files), line).toBe(true);
+      expect(shareable(line, files, quoting), line).toBe(true);
     }
   });
 
-  it("passes no random token: lower case, lower case with digits, base36, mixed-case letters", () => {
+  it("passes no random token: lower case of any length, lower case with digits, base36, mixed-case letters", () => {
     // A fixed-seed generator, so a failure names the same token every run.
     let seed = 42;
     const next = (): number => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
     const draw = (alphabet: string, n: number): string => Array.from({ length: n }, () => alphabet[Math.floor(next() * alphabet.length)]).join("");
     const lower = "abcdefghijklmnopqrstuvwxyz";
     for (const [alphabet, n] of [
+      [lower, 6],
+      [lower, 8],
+      [lower, 10],
+      [lower, 12],
+      [lower, 14],
       [lower, 16],
       [lower, 24],
       [`${lower}0123456789`, 32],
