@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cap, chooseDecisions, decisionsIn } from "./decisions.js";
+import { chooseDecisions, code, decisionsIn } from "./decisions.js";
 
 // Records in the compact transcript's shape (Entire transcript format v1): tool results inlined into the tool_use.
 const person = (...texts: string[]): string => JSON.stringify({ type: "user", content: texts.map((text) => ({ text })) });
@@ -47,6 +47,13 @@ describe("decisionsIn: tests", () => {
     expect(texts(window(bash("ls node_modules/.bin/vitest", "error"), bash('echo "=== vitest ==="', "error"), bash("rg -n jest src/", "error")))).toEqual([]);
   });
 
+  it("names two test files and counts the rest, so the outcome is always said", () => {
+    const files = Array.from({ length: 12 }, (_, i) => `src/feature/deeply/nested/module${i}.test.ts`);
+    expect(texts(window(bash(`bunx vitest run ${files.join(" ")}`, "error")), files)).toEqual([
+      "tests: `vitest` on `src/feature/deeply/nested/module0.test.ts`, `src/feature/deeply/nested/module1.test.ts` and 10 more failed on its last run",
+    ]);
+  });
+
   it("says nothing about runs that only passed", () => {
     expect(texts(window(bash("npx jest", "success")))).toEqual([]);
   });
@@ -76,9 +83,10 @@ describe("decisionsIn: reverts and design notes", () => {
   });
 });
 
-describe("cap", () => {
-  it("drops a code span the cut would leave open", () => {
-    expect(cap("the flake in `platform-flows.spec.ts` is worth fixing", 20)).toBe("the flake in…");
+describe("code", () => {
+  it("keeps a backtick inside code font, so nothing after it becomes a mention", () => {
+    expect(code("docs/a.md")).toBe("`docs/a.md`");
+    expect(code("docs/a`@octocat`.md")).toBe("`` docs/a`@octocat`.md ``");
   });
 });
 

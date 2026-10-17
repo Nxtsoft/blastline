@@ -472,7 +472,7 @@ function humanTurn(record: TranscriptRecord): boolean {
  * the line, however it is laid out; the `agents run` preamble and an image
  * caption are skipped, as `promptLine` skips them.
  */
-export function askOf(record: { content?: { text?: string }[] }): string {
+function askOf(record: TranscriptRecord): string {
   for (const block of record.content ?? []) {
     if (typeof block.text !== "string") continue;
     const first = firstTypedLine(block.text);

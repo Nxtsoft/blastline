@@ -1,5 +1,6 @@
 import type { Checkpoint, SymbolReason } from "./checkpoint.js";
 import { TEST_RUNNER } from "./checkpoint.js";
+import { code } from "./decisions.js";
 import type { Brief, BriefDecision, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
 import { SNAPSHOT_MARKER } from "./brief.js";
 import { relativeTo, sharedDir } from "./paths.js";
@@ -36,10 +37,6 @@ const BRIEF_README = "https://github.com/Nxtsoft/blastline#pr-brief";
 
 /** Commit rows beyond this fold behind a summary; a long PR must not bury the claims. */
 export const COMMIT_ROWS_UNFOLDED = 10;
-
-function code(s: string): string {
-  return `\`${s}\``;
-}
 
 /** Table cells split at `|`, even inside a code span; GFM accepts `\|` as a literal pipe. */
 function cell(s: string): string {

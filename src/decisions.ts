@@ -20,9 +20,6 @@ export interface Decision {
   at: number;
 }
 
-/** The longest line a decision carries. */
-export const LINE = 160;
-
 interface Block {
   type?: string;
   name?: string;
@@ -36,16 +33,16 @@ interface TranscriptRecord {
 }
 
 /**
- * One line, at most `n` characters. A cut inside a code span drops the open
- * span, so its backtick cannot pair with one the brief puts after the line.
+ * Text in code font. A path holding a backtick gets a double-backtick span
+ * with padding, so nothing after the backtick (an `@name`) leaves code font,
+ * where GitHub would turn it into a live mention.
  */
-export function cap(text: string, n = LINE): string {
-  const one = text.replace(/\s+/g, " ").trim();
-  if (one.length <= n) return one;
-  let cut = one.slice(0, n - 1);
-  if ((cut.match(/`/g) ?? []).length % 2 === 1) cut = cut.slice(0, cut.lastIndexOf("`")).trimEnd();
-  return `${cut}…`;
+export function code(s: string): string {
+  return s.includes("`") ? `\`\` ${s} \`\`` : `\`${s}\``;
 }
+
+/** The most test files a test line names; the rest are counted, so the outcome always fits. */
+const NAMED_FILES = 2;
 
 /**
  * A test runner in command position: at the start of the command, after any
@@ -112,7 +109,8 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
         const run = testRun(command);
         if (run !== undefined && typeof block.result?.status === "string") {
           const named = [...new Set(run.words.map(carried).filter((f): f is string => f !== undefined))];
-          const key = named.length > 0 ? `\`${run.runner}\` on ${named.map((f) => `\`${f}\``).join(", ")}` : `\`${run.runner}\``;
+          const more = named.length > NAMED_FILES ? ` and ${named.length - NAMED_FILES} more` : "";
+          const key = named.length > 0 ? `${code(run.runner)} on ${named.slice(0, NAMED_FILES).map(code).join(", ")}${more}` : code(run.runner);
           const seen = tests.get(key) ?? { at, statuses: [] };
           seen.statuses.push(block.result.status);
           tests.set(key, seen);
@@ -129,7 +127,7 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
   });
   for (const [key, { at, statuses }] of tests) {
     if (!statuses.includes("error")) continue;
-    out.push({ kind: "tests", text: cap(statuses[statuses.length - 1] === "success" ? `${key} failed, then passed` : `${key} failed on its last run`), at });
+    out.push({ kind: "tests", text: statuses[statuses.length - 1] === "success" ? `${key} failed, then passed` : `${key} failed on its last run`, at });
   }
   return out.sort((a, b) => a.at - b.at);
 }
