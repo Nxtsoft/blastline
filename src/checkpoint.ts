@@ -303,7 +303,7 @@ interface TranscriptRecord {
     type?: string;
     name?: string;
     text?: string;
-    input?: { command?: unknown; file_path?: unknown; old_string?: unknown; new_string?: unknown; content?: unknown; edits?: unknown };
+    input?: { command?: unknown; file_path?: unknown; path?: unknown; notebook_path?: unknown; old_string?: unknown; new_string?: unknown; content?: unknown; edits?: unknown };
   }[];
 }
 
@@ -550,6 +550,21 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
   const kept: string[] = [];
   const root = repoRoot(records, files);
   if (root === undefined) return "";
+  // Whether the agent is away from this repo before each record, over the whole transcript: the shell keeps its directory
+  // across turns. It starts away, leaves on any step outside the root, and is back only on work at the root or a `cd` to it.
+  const away: boolean[] = [];
+  let out = true;
+  records.forEach((r, k) => {
+    // Blocks run in order: a record with text is quoted when any of its text stands while home among its tool calls.
+    const blocks = r?.type === "assistant" ? (r.content ?? []) : [];
+    let home = blocks.some((b) => b.type === "text") ? false : !out;
+    for (const block of blocks) {
+      if (block.type === "text") home = home || !out;
+      else if (leaves(block, root)) out = true;
+      else if (worksOnPath(block, files, root) || returns(block, root)) out = false;
+    }
+    away[k] = !home;
+  });
   let from = start;
   for (let i = start + 1; i <= records.length; i++) {
     if (i < records.length && !(records[i] !== undefined && humanTurn(records[i]!))) continue;
@@ -557,44 +572,52 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
     let opened = from;
     while (opened > 0 && !(records[opened] !== undefined && humanTurn(records[opened]!))) opened--;
     if (records.slice(opened, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOnPath(block, files, root)))) {
-      // Inside the turn, what the agent says after it leaves this repo is not quoted until it works at the root again.
-      let away = false;
-      for (let k = from; k < i; k++) {
-        if (!away) kept.push(lines[k]!);
-        for (const block of records[k]?.type === "assistant" ? (records[k]!.content ?? []) : []) {
-          if (leaves(block, root)) away = true;
-          else if (worksOnPath(block, files, root)) away = false;
-        }
-      }
+      // Inside the turn, what the agent says while away from this repo is not quoted.
+      for (let k = from; k < i; k++) if (!away[k]) kept.push(lines[k]!);
     }
     from = i;
   }
   return kept.join("\n");
 }
 
+/** The directories a Bash command moves to or runs in: `cd`, `pushd`, `git -C`, anywhere in it; an empty target is home. */
+function targetsOf(command: string): string[] {
+  return [...command.matchAll(/(?:^|[^\w-])(?:cd|pushd|git\s+-C)(?=[\s;&|)]|$)(?:\s+("[^"]*"|'[^']*'|[^\s;&|)]+))?/gm)].map(([, t]) => (t ?? "").replace(/^["']|["']$/g, ""));
+}
+
 /**
- * Whether a tool call leaves the repo at `root`: an edit outside it, or a
- * Bash command that changes directory anywhere but the root or names an
- * absolute path outside it (device and temp paths aside, which belong to no
- * repo).
+ * Whether a tool call leaves the repo at `root`: an edit, read or search
+ * (`file_path`, `path`, `notebook_path`) outside it, or a Bash command that
+ * moves to or runs in any directory but the root (`cd`, `pushd`, `git -C`,
+ * a relative target included), climbs out (`../`), reaches through a
+ * variable (`$HOME/`, `${D}/`), or names an absolute path outside it. A path
+ * counts when it starts at a filesystem root (`/Users`, `/home`, the root's
+ * own first folder, …) or `~/`, so a quoted route (`'/api/v1'`) does not;
+ * temp and device paths belong to no repo.
  */
 function leaves(block: NonNullable<TranscriptRecord["content"]>[number], root: string): boolean {
   if (block.type !== "tool_use" || block.name === undefined) return false;
   const inside = (path: string): boolean => path.startsWith(root) || path === root.slice(0, -1);
-  if (EDIT_TOOLS.has(block.name)) {
-    const path = block.input?.file_path;
-    return typeof path === "string" && !inside(path);
+  if (block.name !== "Bash") {
+    const path = block.input?.file_path ?? block.input?.path ?? block.input?.notebook_path;
+    return typeof path === "string" && path !== "" && !inside(path);
   }
-  const command = block.name === "Bash" ? block.input?.command : undefined;
+  const command = block.input?.command;
   if (typeof command !== "string") return false;
-  for (const [, target] of command.matchAll(/(?:^|[;&|(]\s*)cd(?:\s+("[^"]*"|'[^']*'|[^\s;&|)]+))?/gm)) {
-    if (target === undefined || !inside(target.replace(/^["']|["']$/g, ""))) return true;
-  }
-  // A path starts with a name after its slash, so a regex (`/^x/`) or a URL's `//` is not one; scratch and device paths belong to no repo.
+  if (targetsOf(command).some((t) => !inside(t))) return true;
+  if (/(?:^|[\s'"=(:])\.\.\//.test(command) || /\$\{?\w+\}?\//.test(command)) return true;
+  const top = root.split("/")[1] ?? "";
+  const filesystem = new RegExp(`^(?:~/|/(?:${top.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|Users|home|root|opt|srv|mnt|media|var|etc|usr|private|Volumes|workspace|github)(?:/|$))`);
   for (const [, path] of command.matchAll(/(?:^|[\s'"=(:])((?:\/|~\/)[\w.~-][^\s'"`;|&)]*)/g)) {
-    if (!/^\/(?:dev|tmp|private\/tmp|var\/folders)\//.test(path!) && !inside(path!)) return true;
+    if (filesystem.test(path!) && !/^\/(?:dev|tmp|private\/tmp|var\/folders)\//.test(path!) && !inside(path!)) return true;
   }
   return false;
+}
+
+/** Whether a Bash command moves back to the root: a `cd` or `pushd` to it. */
+function returns(block: NonNullable<TranscriptRecord["content"]>[number], root: string): boolean {
+  const command = block.type === "tool_use" && block.name === "Bash" ? block.input?.command : undefined;
+  return typeof command === "string" && targetsOf(command).some((t) => t === root || t === root.slice(0, -1));
 }
 
 /**

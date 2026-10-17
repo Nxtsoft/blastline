@@ -552,6 +552,44 @@ describe("checkpointFor on the branch backend", () => {
     expect(cp?.decisions.map((d) => d.text)).toEqual(["I kept the minimum at one because the eval harness divides by it."]);
   });
 
+  it("quotes nothing after any way of leaving the repo, across turns, and keeps a finding after a quoted route", () => {
+    const tool = (name: string, input: object): object => ({ id: "t", type: "tool_use", name, input, result: { output: "", status: "success" } });
+    const LINE = "The root cause is the refund rounding because it truncates before tax.";
+    const shapes: [string, object[]][] = [
+      ["relative path", [bash("cat ../billing/.env")]],
+      ["git -C", [bash("git -C ../billing log -3")]],
+      ["pushd", [bash("pushd ../billing && cat .env")]],
+      ["variable", [bash("cat $HOME/billing/.env")]],
+      ["then cd", [bash("if true; then cd ../billing; fi")]],
+      ["Read", [tool("Read", { file_path: "/Users/x/billing/.env" })]],
+      ["Grep", [tool("Grep", { pattern: "rate", path: "/Users/x/billing" })]],
+      ["absolute", [bash("cat /Users/x/billing/.env")]],
+    ];
+    shapes.forEach(([label, step], n) => {
+      const id = `e${n}f6a1b2c3d4`.slice(0, 12);
+      const t = [...CUMULATIVE, rec("user", stamp(110), [user("let the cap take zero")]), rec("assistant", stamp(111), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 0;")]), rec("assistant", stamp(112), step), rec("assistant", stamp(113), [text(LINE)])];
+      writeBranchCheckpoint(id, branchFiles(id, stamp(114), t, ""));
+      const c = commitFile("src/round-size.ts", `export const ROUND_SIZE_MIN = ${n};\n`, `fix: shape ${n}\n\nEntire-Checkpoint: ${id}\n`);
+      expect(checkpointFor(repo, c, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"])?.decisions, label).toEqual([]);
+    });
+    // The shell keeps its directory into the next turn, and a quoted route in a search is not a place.
+    const ID = "f9e8d7c6b5a4";
+    const t = [
+      ...CUMULATIVE,
+      rec("user", stamp(120), [user("let the cap take zero")]),
+      rec("assistant", stamp(121), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 0;"), bash("cd /Users/x/billing")]),
+      rec("user", stamp(122), [user("what does it read")]),
+      rec("assistant", stamp(123), [bash("cat .env"), text(LINE)]),
+      rec("assistant", stamp(124), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 1;"), bash("grep -rn '/api/v1' /Users/x/wt/src")]),
+      rec("assistant", stamp(125), [text("I chose a floor instead of rounding because the cap must stay under the limit.")]),
+    ];
+    writeBranchCheckpoint(ID, branchFiles(ID, stamp(126), t, ""));
+    const c = commitFile("src/round-size.ts", "export const ROUND_SIZE_MIN = 1;\n", `fix: across turns\n\nEntire-Checkpoint: ${ID}\n`);
+    expect(checkpointFor(repo, c, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"])?.decisions.map((d) => d.text)).toEqual([
+      "I chose a floor instead of rounding because the cap must stay under the limit.",
+    ]);
+  });
+
   it("reads nothing when edits name two checkouts of the same layout", () => {
     const HEX_Y = "b2c3d4e5f6a1";
     const two = [
