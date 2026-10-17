@@ -13,9 +13,9 @@ import { askOf } from "./checkpoint.js";
  * operating the change rather than the change itself (git authors, CI,
  * staging, merges, other PRs).
  *
- * Privacy: a line leaves the ref only when `shareable` passes it, so a line
- * naming a local path, a URL, an email address or something shaped like a
- * secret is dropped, never masked. Tool output never leaves: a test is read
+ * Privacy: a line leaves the ref only when `shareable` passes every word in
+ * it, so a line holding a path, a URL, an email address, a token or anything
+ * but plain words, names and the change's own paths is dropped, never masked. Tool output never leaves: a test is read
  * by its runner, the test files the change carries, and its call's status; a
  * revert by the agent's description of it or a fixed label; design notes by
  * the change's own path.
@@ -58,56 +58,51 @@ export function cap(text: string, n = LINE): string {
 }
 
 /**
- * Whether a line may leave the ref: it names no place on a machine (an
- * absolute, home, Windows or UNC path, an env-rooted path), no URL or host
- * (with or without a scheme, a bare domain, an IP address, `localhost:port`;
- * a link can carry credentials, and a link to an issue or PR notifies it), no
- * email address, and nothing shaped like a secret (a known token prefix, a
- * bearer token, a private key, `key=`, "the password is …", or a long random
- * run of letters and digits). Shapes, not lists of names: a list of root
- * folders or token vendors misses the next one.
+ * Whether a line may leave the ref: every word in it is one a reader can see
+ * is harmless, and one word that is not drops the whole line. A deny-list of
+ * path, host and token shapes always has a remainder; an allow-list does
+ * not. Allowed: a word (with an apostrophe or hyphens), a camelCase or
+ * snake_case name whose parts are words, a small number, a few
+ * abbreviations and joiners, and a path or file name the change carries.
+ * Everything else (a path, URL, host, IP, port, email, entity, token, or a
+ * word mixing letters and digits like a password) is dropped, never masked.
  */
-const UNSHAREABLE = [
-  // Places on a machine.
-  /(?:^|[^\w.\/-])\/[\w.@-]+\/[\w.@-]/,
-  /\b[A-Za-z]:\\/,
-  /\\\\[\w.-]+\\/,
-  /(?:^|[^\w])~[\w-]*\//,
-  /\$\{?\w+\}?[\/\\]/,
-  // URLs and hosts.
-  /:\/\//,
-  /(?:^|[^\w:])\/\/[\w-]+\./,
-  /\bwww\./i,
-  /\b[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\/[\w#?%~-]/,
-  /\b[\w-]+\.(?:com|net|org|io|ai|dev|app|co|cloud|internal|local|corp)\b/i,
-  /\b\d{1,3}(?:\.\d{1,3}){3}\b/,
-  /\b(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}\b/i,
-  /\blocalhost:\d/i,
-  // Email addresses.
-  /[\w.+-]+@[\w-]+\.[A-Za-z]{2,}/,
-  // Secrets.
-  /\b(?:gh[pousr]_|github_pat_|glpat-|sk-|[sprk]k_(?:live|test)_|xox[abpr]-|AKIA|ASIA|AIza|ya29\.|eyJ|npm_|hf_|shpat_|dop_v1_)[A-Za-z0-9_-]{6,}/,
-  /\bbearer\s+\S{8,}/i,
-  /-----BEGIN [A-Z ]*PRIVATE KEY/,
-  /\b[\w-]*(?:api[_-]?key|token|secret|passw(?:or)?d|passphrase|pwd|credential)s?\s*[=:]/i,
-  /\b(?:api[_ -]?key|token|secret|passw(?:or)?d|passphrase|pwd|credential)s?\s+(?:is|was|are|were)\s+\S/i,
-];
+const NUMBER = /^(?:\d{1,4}(?:st|nd|rd|th|s|x|ms|px|%)?|\d{1,3}(?:,\d{3})+|\d+\.\d+%?)$/;
+const ABBREVIATION = /^(?:e\.g|i\.e|etc|vs|a\.k\.a)$/i;
+const JOINER = /^(?:[-–—&+=→]|->)$/;
 
-/** A run of letters and digits as random as a key: mixed case with a digit at 30 or more characters, or with three digits at 20 or more; or 32 or more hex digits. */
-function secretShaped(line: string): boolean {
-  for (const [run] of line.matchAll(/[A-Za-z0-9+/=]{20,}/g)) {
-    const bare = run.replace(/=+$/, "");
-    if (/^[0-9a-f]{32,}$/i.test(bare)) return true;
-    // A path's segments are words; a key's slashes, when it has any, are rare.
-    if ((bare.match(/\//g) ?? []).length > 2) continue;
-    const digits = (bare.match(/\d/g) ?? []).length;
-    if (/[A-Z]/.test(bare) && /[a-z]/.test(bare) && digits >= (bare.length >= 30 ? 1 : 3)) return true;
-  }
-  return false;
+/**
+ * A name built of words: lower case, Capitalised, all capitals up to 12
+ * letters, or camelCase whose parts average three letters or more, with
+ * digits only as short parts between words. A random run (`AbCdEf`,
+ * `xY7kP2`, `hunter2`) fails.
+ */
+function namedLike(token: string): boolean {
+  if (/^(?:\p{Ll}+|\p{Lu}\p{Ll}*|\p{Lu}{1,12})$/u.test(token)) return true;
+  if (!/^[A-Za-z][A-Za-z0-9]*$/.test(token)) return false;
+  const parts = token.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+/g) ?? [];
+  if (parts.join("") !== token) return false;
+  const words = parts.filter((p) => !/^\d/.test(p));
+  if (words.length < 2) return false;
+  if (words.reduce((n, p) => n + p.length, 0) / words.length < 3) return false;
+  return parts.every((p) => !/^\d/.test(p) || p.length <= 2);
 }
 
-export function shareable(line: string): boolean {
-  return !UNSHAREABLE.some((r) => r.test(line)) && !secretShaped(line);
+/** A word, a hyphenated compound or a contraction whose every part is a name built of words. */
+function wordLike(token: string): boolean {
+  return token
+    .replace(/['’]\p{L}{1,2}$/u, "")
+    .split("-")
+    .every((part) => namedLike(part));
+}
+
+export function shareable(line: string, files: string[] = []): boolean {
+  const carried = (t: string): boolean => files.some((f) => t === f || f.endsWith(`/${t}`) || t.endsWith(`/${f}`));
+  return line
+    .replace(/[`*]|__/g, "")
+    .split(/\s+/)
+    .map((t) => t.replace(/^[(["'“‘]+/, "").replace(/[)\]"'”’.,;:!?…]+$/, ""))
+    .every((t) => t === "" || wordLike(t) || (/^[A-Za-z]+(?:_[A-Za-z]+)+$/.test(t) && t.split("_").every(namedLike)) || NUMBER.test(t) || ABBREVIATION.test(t) || JOINER.test(t) || carried(t));
 }
 
 /** About operating the change, not the change: authors, CI, environments, merges, other PRs. */
@@ -217,7 +212,7 @@ export function decisionsIn(window: string, files: string[], opensTurn = true): 
   const tests = new Map<string, { at: number; statuses: string[] }>();
   let opened = !opensTurn;
   const push = (kind: DecisionKind, text: string, at: number): void => {
-    if (shareable(text)) out.push({ kind, text: cap(text), at });
+    if (shareable(text, files)) out.push({ kind, text: cap(text), at });
   };
   window.split("\n").forEach((line, at) => {
     if (line.trim() === "") return;
@@ -258,7 +253,9 @@ export function decisionsIn(window: string, files: string[], opensTurn = true): 
         const revert = REVERTS.find(([r]) => r.test(command));
         if (revert !== undefined) {
           const described = typeof input.description === "string" ? input.description.trim() : "";
-          push("reverted", described !== "" && shareable(described) && !OPERATIONAL.test(described) ? described : revert[1], at);
+          // The fixed label is ours, not quoted, so it needs no check.
+          if (described !== "" && shareable(described, files) && !OPERATIONAL.test(described)) push("reverted", described, at);
+          else out.push({ kind: "reverted", text: revert[1], at });
         }
         continue;
       }

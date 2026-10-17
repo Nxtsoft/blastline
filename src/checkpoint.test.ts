@@ -460,11 +460,31 @@ describe("checkpointFor on the branch backend", () => {
       rec("user", stamp(52), [user("now back to the cap, also handle zero")]),
       rec("assistant", stamp(53), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 0;")]),
       rec("user", stamp(54), [user("keep the minimum at one for the eval harness")]),
+      rec("assistant", stamp(55), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 1;")]),
     ];
-    writeBranchCheckpoint(HEX_U, branchFiles(HEX_U, stamp(55), between, ""));
+    writeBranchCheckpoint(HEX_U, branchFiles(HEX_U, stamp(56), between, ""));
     const u = commitFile("src/round-size.ts", "export const ROUND_SIZE_MIN = 1;\n", `fix: the cap handles zero\n\nEntire-Checkpoint: ${HEX_U}\n`);
     const cp = checkpointFor(repo, u, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
     expect(cp?.decisions.map((d) => [d.kind, d.text])).toEqual([["steered", "keep the minimum at one for the eval harness"]]);
+  });
+
+  it("reads none of an aside after the commit's work, nor a session that only names a file with the same basename", () => {
+    const HEX_V = "8d4f0b2c3e5a";
+    const aside = [
+      ...CUMULATIVE,
+      rec("user", stamp(60), [user("now let the cap take zero")]),
+      rec("assistant", stamp(61), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 0;")]),
+      rec("user", stamp(62), [user("unrelated: draft the reply about the Q4 list")]),
+      rec("assistant", stamp(63), [text("I chose to leave out the numbers because they are not cleared yet.")]),
+    ];
+    const alongside = [
+      rec("user", stamp(20), [user("the invoice totals are wrong for the refunds")]),
+      rec("assistant", stamp(21), [bash("cat services/billing/round-size.ts"), text("The root cause is the refund rounding because it truncates before tax.")]),
+    ];
+    writeBranchCheckpoint(HEX_V, branchFiles(HEX_V, stamp(64), aside, "", { session: OTHER, transcript: alongside }));
+    const v = commitFile("src/round-size.ts", "export const ROUND_SIZE_MIN = 0;\n", `fix: the cap takes zero\n\nEntire-Checkpoint: ${HEX_V}\n`);
+    const cp = checkpointFor(repo, v, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
+    expect(cp?.decisions).toEqual([]);
   });
 
   it("reports the id but no checkpoint when the branch does not hold it", () => {

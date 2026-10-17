@@ -537,6 +537,11 @@ describe("renderBrief: what the agent decided", () => {
     expect(md).toContain("GH-\u200b12, see &#91;notes&#93;(x) and !&#91;&#93;(y)");
   });
 
+  it("never lets an entity in a quoted line decode to a mention", () => {
+    const md = decided([{ kind: "found", text: "ask &#64;octocat because cli/cli&#35;1 broke", at: 1, commit: sha }]);
+    expect(md).toContain("ask &amp;#\u200b64;octocat because cli/cli&amp;#\u200b35;1 broke");
+  });
+
   it("has no section when no checkpoint held a decision", () => {
     expect(decided([])).not.toContain("What the agent decided");
   });

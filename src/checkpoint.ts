@@ -427,10 +427,11 @@ export interface Windows {
   /** Whether a tool call in the new part works on one of the commit's files. */
   worked: boolean;
   /**
-   * Where the commit's decisions are read: the commit's own turn, inside what
-   * the previous checkpoint of the session left unread; "" when no tool call
-   * in the new part works on the commit's files, so a session that only ran
-   * alongside, or talked about something else, contributes nothing.
+   * Where the commit's decisions are read: from the commit's own turn on,
+   * inside what the previous checkpoint of the session left unread, only the
+   * turns holding a tool call that works on one of the commit's files by its
+   * path; "" when there is none, so a session that only ran alongside, or a
+   * turn about something else, contributes nothing.
    */
   decisionWindow: string;
   /** Whether `decisionWindow` starts at the prompt that opened the turn, which the Intent column shows. */
@@ -503,6 +504,37 @@ function worksOn(block: NonNullable<TranscriptRecord["content"]>[number], files:
 }
 
 /**
+ * Whether a tool call works on one of `files` by its repo-relative path: an
+ * edit tool by its path, a Bash command by naming the whole path. Stricter
+ * than `worksOn`, whose basename match lets a session that only read another
+ * `index.ts` count; decisions quote what a person said, so they need this.
+ */
+function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], files: string[]): boolean {
+  if (block.type === "tool_use" && block.name === "Bash") {
+    const command = block.input?.command;
+    return typeof command === "string" && files.some((f) => command.includes(f));
+  }
+  return worksOn(block, files);
+}
+
+/**
+ * The turns from `start` on, each a person's prompt up to the next, that hold
+ * a tool call working on one of `files` by path, joined in order. A turn that
+ * did no work on the files (an aside before or after the commit's work) is
+ * left out whole.
+ */
+function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[], start: number, files: string[]): string {
+  const kept: string[] = [];
+  let from = start;
+  for (let i = start + 1; i <= records.length; i++) {
+    if (i < records.length && !(records[i] !== undefined && humanTurn(records[i]!))) continue;
+    if (records.slice(from, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOnPath(block, files)))) kept.push(...lines.slice(from, i));
+    from = i;
+  }
+  return kept.join("\n");
+}
+
+/**
  * The records of a compact transcript that belong to one checkpoint. The
  * transcript ends where this checkpoint was made; the question is where it
  * starts. `sinceWindow` skips what the previous checkpoint of the same
@@ -545,7 +577,7 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   return {
     ask: opening !== undefined && humanTurn(opening) ? askOf(opening) : "",
     worked: firstWork !== -1,
-    decisionWindow: firstWork === -1 ? "" : lines.slice(stepStart).join("\n"),
+    decisionWindow: firstWork === -1 ? "" : workingTurns(lines, records, stepStart, files),
     opensTurn: turnStart >= sinceStart,
     sinceWindow: lines.slice(sinceStart).join("\n"),
     stepWindow: lines.slice(stepStart).join("\n"),

@@ -50,12 +50,14 @@ function cell(s: string): string {
  * A line quoted from an agent's session: an `@name` would notify that GitHub
  * user, a `#123`, `GH-123` or `owner/repo#123` would put a "mentioned this"
  * event on that issue or PR, a `<tag>` would open HTML, and `[text](target)`
- * or `![](target)` would become a live link or image. Mentions get a
- * zero-width space after the `@`, `#` or `GH-`; the rest get entities.
+ * or `![](target)` would become a live link or image, and an entity such as
+ * `&#64;` would decode to any of these. Mentions get a zero-width space after
+ * the `@`, `#` or `GH-`; the rest get entities.
  */
 function quoted(s: string): string {
-  // Mentions first: the entities below carry a `#` before digits.
+  // `&` first, so `&#64;name` cannot decode to a live mention; then mentions, as the entities below carry a `#` before digits.
   return s
+    .replace(/&/g, "&amp;")
     .replace(/@(?=[A-Za-z0-9-])/g, "@\u200b")
     .replace(/#(?=\d)/g, "#\u200b")
     .replace(/\bGH-(?=\d)/gi, (m) => `${m}\u200b`)

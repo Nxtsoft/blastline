@@ -148,21 +148,45 @@ describe("shareable", () => {
       "The root cause is the DB at 10.20.0.7:5432 rejecting us because the role lacks CONNECT.",
       "the API on localhost:3000 broke because the port moved",
       "the hash 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 matched",
+      // The second review's probes: shapes a deny-list let through.
+      "it broke because gcc got -I/home/taylor/acme/include first",
+      "it was in.../home/bob/acme/creds.json because of the default",
+      "the key is in %APPDATA%\\acme\\creds.json because of Windows",
+      "Authorization: Basic dXNlcjpwYXNzd29yZA== broke",
+      "use xY7_kP2-mN9qR4_tL8-vB3zW6_cF1qA because the old one expired",
+      "use k9x2m4p7q1w8e5r3t6y0u2i4o6 instead",
+      "PGPASSWORD hunter2-prod works instead",
+      "use pass hunter2 instead",
+      "user acme-admin, pass Winter2026! instead",
+      "use the sk_ant_api03XyzAbc instead",
+      "use the lin_api_AbCdEfGhIjKl instead",
+      "jenkins.acme.tech rejects us because of the cert",
+      "the db is acme-prod-db:5432 because of the move",
+      "fe80::1 rejects us because of the route",
+      "ask &#64;octocat about it",
+      "see cli/cli&#35;1 for it",
+      "the --/home/taylor/x flag broke",
+      "use AKIAIOSFODNNEXAMPLE because it works",
+      "the token AbCdEfGhIjKlMnOpQrSt is set",
     ]) {
       expect(shareable(line), line).toBe(false);
     }
+    const files = ["src/round-size.ts", "openspec/changes/cap/design.md"];
     for (const line of [
       "I kept warn instead of stop, so steps 4 and 9 behave the same.",
       "The cap moved to src/round-size.ts because two modules each had one.",
       "I chose `useRoundSizeCap` over a context so `openspec/changes/cap/design.md` stays the source.",
-      "The fix for the 2/3 split is in src/a/b.ts because the ratio was inverted.",
+      "CodeRabbit, stop vs warn: I kept \"add the calculation and warn\" instead of \"stop the import\", so the same calculation behaves the same on steps 4, 7 and 9.",
+      "useScenarioSummaryForStep4Query re-ran because its key changed in `round-size.ts`.",
+      "The token is refreshed before expiry because the clock skews; ASIA_PACIFIC_REGION is read instead of the default.",
+      "Mesmer found a real gap: if the summary goes away while the page stays mounted, the section is never cleared.",
     ]) {
-      expect(shareable(line), line).toBe(true);
+      expect(shareable(line, files), line).toBe(true);
     }
   });
 
   it("is applied to everything a person or the agent says", () => {
-    const d = texts(window(person("x"), person("use the token ghp_abcdefghijk instead of the old one"), said("The root cause is /home/t/x because it is missing here.")), [], true);
+    const d = texts(window(person("x"), person("use the token ghp_aB3dE6gH9jK2mN5pQ8 instead of the old one"), said("The root cause is /home/t/x because it is missing here.")), [], true);
     expect(d).toEqual([]);
   });
 });
