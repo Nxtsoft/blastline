@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.20.0
+
+The brief says what the agent did across the PR that the diff cannot show: tests it made pass, work it undid, alternatives it weighed.
+
+- A new section, **What the agent decided**, lists at most 8 lines, each with its kind and the commit whose checkpoint holds it, in session order. `src/decisions.ts` reads them from the compact transcript, without a model: a test runner and the test files the change carries that failed and then passed or whose last run failed, reverts, and design notes the change adds that weigh alternatives.
+- No free text is quoted, neither what a person typed nor what the agent wrote. Every line is built from a fixed label, a test runner's name and the change's own repo paths, so nothing private can leave the ref however a session went. Seven review rounds of word filters each found a new way for free text to carry a password, a name or another repo's details, and each fix left less to show, so the section carries no free text at all.
+- A test is read by its runner, the test files the change carries and its call's status, only for a bare run (a script, a chain or a pipe sets the status, so it is not read); a revert by a fixed label such as `git revert`; design notes by their repo path, and only when the change carries them. Tool output and commands never leave the ref. The README's allowlist lists the new lines.
+- Only turns that hold a tool call working on one of the PR's files at this repo's root are read, from the commit's own turn on, inside what the previous checkpoint of the session left unread. The root is the one every edit to a file inside a folder agrees on; with none, or two (another checkout of the same layout), nothing is read. A command counts only by the absolute path, since the shell keeps its directory between calls. What the agent does while away from the repo is skipped: it starts away, leaves on an edit, read or search outside the root, a `cd`, `pushd` or `git -C` elsewhere, a `../` or `$VAR/` path, or an absolute path outside the root (temp and device paths, and quoted routes such as `'/api/v1'`, aside), and is back on work at the root or a `cd` to it, across turns. A revert commit whose turn names none of its files shows no revert.
+- On four real web-app PRs the section shows design notes weighing alternatives on one; the other three show no section.
+
 ## 0.19.0
 
 The Intent column reads the whole turn behind a commit, and a file loaded by convention runs the full suite even when the graph has nodes for it.

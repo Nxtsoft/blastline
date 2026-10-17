@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { changedDeclarationClaims, declares, narrativeClaims, buildBrief, commandRuns, concurrentPrs, othersIn, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
+import { changedDeclarationClaims, declares, decisionsOf, narrativeClaims, buildBrief, commandRuns, concurrentPrs, othersIn, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
 import { parseUnifiedDiff } from "./diff.js";
 import { loadGraph } from "./graph.js";
 import { checkpointRef } from "./checkpoint.js";
@@ -515,3 +515,39 @@ describe("declares", () => {
     expect(declares("parse", "export function parseAll(inputs: string[]): number {")).toBe(false);
   });
 });
+
+describe("decisionsOf", () => {
+  const commit = (sha: string, decisions: { kind: "alternatives" | "reverted" | "tests"; text: string; at: number }[]) => ({
+    sha,
+    subject: "x",
+    checkpoint: { decisions } as never,
+    files: [],
+    reach: { files: 0, tests: 0 },
+    reachingTests: [],
+    ranReachingTests: [],
+  });
+
+  it("keeps each line once across commits and sessions, and binds it to the first commit that holds it", () => {
+    const { shown, found } = decisionsOf([
+      commit("a".repeat(40), [{ kind: "tests", text: "`vitest` failed, then passed", at: 2 }]),
+      commit("b".repeat(40), [
+        { kind: "tests", text: "`vitest` failed, then passed", at: 0 },
+        { kind: "alternatives", text: "openspec/changes/cap/design.md", at: 4 },
+      ]),
+    ]);
+    expect(found).toBe(2);
+    expect(shown.map((d) => [d.commit[0], d.kind])).toEqual([
+      ["a", "tests"],
+      ["b", "alternatives"],
+    ]);
+  });
+
+  it("cuts to eight, keeping test outcomes and reverts before design notes", () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({ kind: "alternatives" as const, text: `notes/${i}.md`, at: i }));
+    const { shown, found } = decisionsOf([commit("c".repeat(40), [...many, { kind: "reverted", text: "git revert", at: 20 }])]);
+    expect(found).toBe(10);
+    expect(shown).toHaveLength(8);
+    expect(shown.at(-1)?.text).toBe("git revert");
+  });
+});
+

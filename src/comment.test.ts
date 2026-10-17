@@ -385,6 +385,8 @@ const brief: Brief = {
       ranReachingTests: [],
     },
   ],
+  decisions: [],
+  decisionsFound: 0,
   claims: [
     { claim: "`1111111` ran the tests it reaches", verdict: "partial", evidence: "ran 1 of 2: src/a.test.ts; not run: src/b.test.ts" },
     { claim: "`helper` removed from `src/lib.ts`", verdict: "refuted", evidence: "still referenced by `use` (src/use.ts:3) in files this diff does not touch" },
@@ -466,6 +468,8 @@ describe("renderBrief: no checkpoints, fail-open", () => {
     commits: [
       { sha: "4".repeat(40), subject: "feat: x", files: ["src/x.ts"], reach: { files: 0, tests: 0 }, reachingTests: [], ranReachingTests: [] },
     ],
+    decisions: [],
+    decisionsFound: 0,
     claims: [],
     annotations: [],
     unchecked: ["symbol changes: no `--change-context` given"],
@@ -497,6 +501,31 @@ describe("renderCheckRun", () => {
     expect(run.output.summary).not.toContain("<!-- ");
     expect(run.output.text).toContain("#### What each commit did");
     expect(run.output.annotations).toEqual(brief.annotations);
+  });
+});
+
+describe("renderBrief: what the agent decided", () => {
+  const sha = "9".repeat(40);
+  const decided = (decisions: Brief["decisions"], found = decisions.length): string => renderBrief({ ...brief, decisions, decisionsFound: found }, { ...ctx, repoUrl: "https://github.com/o/r" });
+
+  it("lists each decision with its kind and commit, between the commit table and the claims", () => {
+    const md = decided([
+      { kind: "tests", text: "`vitest` on `app/[uuid]/cap.test.ts` failed, then passed", at: 3, commit: sha },
+      { kind: "alternatives", text: "openspec/changes/cap/design.md", at: 5, commit: sha },
+    ]);
+    const section = md.slice(md.indexOf("#### What the agent decided"), md.indexOf("#### Claims checked"));
+    expect(md.indexOf("#### What each commit did")).toBeLessThan(md.indexOf("#### What the agent decided"));
+    // A path in code font is printed as it is: an entity there would show literally.
+    expect(section).toContain(`- **tests** [\`9999999\`](https://github.com/o/r/commit/${sha}): \`vitest\` on \`app/[uuid]/cap.test.ts\` failed, then passed`);
+    expect(section).toContain("- **alternatives** [`9999999`](https://github.com/o/r/commit/" + sha + "): design notes weigh alternatives in `openspec/changes/cap/design.md`");
+  });
+
+  it("says how many more the checkpoints held", () => {
+    expect(decided([{ kind: "reverted", text: "git revert", at: 1, commit: sha }], 11)).toContain("- _10 more in the checkpoints_");
+  });
+
+  it("has no section when no checkpoint held a decision", () => {
+    expect(decided([])).not.toContain("What the agent decided");
   });
 });
 
@@ -566,6 +595,8 @@ describe("renderBrief: a commit attributed by trailer", () => {
       { sha: "6".repeat(40), subject: "fix: typo", provenance: { agent: "claude-code", via: "author" }, files: ["src/y.ts"], reach: { files: 0, tests: 0 }, reachingTests: [], ranReachingTests: [] },
       { sha: "7".repeat(40), subject: "docs: by hand", files: ["README.md"], reach: { files: 0, tests: 0 }, reachingTests: [], ranReachingTests: [] },
     ],
+    decisions: [],
+    decisionsFound: 0,
     claims: [],
     annotations: [],
     unchecked: [],

@@ -1,6 +1,7 @@
 import type { Checkpoint, SymbolReason } from "./checkpoint.js";
 import { TEST_RUNNER } from "./checkpoint.js";
-import type { Brief, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
+import { code } from "./decisions.js";
+import type { Brief, BriefDecision, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
 import { SNAPSHOT_MARKER } from "./brief.js";
 import { relativeTo, sharedDir } from "./paths.js";
 import { ignorePatternFor } from "./unnamed.js";
@@ -36,10 +37,6 @@ const BRIEF_README = "https://github.com/Nxtsoft/blastline#pr-brief";
 
 /** Commit rows beyond this fold behind a summary; a long PR must not bury the claims. */
 export const COMMIT_ROWS_UNFOLDED = 10;
-
-function code(s: string): string {
-  return `\`${s}\``;
-}
 
 /** Table cells split at `|`, even inside a code span; GFM accepts `\|` as a literal pipe. */
 function cell(s: string): string {
@@ -623,6 +620,28 @@ function commitTable(commits: CommitBrief[], links: Links): string {
   return [`<details><summary>${plural(commits.length, "commit")}</summary>`, "", table, "", "</details>"].join("\n");
 }
 
+/** How each kind of decision reads in front of its line. */
+const DECISION_LABEL: Record<BriefDecision["kind"], string> = {
+  tests: "tests",
+  reverted: "reverted",
+  alternatives: "alternatives",
+};
+
+/**
+ * What the agents decided, one bullet each, in session order, with the commit
+ * whose checkpoint holds it. Undefined when no checkpoint held a decision,
+ * so a range without checkpoints gets no empty section.
+ */
+function decisionsList(brief: Brief, links: Links): string | undefined {
+  if (brief.decisions.length === 0) return undefined;
+  const bullets = brief.decisions.map((d) => {
+    const text = d.kind === "alternatives" ? `design notes weigh alternatives in ${code(d.text)}` : d.text;
+    return `- **${DECISION_LABEL[d.kind]}** ${links.commit(d.commit)}: ${text}`;
+  });
+  const more = brief.decisionsFound > brief.decisions.length ? [`- _${brief.decisionsFound - brief.decisions.length} more in the checkpoints_`] : [];
+  return ["#### What the agent decided", "", ...bullets, ...more, ""].join("\n");
+}
+
 function claimsList(claims: ClaimCheck[]): string {
   if (claims.length === 0) return "_no checkpoint on this branch makes a claim the graph can check_";
   const order: ClaimCheck["verdict"][] = ["refuted", "partial", "consistent"];
@@ -760,6 +779,7 @@ export function renderBrief(brief: Brief, ctx: CommentContext): string {
     "",
     commitTable(brief.commits, links),
     "",
+    decisionsList(brief, links),
     "#### Claims checked",
     "",
     claimsList(brief.claims),
