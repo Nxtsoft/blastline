@@ -39,6 +39,12 @@ describe("findingIn: what the agent found or chose", () => {
     expect(findingIn("I went with option B for the cache key. Because it keeps tenants apart.")).toBe("I went with option B for the cache key. Because it keeps tenants apart.");
   });
 
+  it("keeps a bold lead-in with the sentence it labels, not the label alone", () => {
+    expect(
+      findingIn("- **One more issue the subagent found, not filed.** Every save after step 9 silently dropped 2 constraints from the draft. Want me to file it?"),
+    ).toBe("One more issue the subagent found, not filed. Every save after step 9 silently dropped 2 constraints from the draft.");
+  });
+
   it("skips progress chatter, a bare 'found X', clean tool output, operations, quotes and fenced code", () => {
     expect(findingIn("Still waiting on CI because the runner is slow today.")).toBeUndefined();
     expect(findingIn("Found the step 4 import sites.")).toBeUndefined();

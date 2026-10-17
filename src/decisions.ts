@@ -107,9 +107,13 @@ function sentencesOf(text: string): string[] {
     }
     // A quote block is usually pasted tool output or someone else's words.
     if (fenced || raw.trim().startsWith(">")) continue;
-    const line = raw.replace(/^\s*(?:[-*+]|\d+[.)]|#+)\s+/, "").replace(/\*\*|__/g, "").trim();
+    const marked = raw.replace(/^\s*(?:[-*+]|\d+[.)]|#+)\s+/, "");
+    const line = marked.replace(/\*\*|__/g, "").trim();
     if (line === "" || line.startsWith("|")) continue;
-    for (const s of line.split(/(?<=[.!?])\s+(?=[A-Z`"(])/)) {
+    const sentences = line.split(/(?<=[.!?])\s+(?=[A-Z`"(])/);
+    // A bold lead-in ("**One more issue found.** In both runs …") labels the sentence after it, which carries the substance.
+    if (/^(?:\*\*|__)[^*_]+[.!?](?:\*\*|__)\s+\S/.test(marked) && sentences.length > 1) sentences.splice(0, 2, `${sentences[0]} ${sentences[1]}`);
+    for (const s of sentences) {
       const sentence = s.trim();
       if (sentence === "") continue;
       if (REASON_FOLLOWS.test(sentence) && out.length > 0) out[out.length - 1] = `${out[out.length - 1]} ${sentence}`;
