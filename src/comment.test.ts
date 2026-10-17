@@ -526,9 +526,9 @@ describe("renderBrief: what the agent decided", () => {
   });
 
   it("never pings a GitHub user or opens HTML from a quoted line", () => {
-    const md = decided([{ kind: "steered", text: "ask @devyn whether <details> is fine", at: 1, commit: sha }]);
-    expect(md).not.toMatch(/@devyn/);
-    expect(md).toContain("ask @\u200bdevyn whether &lt;details> is fine");
+    const md = decided([{ kind: "steered", text: "ask @devyn whether <details> is fine, like in #742", at: 1, commit: sha }]);
+    expect(md).not.toMatch(/@devyn|#742/);
+    expect(md).toContain("ask @\u200bdevyn whether &lt;details> is fine, like in #\u200b742");
   });
 
   it("has no section when no checkpoint held a decision", () => {

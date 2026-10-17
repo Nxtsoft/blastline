@@ -48,11 +48,12 @@ function cell(s: string): string {
 
 /**
  * A line quoted from an agent's session: an `@name` would notify that GitHub
- * user and a `<tag>` would open HTML, so the first gets a zero-width space
- * after the `@` and the second an entity.
+ * user, a `#123` or `owner/repo#123` would put a "mentioned this" event on
+ * that issue or PR, and a `<tag>` would open HTML. The first two get a
+ * zero-width space after the `@` or `#`, the third an entity.
  */
 function quoted(s: string): string {
-  return s.replace(/</g, "&lt;").replace(/@(?=[A-Za-z0-9-])/g, "@\u200b");
+  return s.replace(/</g, "&lt;").replace(/@(?=[A-Za-z0-9-])/g, "@\u200b").replace(/#(?=\d)/g, "#\u200b");
 }
 
 function plural(n: number, one: string, many = `${one}s`): string {
@@ -634,12 +635,10 @@ function commitTable(commits: CommitBrief[], links: Links): string {
 
 /** How each kind of decision reads in front of its line. */
 const DECISION_LABEL: Record<BriefDecision["kind"], string> = {
-  asked: "asked",
   steered: "steered",
   found: "found",
   tests: "tests",
   reverted: "reverted",
-  review: "review",
   alternatives: "alternatives",
 };
 

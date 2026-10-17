@@ -442,8 +442,8 @@ describe("checkpointFor on the branch backend", () => {
 
   it("reads decisions from the commit's own turn, and calls what the person says in a later commit's part steering", () => {
     const a = checkpointFor(repo, commitA, [], new Map(), ["src/round-size.ts"]);
-    // The earlier turn about the ticket list is not this commit's.
-    expect(a?.decisions.map((d) => [d.kind, d.text])).toEqual([["asked", "now give the round-size cap one home"]]);
+    // The earlier turn about the ticket list is not this commit's, and its own opening request is the Intent column's.
+    expect(a?.decisions).toEqual([]);
     const c = checkpointFor(repo, commitC, [], new Map([[SESSION, { sha: commitB, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
     expect(c?.decisions.map((d) => [d.kind, d.text])).toEqual([
       ["steered", "the bot's autofix broke the page key; put the router-driven one back"],

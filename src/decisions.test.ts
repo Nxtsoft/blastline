@@ -1,83 +1,98 @@
 import { describe, expect, it } from "vitest";
-import { chooseDecisions, decisionsIn, findingIn } from "./decisions.js";
+import { cap, chooseDecisions, decisionsIn, findingIn, shareable } from "./decisions.js";
 
 // Records in the compact transcript's shape (Entire transcript format v1): tool results inlined into the tool_use.
-const person = (text: string): string => JSON.stringify({ type: "user", content: [{ text }] });
+const person = (...texts: string[]): string => JSON.stringify({ type: "user", content: texts.map((text) => ({ text })) });
 const said = (text: string): string => JSON.stringify({ type: "assistant", content: [{ type: "text", text }] });
 const bash = (command: string, status: "success" | "error", description = ""): string =>
   JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Bash", input: { command, description }, result: { output: "SECRET OUTPUT", status } }] });
-const agent = (description: string, subagent_type = "general-purpose"): string =>
-  JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Agent", input: { description, prompt: "SECRET BRIEF", subagent_type }, result: { output: "SECRET RESULT", status: "success" } }] });
 const write = (file_path: string, content: string): string => JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Write", input: { file_path, content }, result: { output: "ok", status: "success" } }] });
 const window = (...records: string[]): string => records.join("\n");
+const texts = (window: string, files: string[] = [], opensTurn = true): string[] => decisionsIn(window, files, opensTurn).map((d) => `${d.kind}: ${d.text}`);
 
-describe("decisionsIn: what the person said", () => {
-  it("takes the request that opened the turn, skips a bare go-ahead, and calls a later instruction steering", () => {
-    const d = decisionsIn(window(person("move the round-size cap into one module"), said("On it."), person("sounds good let's do it"), person("keep the old export for the eval harness")), []);
-    expect(d.map((x) => [x.kind, x.text])).toEqual([
-      ["asked", "move the round-size cap into one module"],
-      ["steered", "keep the old export for the eval harness"],
+describe("decisionsIn: what a person said", () => {
+  it("leaves the opening request to the Intent column, skips a go-ahead, and calls a later instruction steering", () => {
+    expect(texts(window(person("move the round-size cap into one module"), said("On it."), person("sounds good let's do it"), person("keep the old export for the eval harness")))).toEqual([
+      "steered: keep the old export for the eval harness",
     ]);
   });
 
   it("calls the first thing a person says steering when the window continues a turn", () => {
-    const d = decisionsIn(window(said("Pushed."), person("you used the wrong git author on the last commit")), [], false);
-    expect(d).toEqual([{ kind: "steered", text: "you used the wrong git author on the last commit", at: 1 }]);
+    expect(texts(window(said("Done with the cap."), person("use the router-driven key instead")), [], false)).toEqual(["steered: use the router-driven key instead"]);
   });
 
-  it("never takes harness text for a person: hook feedback, notifications, the agents run preamble, an image caption", () => {
-    const d = decisionsIn(
-      window(
-        person("Stop hook feedback:\n[~/.agents/hooks/stop.sh]: run the tests"),
-        person("<task-notification>\n<summary>CI green</summary>\n</task-notification>"),
-        person("You are in a git worktree of app on branch fix/x at /home/t/wt.\nfix the login redirect"),
-        JSON.stringify({ type: "user", content: [{ text: "[Image: source: /Users/t/Desktop/s.png]" }, { text: "the header overlaps on mobile" }] }),
-      ),
-      [],
-    );
-    expect(d.map((x) => x.text)).toEqual(["fix the login redirect", "the header overlaps on mobile"]);
+  it("reads a person's words past a block the harness put first in the same record", () => {
+    expect(texts(window(person("<system-reminder>ctx</system-reminder>", "no, use the router-driven key instead")), [], false)).toEqual(["steered: no, use the router-driven key instead"]);
+  });
+
+  it("drops operating instructions: git authors, staging, merges, other PRs", () => {
+    expect(texts(window(person("you used the wrong git author since vercel failed"), person("move BUG-82 to staging"), person("fix the author on #742")), [], false)).toEqual([]);
   });
 });
 
 describe("findingIn: what the agent found or chose", () => {
-  it("takes the first sentence that gives a reason or an alternative", () => {
+  it("takes the first sentence that gives a reason or an alternative, with a reason that follows it", () => {
     expect(findingIn("Read the three call sites. I kept warn instead of stop, so the same calculation behaves the same on every step. Pushing now.")).toBe(
       "I kept warn instead of stop, so the same calculation behaves the same on every step.",
     );
     expect(findingIn("- **Root cause:** the cache key ignores the tenant, so two tenants share one entry.")).toBe("Root cause: the cache key ignores the tenant, so two tenants share one entry.");
+    expect(findingIn("I went with option B for the cache key. Because it keeps tenants apart.")).toBe("I went with option B for the cache key. Because it keeps tenants apart.");
   });
 
-  it("skips progress chatter, a bare 'found X', clean tool output and fenced code", () => {
+  it("skips progress chatter, a bare 'found X', clean tool output, operations, quotes and fenced code", () => {
     expect(findingIn("Still waiting on CI because the runner is slow today.")).toBeUndefined();
     expect(findingIn("Found the step 4 import sites.")).toBeUndefined();
     expect(findingIn("Typecheck printed no errors and ESLint found 0 errors.")).toBeUndefined();
-    expect(findingIn("The fix is merged and the deployment is green.")).toBeUndefined();
+    expect(findingIn("E2E failed on a docs-only PR, which points to a problem that was already there rather than this change.")).toBeUndefined();
+    expect(findingIn("> Error: the cache broke because the file is missing")).toBeUndefined();
     expect(findingIn("```\nthe root cause is in here because reasons\n```")).toBeUndefined();
   });
 });
 
-describe("decisionsIn: tests, reverts, reviews, design notes", () => {
-  it("reports a test command that failed and then passed once, however it was prefixed or piped", () => {
-    const d = decisionsIn(
-      window(bash("cd web && bunx vitest run src/cap.test.ts 2>&1 | tail -5", "error"), bash("bunx vitest run src/cap.test.ts", "success"), bash("bunx vitest run src/other.test.ts", "success")),
-      [],
+describe("decisionsIn: tests", () => {
+  it("names the runner and the test files the change carries, never the command", () => {
+    const d = texts(
+      window(bash("cd web && GITHUB_TOKEN=ghp_abcdef123456 bunx vitest run src/cap.test.ts 2>&1 | tail -5", "error"), bash("bunx vitest run src/cap.test.ts", "success")),
+      ["src/cap.test.ts"],
     );
-    expect(d).toEqual([{ kind: "tests", text: "failed, then passed: bunx vitest run src/cap.test.ts", at: 0 }]);
+    expect(d).toEqual(["tests: `vitest` on `src/cap.test.ts` failed, then passed"]);
   });
 
-  it("reports a test command whose last run failed", () => {
-    const d = decisionsIn(window(bash("pytest tests/test_cap.py", "success"), bash("pytest tests/test_cap.py", "error")), []);
-    expect(d.map((x) => x.text)).toEqual(["last run failed: pytest tests/test_cap.py"]);
+  it("names only the runner when the command's files are not in the change, and never a path or a credential", () => {
+    const d = texts(window(bash("pytest --db postgres://user:pass@db.example.com/x /Users/t/app/tests/test_cap.py", "error")));
+    expect(d).toEqual(["tests: `pytest` failed on its last run"]);
   });
 
-  it("reports a revert by its description, and not an unstage", () => {
-    const d = decisionsIn(window(bash("git revert --no-edit HEAD", "success", "Revert the bot's autofix"), bash("git restore --staged src/a.ts && git commit -m x", "success", "Commit the fix")), []);
-    expect(d).toEqual([{ kind: "reverted", text: "Revert the bot's autofix", at: 0 }]);
+  it("reads no status from a script or a chain whose last step is not the run", () => {
+    expect(texts(window(bash("bun build x.ts && echo ok || bun test evals/n.test.ts 2>&1 | tail -3", "error")))).toEqual([]);
+    expect(texts(window(bash("python3 - <<'EOF'\nprint(1)\nEOF\nbunx vitest run", "error")))).toEqual([]);
+    expect(texts(window(bash("bunx vitest run a.test.ts && git push", "error")))).toEqual([]);
   });
 
-  it("reports a review the agent dispatched by its description, never its brief or result", () => {
-    const d = decisionsIn(window(agent("Review PR 621 for the round cap"), agent("Find the call sites")), []);
-    expect(d).toEqual([{ kind: "review", text: "Review PR 621 for the round cap", at: 0 }]);
+  it("counts a run only with the runner in command position", () => {
+    expect(texts(window(bash("ls node_modules/.bin/vitest", "error"), bash('echo "=== vitest ==="', "error"), bash("rg -n jest src/", "error")))).toEqual([]);
+  });
+
+  it("says nothing about runs that only passed", () => {
+    expect(texts(window(bash("npx jest", "success")))).toEqual([]);
+  });
+});
+
+describe("decisionsIn: reverts and design notes", () => {
+  it("reports a revert by its description, and by a fixed label when the description is missing or unshareable", () => {
+    expect(
+      texts(
+        window(
+          bash("git revert --no-edit HEAD", "success", "Revert the bot's autofix"),
+          bash('git checkout HEAD -- "/Users/t/wt/src/a.ts"', "success"),
+          bash("git reset --hard origin/x", "success", "Reset /home/t/wt to the remote"),
+        ),
+      ),
+    ).toEqual(["reverted: Revert the bot's autofix", "reverted: git checkout --", "reverted: git reset --hard"]);
+  });
+
+  it("is not an unstage or an amend", () => {
+    expect(texts(window(bash("git restore --staged src/a.ts", "success"), bash('git commit --author "T <t@example.com>" --amend --no-edit', "success", "Fix the author")))).toEqual([]);
   });
 
   it("reports design notes that weigh alternatives only when the change carries them, by their repo path", () => {
@@ -85,23 +100,46 @@ describe("decisionsIn: tests, reverts, reviews, design notes", () => {
     const d = decisionsIn(window(write("/Users/t/wt/openspec/changes/cap/design.md", notes), write("/Users/t/notes/scratch.md", notes)), ["openspec/changes/cap/design.md"]);
     expect(d).toEqual([{ kind: "alternatives", text: "openspec/changes/cap/design.md", at: 0 }]);
   });
+});
 
-  it("never carries tool output, an agent's brief or its result", () => {
-    const d = decisionsIn(window(bash("bunx vitest run a.test.ts", "error"), bash("bunx vitest run a.test.ts", "success"), agent("Review the change")), []);
-    expect(JSON.stringify(d)).not.toContain("SECRET");
+describe("shareable", () => {
+  it("drops a line naming a local path, a URL, an email or something shaped like a secret", () => {
+    for (const line of [
+      "The root cause is in /Users/taylor/code/app/src/auth.ts because the cookie is dropped.",
+      "found it in ~/.datadog-keys because the CLI reads it",
+      "can we look at file:///Users/t/dashboard.html",
+      "See https://user:pw@host.com/x because it broke.",
+      "the taylor@example.com credential is dead",
+      "here is the key sk-ant-api03-XXXXXXXX use it",
+      "set API_KEY=abc because the old one expired",
+    ]) {
+      expect(shareable(line), line).toBe(false);
+    }
+    expect(shareable("I kept warn instead of stop, so steps 4 and 9 behave the same.")).toBe(true);
+  });
+
+  it("is applied to everything a person or the agent says", () => {
+    const d = texts(window(person("x"), person("use the token ghp_abcdefghijk instead of the old one"), said("The root cause is /home/t/x because it is missing here.")), [], true);
+    expect(d).toEqual([]);
+  });
+});
+
+describe("cap", () => {
+  it("drops a code span the cut would leave open", () => {
+    expect(cap("the flake in `platform-flows.spec.ts` is worth fixing", 20)).toBe("the flake in…");
   });
 });
 
 describe("chooseDecisions", () => {
-  it("keeps corrections, test outcomes and reverts over the opening request, in session order", () => {
+  it("keeps corrections, test outcomes and reverts over findings, in session order", () => {
     const all = [
-      { kind: "asked" as const, text: "a" },
+      { kind: "found" as const, text: "a" },
       { kind: "found" as const, text: "b" },
       { kind: "steered" as const, text: "c" },
       { kind: "tests" as const, text: "d" },
-      { kind: "review" as const, text: "e" },
+      { kind: "alternatives" as const, text: "e" },
     ];
-    expect(chooseDecisions(all, 3).map((d) => d.text)).toEqual(["b", "c", "d"]);
+    expect(chooseDecisions(all, 3).map((d) => d.text)).toEqual(["a", "c", "d"]);
     expect(chooseDecisions(all, 9)).toBe(all);
   });
 });
