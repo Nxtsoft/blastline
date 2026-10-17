@@ -487,6 +487,23 @@ describe("checkpointFor on the branch backend", () => {
     expect(cp?.decisions).toEqual([]);
   });
 
+  it("reads no turn that works on another repo's file of the same root-level name", () => {
+    const HEX_W = "9e5a1c3d4f6b";
+    const sibling = [
+      ...CUMULATIVE,
+      rec("user", stamp(70), [user("bump the cap's package and fix round-size")]),
+      rec("assistant", stamp(71), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 2;")]),
+      rec("user", stamp(72), [user("the invoice totals are wrong for the refunds")]),
+      rec("assistant", stamp(73), [bash("cat ../billing-service/package.json"), text("The root cause is the refund rounding because it truncates before tax.")]),
+      rec("user", stamp(74), [user("and the billing manifest too")]),
+      rec("assistant", stamp(75), [{ id: "e2", type: "tool_use", name: "Edit", input: { file_path: "/Users/x/billing/package.json", old_string: "a", new_string: "b" }, result: { output: "", status: "success" } }, text("I chose the patch release because the minor one changes rounding.")]),
+    ];
+    writeBranchCheckpoint(HEX_W, branchFiles(HEX_W, stamp(76), sibling, ""));
+    const w = commitFile("package.json", "{}\n", `chore: bump\n\nEntire-Checkpoint: ${HEX_W}\n`);
+    const cp = checkpointFor(repo, w, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), ["package.json", "src/round-size.ts"]);
+    expect(cp?.decisions).toEqual([]);
+  });
+
   it("reports the id but no checkpoint when the branch does not hold it", () => {
     expect(checkpointTrailer(repo, commitMissing)).toBe("0123456789ab");
     expect(checkpointFor(repo, commitMissing)).toBeUndefined();

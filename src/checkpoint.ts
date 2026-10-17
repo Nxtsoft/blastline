@@ -504,17 +504,38 @@ function worksOn(block: NonNullable<TranscriptRecord["content"]>[number], files:
 }
 
 /**
- * Whether a tool call works on one of `files` by its repo-relative path: an
- * edit tool by its path, a Bash command by naming the whole path. Stricter
- * than `worksOn`, whose basename match lets a session that only read another
- * `index.ts` count; decisions quote what a person said, so they need this.
+ * Whether a tool call works on one of `files` by its repo-relative path. A
+ * Bash command names the whole path, not inside a longer one
+ * (`../billing/package.json` is another repo's). An edit tool's absolute
+ * path is the repo root plus the file; `root` is that root when a path
+ * inside a folder fixed it, else a file at the repo root (`package.json`) is
+ * matched by no edit, since any repo has one. Stricter than `worksOn`, whose
+ * basename match lets a session that only read another `index.ts` count;
+ * decisions quote what a person said, so they need this.
  */
-function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], files: string[]): boolean {
-  if (block.type === "tool_use" && block.name === "Bash") {
+function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], files: string[], root: string | undefined): boolean {
+  if (block.type !== "tool_use" || block.name === undefined) return false;
+  if (block.name === "Bash") {
     const command = block.input?.command;
-    return typeof command === "string" && files.some((f) => command.includes(f));
+    return typeof command === "string" && files.some((f) => new RegExp(`(?<![\\w./~-])${f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`).test(command));
   }
-  return worksOn(block, files);
+  if (!EDIT_TOOLS.has(block.name)) return false;
+  const path = block.input?.file_path;
+  if (typeof path !== "string") return false;
+  return files.some((f) => path === f || (root !== undefined ? path === `${root}${f}` : f.includes("/") && path.endsWith(`/${f}`)));
+}
+
+/** The repo root an edit names: its absolute path less the repo path of a file inside a folder; undefined when no such edit is in `records`. */
+function repoRoot(records: (TranscriptRecord | undefined)[], files: string[]): string | undefined {
+  for (const r of records) {
+    for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
+      const path = block.type === "tool_use" && block.name !== undefined && EDIT_TOOLS.has(block.name) ? block.input?.file_path : undefined;
+      if (typeof path !== "string") continue;
+      const f = files.find((file) => file.includes("/") && path.endsWith(`/${file}`));
+      if (f !== undefined) return path.slice(0, path.length - f.length);
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -525,10 +546,11 @@ function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], fi
  */
 function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[], start: number, files: string[]): string {
   const kept: string[] = [];
+  const root = repoRoot(records, files);
   let from = start;
   for (let i = start + 1; i <= records.length; i++) {
     if (i < records.length && !(records[i] !== undefined && humanTurn(records[i]!))) continue;
-    if (records.slice(from, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOnPath(block, files)))) kept.push(...lines.slice(from, i));
+    if (records.slice(from, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOnPath(block, files, root)))) kept.push(...lines.slice(from, i));
     from = i;
   }
   return kept.join("\n");

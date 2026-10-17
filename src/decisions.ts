@@ -60,50 +60,82 @@ export function cap(text: string, n = LINE): string {
 /**
  * Whether a line may leave the ref: every word in it is one a reader can see
  * is harmless, and one word that is not drops the whole line. A deny-list of
- * path, host and token shapes always has a remainder; an allow-list does
- * not. Allowed: a word (with an apostrophe or hyphens), a camelCase or
- * snake_case name whose parts are words, a small number, a few
- * abbreviations and joiners, and a path or file name the change carries.
- * Everything else (a path, URL, host, IP, port, email, entity, token, or a
- * word mixing letters and digits like a password) is dropped, never masked.
+ * path, host and token shapes always has a remainder, so words are allowed
+ * by shape instead: a word (with an apostrophe or hyphens), a camelCase or
+ * snake_case name whose parts are words, a small number or version, a few
+ * abbreviations and joiners, a path or file name the change carries, and in
+ * code font a call or accessor chain of such names. Everything else (a path,
+ * URL, host, IP, port, email, entity, token, a word mixing letters and
+ * digits like a password, a run no word looks like) is dropped, never
+ * masked. A secret built of words (a passphrase, a PIN, a recovery code) no
+ * shape can tell apart, so a line that says what one is goes too.
  */
-const NUMBER = /^(?:\d{1,4}(?:st|nd|rd|th|s|x|ms|px|%)?|\d{1,3}(?:,\d{3})+|\d+\.\d+%?)$/;
-const ABBREVIATION = /^(?:e\.g|i\.e|etc|vs|a\.k\.a)$/i;
+const NUMBER = /^(?:\d{1,4}(?:st|nd|rd|th|s|x|ms|px|%)?|\d{1,3}(?:,\d{3})+|\d+\.\d+%?|v\d{1,2}|\d{1,2}(?:\.\d{1,3}){1,2})$/;
+const ABBREVIATION = /^(?:e\.g|i\.e|etc|vs|a\.k\.a|e2e|i18n|l10n|a11y)$/i;
 const JOINER = /^(?:[-–—&+=→]|->)$/;
+const SAYS_SECRET = /\b(?:pass(?:word|phrase|code)?|pwd|pin|otp|secret|token|api[_ -]?key|key|code|credential)s?\s*(?:is|was|are|were|=|:)\s*\S/i;
+/** The last label of a dotted name in code font that makes it a host, not an accessor chain. */
+const TLD = /^(?:com|net|org|io|ai|dev|app|co|cloud|internal|local|corp|tech|xyz|us|uk|de|fr|in|me|info|biz|sh|so|gg|tv)$/i;
+
+/** Letters a word is made of: Latin, with a vowel, no run of five consonants (`qwhtnzmr` is not a word). */
+function wordish(part: string): boolean {
+  return /[aeiouy]/i.test(part) && !/[b-df-hj-np-tv-xz]{5}/i.test(part);
+}
 
 /**
- * A name built of words: lower case, Capitalised, all capitals up to 12
- * letters, or camelCase whose parts average three letters or more, with
- * digits only as short parts between words. A random run (`AbCdEf`,
- * `xY7kP2`, `hunter2`) fails.
+ * A name built of words: a lower-case or Capitalised word up to 15 letters,
+ * all capitals up to 8, or camelCase whose every part is a word of three
+ * letters or more, with digits only as one- or two-digit parts between
+ * words. A random run (`AbCdEf`, `xY7kP2`, `hunter2`, `kqzxvbnm`) fails.
  */
 function namedLike(token: string): boolean {
-  if (/^(?:\p{Ll}+|\p{Lu}\p{Ll}*|\p{Lu}{1,12})$/u.test(token)) return true;
-  if (!/^[A-Za-z][A-Za-z0-9]*$/.test(token)) return false;
+  if (/^(?:[a-z]{1,15}|[A-Z][a-z]{0,14})$/.test(token)) return token.length <= 3 || wordish(token);
+  if (/^[A-Z]{1,8}$/.test(token)) return token.length <= 3 || wordish(token);
+  if (!/^[A-Za-z][A-Za-z0-9]*$/.test(token) || !/[a-z][A-Z]|[A-Z][a-z]/.test(token.slice(1))) return false;
   const parts = token.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+/g) ?? [];
   if (parts.join("") !== token) return false;
   const words = parts.filter((p) => !/^\d/.test(p));
   if (words.length < 2) return false;
-  if (words.reduce((n, p) => n + p.length, 0) / words.length < 3) return false;
-  return parts.every((p) => !/^\d/.test(p) || p.length <= 2);
+  return parts.every((p) => (/^\d/.test(p) ? p.length <= 2 : p.length >= 3 && p.length <= 15 && wordish(p)));
 }
 
 /** A word, a hyphenated compound or a contraction whose every part is a name built of words. */
 function wordLike(token: string): boolean {
   return token
-    .replace(/['’]\p{L}{1,2}$/u, "")
+    .replace(/['’][a-z]{1,2}$/i, "")
     .split("-")
     .every((part) => namedLike(part));
 }
 
 export function shareable(line: string, files: string[] = []): boolean {
+  if (SAYS_SECRET.test(line)) return false;
   // The path itself or its file name: a longer path ending in it (`/home/t/wt/src/a.ts`) names a machine.
   const carried = (t: string): boolean => files.some((f) => t === f || f.endsWith(`/${t}`));
-  return line
-    .replace(/[`*]|__/g, "")
-    .split(/\s+/)
-    .map((t) => t.replace(/^[(["'“‘]+/, "").replace(/[)\]"'”’.,;:!?…]+$/, ""))
-    .every((t) => t === "" || wordLike(t) || (/^[A-Za-z]+(?:_[A-Za-z]+)+$/.test(t) && t.split("_").every(namedLike)) || NUMBER.test(t) || ABBREVIATION.test(t) || JOINER.test(t) || carried(t));
+  const word = (t: string): boolean =>
+    t === "" || wordLike(t) || (/^[A-Za-z]+(?:_[A-Za-z]+)+$/.test(t) && t.split("_").every(namedLike)) || NUMBER.test(t) || ABBREVIATION.test(t) || JOINER.test(t) || carried(t);
+  // In code font, a call or accessor chain (`scenario?.summary`, `useEffect()`, `step >= 9`): each name in it a word, the chain not a host.
+  const code = (span: string): boolean =>
+    carried(span) ||
+    span.split(/\s+/).every((t) => {
+      if (carried(t)) return true;
+      const names = t.split(/[.()?!<>=\[\],;{}+*&|-]+/).filter((n) => n !== "");
+      if (/[^\w.()?!<>=\[\],;{}+*&|\s-]/.test(t)) return false;
+      if (names.length > 1 && t.includes(".") && TLD.test(names[names.length - 1]!)) return false;
+      return names.every((n) => word(n) || /^\d{1,4}$/.test(n));
+    });
+  const spans: string[] = [];
+  const prose = line.replace(/`([^`]*)`/g, (_, span: string) => {
+    spans.push(span);
+    return " ";
+  });
+  return (
+    spans.every(code) &&
+    prose
+      .replace(/[`*]|__/g, "")
+      .split(/\s+/)
+      .map((t) => t.replace(/^[(["'“‘]+/, "").replace(/[)\]"'”’.,;:!?…]+$/, ""))
+      .every(word)
+  );
 }
 
 /** About operating the change, not the change: authors, CI, environments, merges, other PRs. */

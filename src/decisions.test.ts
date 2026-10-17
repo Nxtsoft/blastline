@@ -168,6 +168,21 @@ describe("shareable", () => {
       "the --/home/taylor/x flag broke",
       "use AKIAIOSFODNNEXAMPLE because it works",
       "the token AbCdEfGhIjKlMnOpQrSt is set",
+      // The third review's probes: secrets built of letters, and words said to be one.
+      "use the app password qwhtnzmrkdlpbxva for the SMTP login instead",
+      "the password is correcthorsebatterystaple instead",
+      "API_KEY = kqzxvbnmwplrtyhgfdsa because the old one expired",
+      "the recovery code is ABCDE-FGHIJ-KLMNO instead",
+      "the passphrase is Purple-Monkey-Dishwasher instead",
+      "the PIN is 4821 instead of the old one",
+      "the OTP was 123.456 when it failed",
+      "AKIAIOSFODNN broke because of the rotation",
+      "the value шифрпаролькоторыйдлинный is set",
+      "hf_abcdefghijklmnopqrstuvwxyz broke",
+      "use dyrpyeubx12yn1jr7m19ulab because it works",
+      "use pass qwhtnzmr instead",
+      "the host is at `acme.internal.tech` because of the move",
+      "The token is refreshed before expiry because the clock skews.",
     ]) {
       expect(shareable(line), line).toBe(false);
     }
@@ -179,10 +194,35 @@ describe("shareable", () => {
       "I chose `useRoundSizeCap` over a context so `openspec/changes/cap/design.md` stays the source.",
       "CodeRabbit, stop vs warn: I kept \"add the calculation and warn\" instead of \"stop the import\", so the same calculation behaves the same on steps 4, 7 and 9.",
       "useScenarioSummaryForStep4Query re-ran because its key changed in `round-size.ts`.",
-      "The token is refreshed before expiry because the clock skews; ASIA_PACIFIC_REGION is read instead of the default.",
+      "The refresh runs before expiry because the clock skews; ASIA_PACIFIC_REGION is read instead of the default.",
+      "The fix is to call `useEffect()` instead of `useLayoutEffect()` because SSR warns.",
+      "I chose `Array.from` instead of spread because the iterator is lazy.",
+      "Root cause: `scenario?.summary` is undefined because the step loads later.",
+      "The bug is that `step >= 9` should be `step > 9` because step 9 is inclusive.",
+      "I chose v2 of the API instead because v1 is deprecated.",
+      "I kept the e2e helper instead because i18n strings differ.",
       "Mesmer found a real gap: if the summary goes away while the page stays mounted, the section is never cleared.",
     ]) {
       expect(shareable(line, files), line).toBe(true);
+    }
+  });
+
+  it("passes no random token: lower case, lower case with digits, base36, mixed-case letters", () => {
+    // A fixed-seed generator, so a failure names the same token every run.
+    let seed = 42;
+    const next = (): number => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+    const draw = (alphabet: string, n: number): string => Array.from({ length: n }, () => alphabet[Math.floor(next() * alphabet.length)]).join("");
+    const lower = "abcdefghijklmnopqrstuvwxyz";
+    for (const [alphabet, n] of [
+      [lower, 16],
+      [lower, 24],
+      [`${lower}0123456789`, 32],
+      [`${lower}0123456789`, 24],
+      [`${lower}ABCDEFGHIJKLMNOPQRSTUVWXYZ`, 32],
+      [`${lower}ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789`, 20],
+    ] as const) {
+      const leaked = Array.from({ length: 1000 }, () => draw(alphabet, n)).filter((t) => shareable(`use ${t} instead`));
+      expect(leaked, `${n} of ${alphabet}`).toEqual([]);
     }
   });
 
