@@ -93,8 +93,7 @@ const TOOLS = [
     name: "blastline_brief",
     description:
       "The PR brief for a range, before you push it: what each commit did (from its Entire checkpoint: the request that opened the commit's turn, " +
-      "what the agent decided (findings and choices with their reasons, test outcomes, reverts, design notes weighing alternatives; " +
-      "quoted lines of the agent's own text, never what a person typed, dropped unless every word is common English or public on the PR: a name the diff carries or a reviewer's login), " +
+      "what the agent decided (test outcomes, reverts, design notes weighing alternatives; built from fixed labels, test runners and the change's own paths, never free text), " +
       "agent, model, files touched, test commands run; never tool output or the raw transcript), symbol changes from cgraph change-context, " +
       "reach, and claims checked against the graph and the diff (refuted | partial | consistent, never verified), " +
       "including the narrative's: a name in code font the diff does not carry, changed code it never names, placeholder text. " +

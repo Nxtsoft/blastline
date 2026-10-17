@@ -173,15 +173,9 @@ export interface Brief {
   snapshot: BriefSnapshot;
 }
 
-/**
- * One decision the brief shows, with the commit whose checkpoint holds it.
- * `outside` lists the names it sets in code font that the diff does not
- * carry: the line is kept (an agent reads code it does not change) and the
- * reader is told.
- */
+/** One decision the brief shows, with the commit whose checkpoint holds it. */
 export interface BriefDecision extends Decision {
   commit: string;
-  outside?: string[];
 }
 
 /** The most decisions a brief shows. */
@@ -190,10 +184,9 @@ export const DECISIONS_SHOWN = 8;
 /**
  * Every checkpoint's decisions in commit order, each line once (a later
  * snapshot of a session repeats nothing, but two sessions can say the same
- * thing), checked against the diff, then cut to `DECISIONS_SHOWN` by
- * `chooseDecisions`.
+ * thing), then cut to `DECISIONS_SHOWN` by `chooseDecisions`.
  */
-export function decisionsOf(commits: CommitBrief[], carries: (name: string) => boolean): { shown: BriefDecision[]; found: number } {
+export function decisionsOf(commits: CommitBrief[]): { shown: BriefDecision[]; found: number } {
   const seen = new Set<string>();
   const all: BriefDecision[] = [];
   for (const c of commits) {
@@ -201,8 +194,7 @@ export function decisionsOf(commits: CommitBrief[], carries: (name: string) => b
       const key = `${d.kind}\0${d.text}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const outside = d.kind === "found" ? codeNames(d.text).filter((n) => !carries(n)) : [];
-      all.push({ ...d, commit: c.sha, ...(outside.length > 0 && { outside }) });
+      all.push({ ...d, commit: c.sha });
     }
   }
   return { shown: chooseDecisions(all, DECISIONS_SHOWN), found: all.length };
@@ -564,20 +556,6 @@ function diffCarries(files: ChangedFile[], symbols: SymbolChange[] | undefined, 
 }
 
 /**
- * Whether a word of a quoted decision line is already public in the diff, as
- * a whole: a single identifier that is a changed symbol, a changed file's
- * name, or a whole token in a changed line, or exactly a changed path. Unlike
- * `diffCarries`, never by one of its parts, so `taylor@example.com` is not
- * public because `com` is in a changed line.
- */
-export function diffWords(files: ChangedFile[], symbols: SymbolChange[] | undefined, changedPaths: Set<string>): (word: string) => boolean {
-  const names = new Set([...changedPaths].map((p) => p.slice(p.lastIndexOf("/") + 1)));
-  const words = new Set<string>((symbols ?? []).map((s) => s.label));
-  for (const line of files.flatMap((f) => [...(f.added ?? []), ...(f.removed ?? [])])) for (const t of line.match(/[A-Za-z_$][\w$]*/g) ?? []) words.add(t);
-  return (word) => changedPaths.has(word) || names.has(word) || (/^[A-Za-z_$][\w$]*$/.test(word) && words.has(word));
-}
-
-/**
  * What the narratives (the PR body, each commit's message) claim against what
  * the diff carries. Refuted: a name in code font that no changed symbol bears
  * and no changed line contains (a phantom change); placeholder text. Partial:
@@ -728,11 +706,6 @@ export function buildBrief(o: BriefOptions): Brief {
   };
   const sessions = o.sessionsDb === undefined ? undefined : new SessionsIndex(o.sessionsDb);
   const rangePaths = parsed.map((f) => f.path);
-  // A decision line may quote what is already public on the PR: names the diff carries, and its author's and reviewers' logins.
-  const quoting = {
-    carries: diffWords(parsed, changeContext?.symbols, changedPaths),
-    people: [...(author !== undefined ? [author] : []), ...(reviews ?? []).map((r) => r.login)],
-  };
   let commits: CommitBrief[];
   try {
     // What earlier commits' checkpoints already read of each session's transcript: the next one reads what came after.
@@ -743,7 +716,7 @@ export function buildBrief(o: BriefOptions): Brief {
       const checkpointId = checkpointTrailer(repo, sha);
       const own = (changeContext?.symbols ?? []).filter((s) => files.includes(s.path)).map((s) => ({ path: s.path, label: s.label, ...rangeOf(s) }));
       const checkpoint =
-        checkpointId !== undefined ? checkpointFor(repo, sha, own, read, files, rangePaths, quoting) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files, own);
+        checkpointId !== undefined ? checkpointFor(repo, sha, own, read, files, rangePaths) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files, own);
       for (const s of checkpoint?.sessions ?? []) if (s.id !== "" && s.lines > 0) read.set(s.id, { sha, lines: s.lines, hash: s.hash });
       // Only for a commit with no trailer at all: a dangling trailer stays "not fetched", which names the fix (push the checkpoints).
       const provenance = checkpointId === undefined && checkpoint === undefined ? provenanceOf(repo, sha) : undefined;
@@ -809,7 +782,7 @@ export function buildBrief(o: BriefOptions): Brief {
     }
   }
   claims.push(...narrativeClaims(narratives, parsed, changeContext?.symbols, changedPaths));
-  const decisions = decisionsOf(commits, diffCarries(parsed, changeContext?.symbols, changedPaths));
+  const decisions = decisionsOf(commits);
   if (changeContext !== undefined && o.baseGraphPath !== undefined && changeContext.symbols.some((s) => s.status === "changed")) {
     try {
       claims.push(...changedDeclarationClaims(changeContext.symbols, parsed, loadGraph(o.baseGraphPath), changedPaths));

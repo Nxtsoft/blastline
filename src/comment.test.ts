@@ -510,36 +510,18 @@ describe("renderBrief: what the agent decided", () => {
 
   it("lists each decision with its kind and commit, between the commit table and the claims", () => {
     const md = decided([
-      { kind: "found", text: "I kept warn instead of stop because steps 4 and 9 share it", at: 3, commit: sha },
+      { kind: "tests", text: "`vitest` on `app/[uuid]/cap.test.ts` failed, then passed", at: 3, commit: sha },
       { kind: "alternatives", text: "openspec/changes/cap/design.md", at: 5, commit: sha },
     ]);
     const section = md.slice(md.indexOf("#### What the agent decided"), md.indexOf("#### Claims checked"));
     expect(md.indexOf("#### What each commit did")).toBeLessThan(md.indexOf("#### What the agent decided"));
-    expect(section).toContain(`- **found** [\`9999999\`](https://github.com/o/r/commit/${sha}): I kept warn instead of stop because steps 4 and 9 share it`);
+    // A path in code font is printed as it is: an entity there would show literally.
+    expect(section).toContain(`- **tests** [\`9999999\`](https://github.com/o/r/commit/${sha}): \`vitest\` on \`app/[uuid]/cap.test.ts\` failed, then passed`);
     expect(section).toContain("- **alternatives** [`9999999`](https://github.com/o/r/commit/" + sha + "): design notes weigh alternatives in `openspec/changes/cap/design.md`");
   });
 
-  it("says how many more the checkpoints held, and flags a line naming code the diff does not change", () => {
-    const md = decided([{ kind: "found", text: "The flake in `e2e.spec.ts` predates this change", at: 1, commit: sha, outside: ["e2e.spec.ts"] }], 11);
-    expect(md).toContain("_(names `e2e.spec.ts`, which this diff does not change)_");
-    expect(md).toContain("- _10 more in the checkpoints_");
-  });
-
-  it("never pings a GitHub user or opens HTML from a quoted line", () => {
-    const md = decided([{ kind: "found", text: "ask @devyn whether <details> is fine, like in #742", at: 1, commit: sha }]);
-    expect(md).not.toMatch(/@devyn|#742/);
-    expect(md).toContain("ask @\u200bdevyn whether &lt;details> is fine, like in #\u200b742");
-  });
-
-  it("never autolinks GH-123 or renders a link or image from a quoted line", () => {
-    const md = decided([{ kind: "found", text: "Same bug as GH-12, see [notes](x) and ![](y) because it broke", at: 1, commit: sha }]);
-    expect(md).not.toMatch(/GH-12|\[notes\]\(|!\[\]\(/);
-    expect(md).toContain("GH-\u200b12, see &#91;notes&#93;(x) and !&#91;&#93;(y)");
-  });
-
-  it("never lets an entity in a quoted line decode to a mention", () => {
-    const md = decided([{ kind: "found", text: "ask &#64;octocat because cli/cli&#35;1 broke", at: 1, commit: sha }]);
-    expect(md).toContain("ask &amp;#\u200b64;octocat because cli/cli&amp;#\u200b35;1 broke");
+  it("says how many more the checkpoints held", () => {
+    expect(decided([{ kind: "reverted", text: "git revert", at: 1, commit: sha }], 11)).toContain("- _10 more in the checkpoints_");
   });
 
   it("has no section when no checkpoint held a decision", () => {

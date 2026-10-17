@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { Decision, Quoting } from "./decisions.js";
+import type { Decision } from "./decisions.js";
 import { decisionsIn } from "./decisions.js";
 
 /**
@@ -508,7 +508,7 @@ function worksOn(block: NonNullable<TranscriptRecord["content"]>[number], files:
  * shell keeps its directory between calls, so `cat package.json` after an
  * earlier `cd ../billing` reads another repo. Stricter than `worksOn`, whose
  * basename match lets a session that only read another `index.ts` count;
- * decisions quote what the agent said about the change, so they need this.
+ * decisions are bound to this repo's work, so they need this.
  */
 function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], files: string[], root: string): boolean {
   if (block.type !== "tool_use" || block.name === undefined) return false;
@@ -555,24 +555,23 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
   const away: boolean[] = [];
   let out = true;
   records.forEach((r, k) => {
-    // Blocks run in order: a record with text is quoted when any of its text stands while home among its tool calls.
-    const blocks = r?.type === "assistant" ? (r.content ?? []) : [];
-    let home = blocks.some((b) => b.type === "text") ? false : !out;
-    for (const block of blocks) {
-      if (block.type === "text") home = home || !out;
-      else if (leaves(block, root)) out = true;
+    // Blocks run in order: a record counts as home when the agent is home before or after any of its calls.
+    let home = !out;
+    for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
+      if (leaves(block, root)) out = true;
       else if (worksOnPath(block, files, root) || returns(block, root)) out = false;
+      home = home || !out;
     }
     away[k] = !home;
   });
   let from = start;
   for (let i = start + 1; i <= records.length; i++) {
     if (i < records.length && !(records[i] !== undefined && humanTurn(records[i]!))) continue;
-    // The first segment can start inside a turn the previous checkpoint read part of: the whole turn says whether it worked on the files, only the unread part is quoted.
+    // The first segment can start inside a turn the previous checkpoint read part of: the whole turn says whether it worked on the files, only the unread part is read.
     let opened = from;
     while (opened > 0 && !(records[opened] !== undefined && humanTurn(records[opened]!))) opened--;
     if (records.slice(opened, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOnPath(block, files, root)))) {
-      // Inside the turn, what the agent says while away from this repo is not quoted.
+      // Inside the turn, what the agent does while away from this repo is not read.
       for (let k = from; k < i; k++) if (!away[k]) kept.push(lines[k]!);
     }
     from = i;
@@ -744,15 +743,7 @@ export function testCommandsIn(transcript: string): string[] {
  * `metadata.json` also lists per-session paths; those are not followed, so no
  * checkpoint can point this reader at `<i>/full.jsonl`.
  */
-export function checkpointFor(
-  repo: string,
-  commit: string,
-  symbols: SymbolAt[] = [],
-  read: ReadSessions = new Map(),
-  files: string[] = [],
-  changed: string[] = [],
-  quoting: Quoting = {},
-): Checkpoint | undefined {
+export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] = [], read: ReadSessions = new Map(), files: string[] = [], changed: string[] = []): Checkpoint | undefined {
   const id = checkpointTrailer(repo, commit);
   if (id === undefined) return undefined;
   const place = checkpointPlace(repo, id);
@@ -795,7 +786,7 @@ export function checkpointFor(
       const sessionId = (i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata)).session_id ?? "";
       const before = sessionId === "" ? undefined : read.get(sessionId);
       const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files, changed.length > 0 ? changed : files);
-      decisions.push(...decisionsIn(decisionWindow, changed.length > 0 ? changed : files, quoting));
+      decisions.push(...decisionsIn(decisionWindow, changed.length > 0 ? changed : files));
       if (opened !== "" && (ask === "" || (worked && !askWorked))) {
         ask = opened;
         askWorked = worked;

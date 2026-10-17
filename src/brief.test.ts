@@ -4,11 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { changedDeclarationClaims, declares, decisionsOf, diffWords, narrativeClaims, buildBrief, commandRuns, concurrentPrs, othersIn, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
+import { changedDeclarationClaims, declares, decisionsOf, narrativeClaims, buildBrief, commandRuns, concurrentPrs, othersIn, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
 import { parseUnifiedDiff } from "./diff.js";
 import { loadGraph } from "./graph.js";
 import { checkpointRef } from "./checkpoint.js";
-import { shareable } from "./decisions.js";
 import { DatabaseSync } from "node:sqlite";
 
 // src/testdata/brief/ is real cgraph bin-v0.4.0 output over the six-file repo
@@ -517,43 +516,8 @@ describe("declares", () => {
   });
 });
 
-describe("diffWords", () => {
-  const diff = [
-    "diff --git a/src/users.ts b/src/users.ts",
-    "--- a/src/users.ts",
-    "+++ b/src/users.ts",
-    "@@ -1,0 +1,3 @@",
-    "+const users = await db.query(sql, { prod: false });",
-    "+export const key = process.env.KEY;",
-    "+// docs: https://example.com/help",
-    "",
-  ].join("\n");
-  const parsed = parseUnifiedDiff(diff);
-  const carries = diffWords(parsed, [], new Set(["src/users.ts"]));
-
-  it("makes a word public only whole: a changed-line token, a changed file's name or a changed path", () => {
-    expect(["users", "query", "KEY", "users.ts", "src/users.ts"].map(carries)).toEqual([true, true, true, true, true]);
-    expect(["taylor@example.com", "example.com", "prod-db", "key-3f9a", "users.query"].map(carries)).toEqual([false, false, false, false, false]);
-  });
-
-  it("never passes a quoted line whose email, host, port or key has one part in the diff", () => {
-    for (const line of [
-      "The root cause is that taylor@example.com was disabled.",
-      "It broke because acme-prod-db.internal:5432 refused the connection.",
-      "It broke because the replica at prod-db.acme.lan was stale.",
-      // Built at run time: the literal has the shape of a vendor key, which push protection rejects.
-      `It broke because key-${"3f9a8b7c6d5e4f3a"}${"2b1c0d9e8f7a6b5c"} expired.`,
-      "It broke because prod-hunter2-xkqz was rotated.",
-      "It broke because users-acmecorp-prod.query was cached.",
-    ]) {
-      expect(shareable(line, ["src/users.ts"], { carries }), line).toBe(false);
-    }
-    expect(shareable("The users query ran twice because the prod flag was read late.", ["src/users.ts"], { carries })).toBe(true);
-  });
-});
-
 describe("decisionsOf", () => {
-  const commit = (sha: string, decisions: { kind: "found" | "reverted" | "tests"; text: string; at: number }[]) => ({
+  const commit = (sha: string, decisions: { kind: "alternatives" | "reverted" | "tests"; text: string; at: number }[]) => ({
     sha,
     subject: "x",
     checkpoint: { decisions } as never,
@@ -563,30 +527,27 @@ describe("decisionsOf", () => {
     ranReachingTests: [],
   });
 
-  it("keeps each line once across commits and sessions, binds it to the first commit that holds it, and flags names outside the diff", () => {
-    const carries = (name: string): boolean => name === "parse";
-    const { shown, found } = decisionsOf(
-      [
-        commit("a".repeat(40), [{ kind: "found", text: "`parse` drops the tenant because the key ignores it", at: 2 }]),
-        commit("b".repeat(40), [
-          { kind: "found", text: "`parse` drops the tenant because the key ignores it", at: 0 },
-          { kind: "found", text: "The flake in `e2e.spec.ts` predates this change because main fails too", at: 4 },
-        ]),
-      ],
-      carries,
-    );
+  it("keeps each line once across commits and sessions, and binds it to the first commit that holds it", () => {
+    const { shown, found } = decisionsOf([
+      commit("a".repeat(40), [{ kind: "tests", text: "`vitest` failed, then passed", at: 2 }]),
+      commit("b".repeat(40), [
+        { kind: "tests", text: "`vitest` failed, then passed", at: 0 },
+        { kind: "alternatives", text: "openspec/changes/cap/design.md", at: 4 },
+      ]),
+    ]);
     expect(found).toBe(2);
-    expect(shown.map((d) => [d.commit[0], d.outside])).toEqual([
-      ["a", undefined],
-      ["b", ["e2e.spec.ts"]],
+    expect(shown.map((d) => [d.commit[0], d.kind])).toEqual([
+      ["a", "tests"],
+      ["b", "alternatives"],
     ]);
   });
 
-  it("cuts to eight, keeping test outcomes and reverts before findings", () => {
-    const many = Array.from({ length: 9 }, (_, i) => ({ kind: "found" as const, text: `finding ${i} because reasons`, at: i }));
-    const { shown, found } = decisionsOf([commit("c".repeat(40), [...many, { kind: "reverted", text: "git revert", at: 20 }])], () => true);
+  it("cuts to eight, keeping test outcomes and reverts before design notes", () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({ kind: "alternatives" as const, text: `notes/${i}.md`, at: i }));
+    const { shown, found } = decisionsOf([commit("c".repeat(40), [...many, { kind: "reverted", text: "git revert", at: 20 }])]);
     expect(found).toBe(10);
     expect(shown).toHaveLength(8);
     expect(shown.at(-1)?.text).toBe("git revert");
   });
 });
+

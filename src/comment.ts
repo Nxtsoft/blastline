@@ -46,26 +46,6 @@ function cell(s: string): string {
   return s.replace(/\|/g, "\\|");
 }
 
-/**
- * A line quoted from an agent's session: an `@name` would notify that GitHub
- * user, a `#123`, `GH-123` or `owner/repo#123` would put a "mentioned this"
- * event on that issue or PR, a `<tag>` would open HTML, and `[text](target)`
- * or `![](target)` would become a live link or image, and an entity such as
- * `&#64;` would decode to any of these. Mentions get a zero-width space after
- * the `@`, `#` or `GH-`; the rest get entities.
- */
-function quoted(s: string): string {
-  // `&` first, so `&#64;name` cannot decode to a live mention; then mentions, as the entities below carry a `#` before digits.
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/@(?=[A-Za-z0-9-])/g, "@\u200b")
-    .replace(/#(?=\d)/g, "#\u200b")
-    .replace(/\bGH-(?=\d)/gi, (m) => `${m}\u200b`)
-    .replace(/</g, "&lt;")
-    .replace(/\[/g, "&#91;")
-    .replace(/\]/g, "&#93;");
-}
-
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
@@ -645,7 +625,6 @@ function commitTable(commits: CommitBrief[], links: Links): string {
 
 /** How each kind of decision reads in front of its line. */
 const DECISION_LABEL: Record<BriefDecision["kind"], string> = {
-  found: "found",
   tests: "tests",
   reverted: "reverted",
   alternatives: "alternatives",
@@ -659,9 +638,8 @@ const DECISION_LABEL: Record<BriefDecision["kind"], string> = {
 function decisionsList(brief: Brief, links: Links): string | undefined {
   if (brief.decisions.length === 0) return undefined;
   const bullets = brief.decisions.map((d) => {
-    const text = d.kind === "alternatives" ? `design notes weigh alternatives in ${code(d.text)}` : quoted(d.text);
-    const outside = d.outside ? ` _(names ${d.outside.map(code).join(", ")}, which this diff does not change)_` : "";
-    return `- **${DECISION_LABEL[d.kind]}** ${links.commit(d.commit)}: ${text}${outside}`;
+    const text = d.kind === "alternatives" ? `design notes weigh alternatives in ${code(d.text)}` : d.text;
+    return `- **${DECISION_LABEL[d.kind]}** ${links.commit(d.commit)}: ${text}`;
   });
   const more = brief.decisionsFound > brief.decisions.length ? [`- _${brief.decisionsFound - brief.decisions.length} more in the checkpoints_`] : [];
   return ["#### What the agent decided", "", ...bullets, ...more, ""].join("\n");
