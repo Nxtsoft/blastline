@@ -97,7 +97,8 @@ function wordLike(token: string): boolean {
 }
 
 export function shareable(line: string, files: string[] = []): boolean {
-  const carried = (t: string): boolean => files.some((f) => t === f || f.endsWith(`/${t}`) || t.endsWith(`/${f}`));
+  // The path itself or its file name: a longer path ending in it (`/home/t/wt/src/a.ts`) names a machine.
+  const carried = (t: string): boolean => files.some((f) => t === f || f.endsWith(`/${t}`));
   return line
     .replace(/[`*]|__/g, "")
     .split(/\s+/)

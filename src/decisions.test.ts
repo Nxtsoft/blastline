@@ -172,6 +172,7 @@ describe("shareable", () => {
       expect(shareable(line), line).toBe(false);
     }
     const files = ["src/round-size.ts", "openspec/changes/cap/design.md"];
+    expect(shareable("the edit went to /home/taylor/wt/src/round-size.ts because of the worktree", files)).toBe(false);
     for (const line of [
       "I kept warn instead of stop, so steps 4 and 9 behave the same.",
       "The cap moved to src/round-size.ts because two modules each had one.",
