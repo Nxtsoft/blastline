@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.20.0
+
+The brief says what the agent decided across the PR, not just how each commit's turn began and ended.
+
+- A new section, **What the agent decided**, lists at most 8 lines, each with its kind and the commit whose checkpoint holds it, in session order. `src/decisions.ts` reads them from each checkpoint's part of the compact transcript, without a model: what a person asked and later steered (a bare go-ahead is skipped), the first sentence of an agent text that states a finding or a choice (`because`, `instead`, `rather than`, `root cause`, `you were right`, …; progress lines such as "waiting on CI" are skipped), test commands that failed and then passed or whose last run failed, reverts and amends, reviews the agent dispatched, and design notes the change adds that weigh alternatives.
+- A checkpoint's part starts where the previous checkpoint of the session ended, or, for the first, at the request that opened the commit's turn, so an earlier task in the same session is not read. When no tool call touched the commit's files and nothing bounds the transcript, no decision is read.
+- Every line is quoted, never rewritten. A line that names code in code font the diff does not carry is kept and flagged; the check is the one the narrative claims use. A quoted `@name` cannot notify anyone and a `<tag>` cannot open HTML.
+- Privacy: tool output, an agent's brief and a review's result never leave the ref. A test is read by its call's status, a revert or a review by the description the agent gave it, design notes by their repo path, and only when the change carries them. The README's allowlist lists the new lines.
+- On four real web-app PRs the section surfaced the user's correction that a commit had the wrong git author and the agent's fix, a review finding (a published section never cleared when its data goes away), design notes weighing alternatives, and a choice between two behaviours with its reason ("kept warn instead of stop, so the same calculation behaves the same on steps 4, 7 and 9").
+
 ## 0.19.0
 
 The Intent column reads the whole turn behind a commit, and a file loaded by convention runs the full suite even when the graph has nodes for it.

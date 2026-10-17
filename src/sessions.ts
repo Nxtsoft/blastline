@@ -362,6 +362,7 @@ export function localCheckpoint(index: SessionsIndex, repo: string, sha: string,
     filesTouched: files,
     testCommands: intent.testCommands,
     source: LOCAL_SOURCE,
+    decisions: [],
   };
 }
 

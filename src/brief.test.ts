@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { changedDeclarationClaims, declares, narrativeClaims, buildBrief, commandRuns, concurrentPrs, othersIn, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
+import { changedDeclarationClaims, declares, decisionsOf, narrativeClaims, buildBrief, commandRuns, concurrentPrs, othersIn, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
 import { parseUnifiedDiff } from "./diff.js";
 import { loadGraph } from "./graph.js";
 import { checkpointRef } from "./checkpoint.js";
@@ -513,5 +513,44 @@ describe("declares", () => {
     expect(declares("parse", "  parse(input);")).toBe(false);
     expect(declares("parse", "  const n = parse(input) + 1;")).toBe(false);
     expect(declares("parse", "export function parseAll(inputs: string[]): number {")).toBe(false);
+  });
+});
+
+describe("decisionsOf", () => {
+  const commit = (sha: string, decisions: { kind: "found" | "steered" | "tests"; text: string; at: number }[]) => ({
+    sha,
+    subject: "x",
+    checkpoint: { decisions } as never,
+    files: [],
+    reach: { files: 0, tests: 0 },
+    reachingTests: [],
+    ranReachingTests: [],
+  });
+
+  it("keeps each line once across commits and sessions, binds it to the first commit that holds it, and flags names outside the diff", () => {
+    const carries = (name: string): boolean => name === "parse";
+    const { shown, found } = decisionsOf(
+      [
+        commit("a".repeat(40), [{ kind: "found", text: "`parse` drops the tenant because the key ignores it", at: 2 }]),
+        commit("b".repeat(40), [
+          { kind: "found", text: "`parse` drops the tenant because the key ignores it", at: 0 },
+          { kind: "found", text: "The flake in `e2e.spec.ts` predates this change because main fails too", at: 4 },
+        ]),
+      ],
+      carries,
+    );
+    expect(found).toBe(2);
+    expect(shown.map((d) => [d.commit[0], d.outside])).toEqual([
+      ["a", undefined],
+      ["b", ["e2e.spec.ts"]],
+    ]);
+  });
+
+  it("cuts to eight, keeping what a person said and test outcomes before findings", () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({ kind: "found" as const, text: `finding ${i} because reasons`, at: i }));
+    const { shown, found } = decisionsOf([commit("c".repeat(40), [...many, { kind: "steered", text: "keep the old export", at: 20 }])], () => true);
+    expect(found).toBe(10);
+    expect(shown).toHaveLength(8);
+    expect(shown.at(-1)?.text).toBe("keep the old export");
   });
 });

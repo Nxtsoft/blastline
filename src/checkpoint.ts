@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import type { Decision } from "./decisions.js";
+import { decisionsIn } from "./decisions.js";
 
 /**
  * The reviewable subset of an Entire checkpoint (github.com/entireio/cli): the
@@ -38,6 +40,8 @@ export interface Checkpoint {
   source: string;
   /** Why each changed symbol the caller asked about changed, when an edit in the transcript touched it. */
   reasons: SymbolReason[];
+  /** What the agent decided in this checkpoint's part of each session (`decisionsIn`), in session order. */
+  decisions: Decision[];
 }
 
 /**
@@ -422,6 +426,12 @@ export interface Windows {
   ask: string;
   /** Whether a tool call in the new part works on one of the commit's files. */
   worked: boolean;
+  /**
+   * Where the commit's decisions are read: everything since the previous
+   * checkpoint of the session, or, with none, from the commit's own turn;
+   * "" when that turn cannot be told (no work on the files, nothing read before).
+   */
+  decisionWindow: string;
 }
 
 /**
@@ -532,6 +542,7 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   return {
     ask: opening !== undefined && humanTurn(opening) ? askOf(opening) : "",
     worked: firstWork !== -1,
+    decisionWindow: firstWork === -1 && !extended ? "" : lines.slice(extended ? sinceStart : turnStart).join("\n"),
     sinceWindow: lines.slice(sinceStart).join("\n"),
     stepWindow: lines.slice(stepStart).join("\n"),
     turnWindow: lines.slice(turnStart).join("\n"),
@@ -600,7 +611,8 @@ export function testCommandsIn(transcript: string): string[] {
  * edits are matched to them and their text is searched, never shown.
  *
  * `read` is what earlier checkpoints in the range already read per session
- * and `files` what the commit changed; `windowsOf` uses them to read this
+ * and `files` what the commit changed (`changed`, what the whole range
+ * changed, is where design notes the agent wrote may land); `windowsOf` uses them to read this
  * commit's part of a cumulative transcript, not the whole session's.
  *
  * The paths read are Entire's layout, spelled out here: `<i>/metadata.json`,
@@ -609,7 +621,7 @@ export function testCommandsIn(transcript: string): string[] {
  * `metadata.json` also lists per-session paths; those are not followed, so no
  * checkpoint can point this reader at `<i>/full.jsonl`.
  */
-export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] = [], read: ReadSessions = new Map(), files: string[] = []): Checkpoint | undefined {
+export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] = [], read: ReadSessions = new Map(), files: string[] = [], changed: string[] = []): Checkpoint | undefined {
   const id = checkpointTrailer(repo, commit);
   if (id === undefined) return undefined;
   const place = checkpointPlace(repo, id);
@@ -631,6 +643,7 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     // The ask of a session that worked on the commit's files wins over one that only ran alongside.
     let ask = "";
     let askWorked = false;
+    const decisions: Decision[] = [];
     const testCommands = new Set<string>();
     let narration: Narration = { started: "", ended: "", texts: 0, tools: 0 };
     const sessions: CheckpointSession[] = [];
@@ -650,7 +663,8 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     for (let i = 0; i < sessionCount; i++) {
       const sessionId = (i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata)).session_id ?? "";
       const before = sessionId === "" ? undefined : read.get(sessionId);
-      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
+      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files);
+      decisions.push(...decisionsIn(decisionWindow, changed.length > 0 ? changed : files, !extended));
       if (opened !== "" && (ask === "" || (worked && !askWorked))) {
         ask = opened;
         askWorked = worked;
@@ -685,6 +699,7 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
       testCommands: [...testCommands],
       source: meta.source ?? "entire",
       reasons: [...reasons.values()],
+      decisions,
     };
   } catch {
     return undefined;

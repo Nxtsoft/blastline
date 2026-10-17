@@ -440,6 +440,19 @@ describe("checkpointFor on the branch backend", () => {
     expect(cp?.narration.started).toBe("I'll start by reading the ticket, then set up a worktree off dev.");
   });
 
+  it("reads decisions from the commit's own turn, and calls what the person says in a later commit's part steering", () => {
+    const a = checkpointFor(repo, commitA, [], new Map(), ["src/round-size.ts"]);
+    // The earlier turn about the ticket list is not this commit's.
+    expect(a?.decisions.map((d) => [d.kind, d.text])).toEqual([["asked", "now give the round-size cap one home"]]);
+    const c = checkpointFor(repo, commitC, [], new Map([[SESSION, { sha: commitB, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
+    expect(c?.decisions.map((d) => [d.kind, d.text])).toEqual([
+      ["steered", "the bot's autofix broke the page key; put the router-driven one back"],
+      ["reverted", "git revert"],
+    ]);
+    // A commit whose files no tool call touched, with nothing read before: the turn is unknown, so no decisions.
+    expect(checkpointFor(repo, commitA, [], new Map(), ["src/elsewhere.ts"])?.decisions).toEqual([]);
+  });
+
   it("reports the id but no checkpoint when the branch does not hold it", () => {
     expect(checkpointTrailer(repo, commitMissing)).toBe("0123456789ab");
     expect(checkpointFor(repo, commitMissing)).toBeUndefined();
@@ -491,7 +504,7 @@ describe("windowsOf and narrationIn", () => {
   it("keeps an unstamped transcript whole and counts texts and tool calls", () => {
     const t = [JSON.stringify({ type: "assistant", content: [text("a"), bash("ls")] }), "not json", JSON.stringify({ type: "assistant", content: [text("b")] })].join("\n");
     const lines = t.split("\n");
-    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "", worked: false });
+    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "", worked: false, decisionWindow: "" });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: transcriptHash(lines.slice(0, 2)) }, ["x.ts"])).toMatchObject({ sinceWindow: lines[2], extended: true });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: "not the prefix" }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
     expect(windowsOf(t, { sha: "a", lines: 9, hash: transcriptHash(lines) }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
@@ -544,6 +557,7 @@ describe("checkpointFor", () => {
       testCommands: [],
       source: "entire",
       reasons: [],
+      decisions: [],
     });
   });
 

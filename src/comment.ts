@@ -1,6 +1,6 @@
 import type { Checkpoint, SymbolReason } from "./checkpoint.js";
 import { TEST_RUNNER } from "./checkpoint.js";
-import type { Brief, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
+import type { Brief, BriefDecision, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
 import { SNAPSHOT_MARKER } from "./brief.js";
 import { relativeTo, sharedDir } from "./paths.js";
 import { ignorePatternFor } from "./unnamed.js";
@@ -44,6 +44,15 @@ function code(s: string): string {
 /** Table cells split at `|`, even inside a code span; GFM accepts `\|` as a literal pipe. */
 function cell(s: string): string {
   return s.replace(/\|/g, "\\|");
+}
+
+/**
+ * A line quoted from an agent's session: an `@name` would notify that GitHub
+ * user and a `<tag>` would open HTML, so the first gets a zero-width space
+ * after the `@` and the second an entity.
+ */
+function quoted(s: string): string {
+  return s.replace(/</g, "&lt;").replace(/@(?=[A-Za-z0-9-])/g, "@\u200b");
 }
 
 function plural(n: number, one: string, many = `${one}s`): string {
@@ -623,6 +632,33 @@ function commitTable(commits: CommitBrief[], links: Links): string {
   return [`<details><summary>${plural(commits.length, "commit")}</summary>`, "", table, "", "</details>"].join("\n");
 }
 
+/** How each kind of decision reads in front of its line. */
+const DECISION_LABEL: Record<BriefDecision["kind"], string> = {
+  asked: "asked",
+  steered: "steered",
+  found: "found",
+  tests: "tests",
+  reverted: "reverted",
+  review: "review",
+  alternatives: "alternatives",
+};
+
+/**
+ * What the agents decided, one bullet each, in session order, with the commit
+ * whose checkpoint holds it. Undefined when no checkpoint held a decision,
+ * so a range without checkpoints gets no empty section.
+ */
+function decisionsList(brief: Brief, links: Links): string | undefined {
+  if (brief.decisions.length === 0) return undefined;
+  const bullets = brief.decisions.map((d) => {
+    const text = d.kind === "alternatives" ? `design notes weigh alternatives in ${code(d.text)}` : quoted(d.text);
+    const outside = d.outside ? ` _(names ${d.outside.map(code).join(", ")}, which this diff does not change)_` : "";
+    return `- **${DECISION_LABEL[d.kind]}** ${links.commit(d.commit)}: ${text}${outside}`;
+  });
+  const more = brief.decisionsFound > brief.decisions.length ? [`- _${brief.decisionsFound - brief.decisions.length} more in the checkpoints_`] : [];
+  return ["#### What the agent decided", "", ...bullets, ...more, ""].join("\n");
+}
+
 function claimsList(claims: ClaimCheck[]): string {
   if (claims.length === 0) return "_no checkpoint on this branch makes a claim the graph can check_";
   const order: ClaimCheck["verdict"][] = ["refuted", "partial", "consistent"];
@@ -760,6 +796,7 @@ export function renderBrief(brief: Brief, ctx: CommentContext): string {
     "",
     commitTable(brief.commits, links),
     "",
+    decisionsList(brief, links),
     "#### Claims checked",
     "",
     claimsList(brief.claims),

@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import { checkCallers } from "./check.js";
 import type { Checkpoint, Provenance, ReadSessions } from "./checkpoint.js";
 import { checkpointFor, checkpointPlace, checkpointPushHint, checkpointTrailer, provenanceOf } from "./checkpoint.js";
+import type { Decision } from "./decisions.js";
+import { chooseDecisions } from "./decisions.js";
 import type { Owners } from "./owners.js";
 import { agentCommit, ownersOf, unfamiliarTo } from "./owners.js";
 import { SessionsIndex, localCheckpoint } from "./sessions.js";
@@ -155,6 +157,10 @@ export interface Brief {
   selection: Selection;
   changeContext?: ChangeContext;
   commits: CommitBrief[];
+  /** What the agents decided across the range, at most `DECISIONS_SHOWN`, in session order (`decisionsOf`). */
+  decisions: BriefDecision[];
+  /** How many decisions the checkpoints held before the cut to `DECISIONS_SHOWN`. */
+  decisionsFound: number;
   claims: ClaimCheck[];
   /** Present when the range resolved: owners are read from the base's history. */
   review?: ReviewState;
@@ -165,6 +171,41 @@ export interface Brief {
   /** What this brief could not check, one line each, printed verbatim. */
   unchecked: string[];
   snapshot: BriefSnapshot;
+}
+
+/**
+ * One decision the brief shows, with the commit whose checkpoint holds it.
+ * `outside` lists the names it sets in code font that the diff does not
+ * carry: the line is kept (an agent reads code it does not change) and the
+ * reader is told.
+ */
+export interface BriefDecision extends Decision {
+  commit: string;
+  outside?: string[];
+}
+
+/** The most decisions a brief shows. */
+export const DECISIONS_SHOWN = 8;
+
+/**
+ * Every checkpoint's decisions in commit order, each line once (a later
+ * snapshot of a session repeats nothing, but two sessions can say the same
+ * thing), checked against the diff, then cut to `DECISIONS_SHOWN` by
+ * `chooseDecisions`.
+ */
+export function decisionsOf(commits: CommitBrief[], carries: (name: string) => boolean): { shown: BriefDecision[]; found: number } {
+  const seen = new Set<string>();
+  const all: BriefDecision[] = [];
+  for (const c of commits) {
+    for (const d of c.checkpoint?.decisions ?? []) {
+      const key = `${d.kind}\0${d.text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const outside = d.kind === "found" || d.kind === "asked" || d.kind === "steered" ? codeNames(d.text).filter((n) => !carries(n)) : [];
+      all.push({ ...d, commit: c.sha, ...(outside.length > 0 && { outside }) });
+    }
+  }
+  return { shown: chooseDecisions(all, DECISIONS_SHOWN), found: all.length };
 }
 
 /** A description the diff can be checked against: the PR body, or one commit's message. */
@@ -505,16 +546,8 @@ function codeNames(text: string): string[] {
 const isPath = (name: string): boolean =>
   name.includes("/") || /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|rb|php|swift|cs|c|cc|cpp|h|hpp|sql|sh|md|ya?ml|json|toml|css|html|txt)$/i.test(name);
 
-/**
- * What the narratives (the PR body, each commit's message) claim against what
- * the diff carries. Refuted: a name in code font that no changed symbol bears
- * and no changed line contains (a phantom change); placeholder text. Partial:
- * files with symbol changes the text never names (understated scope). The
- * checks are by name, so a description in other words is not a mismatch; the
- * text is read, never scored.
- */
-export function narrativeClaims(narratives: Narrative[], files: ChangedFile[], symbols: SymbolChange[] | undefined, changedPaths: Set<string>): ClaimCheck[] {
-  const claims: ClaimCheck[] = [];
+/** Whether a name set in code font is something the diff carries: a changed symbol, a changed path, or text in a changed line. */
+function diffCarries(files: ChangedFile[], symbols: SymbolChange[] | undefined, changedPaths: Set<string>): (name: string) => boolean {
   const labels = new Set((symbols ?? []).map((s) => s.label));
   const lines = files.flatMap((f) => [...(f.added ?? []), ...(f.removed ?? [])]);
   const basenames = new Set([...changedPaths].map((p) => p.slice(p.lastIndexOf("/") + 1)));
@@ -527,6 +560,20 @@ export function narrativeClaims(narratives: Narrative[], files: ChangedFile[], s
     const tokens = name.match(/[A-Za-z_$][\w$]*/g) ?? [];
     return tokens.some((t) => labels.has(t) || basenames.has(t) || lines.some((line) => new RegExp(`(?<![\\w$])${t.replace(/\$/g, "\\$")}(?![\\w$])`).test(line)));
   };
+  return inDiff;
+}
+
+/**
+ * What the narratives (the PR body, each commit's message) claim against what
+ * the diff carries. Refuted: a name in code font that no changed symbol bears
+ * and no changed line contains (a phantom change); placeholder text. Partial:
+ * files with symbol changes the text never names (understated scope). The
+ * checks are by name, so a description in other words is not a mismatch; the
+ * text is read, never scored.
+ */
+export function narrativeClaims(narratives: Narrative[], files: ChangedFile[], symbols: SymbolChange[] | undefined, changedPaths: Set<string>): ClaimCheck[] {
+  const claims: ClaimCheck[] = [];
+  const inDiff = diffCarries(files, symbols, changedPaths);
   for (const n of narratives) {
     const body = prose(n.text).trim();
     const placeholder = placeholderIn(n, body);
@@ -666,6 +713,7 @@ export function buildBrief(o: BriefOptions): Brief {
     return node?.source_location ? { from: node.source_location.start_line, to: node.source_location.end_line } : {};
   };
   const sessions = o.sessionsDb === undefined ? undefined : new SessionsIndex(o.sessionsDb);
+  const rangePaths = parsed.map((f) => f.path);
   let commits: CommitBrief[];
   try {
     // What earlier commits' checkpoints already read of each session's transcript: the next one reads what came after.
@@ -676,7 +724,7 @@ export function buildBrief(o: BriefOptions): Brief {
       const checkpointId = checkpointTrailer(repo, sha);
       const own = (changeContext?.symbols ?? []).filter((s) => files.includes(s.path)).map((s) => ({ path: s.path, label: s.label, ...rangeOf(s) }));
       const checkpoint =
-        checkpointId !== undefined ? checkpointFor(repo, sha, own, read, files) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files, own);
+        checkpointId !== undefined ? checkpointFor(repo, sha, own, read, files, rangePaths) : sessions === undefined ? undefined : localCheckpoint(sessions, repo, sha, files, own);
       for (const s of checkpoint?.sessions ?? []) if (s.id !== "" && s.lines > 0) read.set(s.id, { sha, lines: s.lines, hash: s.hash });
       // Only for a commit with no trailer at all: a dangling trailer stays "not fetched", which names the fix (push the checkpoints).
       const provenance = checkpointId === undefined && checkpoint === undefined ? provenanceOf(repo, sha) : undefined;
@@ -742,6 +790,7 @@ export function buildBrief(o: BriefOptions): Brief {
     }
   }
   claims.push(...narrativeClaims(narratives, parsed, changeContext?.symbols, changedPaths));
+  const decisions = decisionsOf(commits, diffCarries(parsed, changeContext?.symbols, changedPaths));
   if (changeContext !== undefined && o.baseGraphPath !== undefined && changeContext.symbols.some((s) => s.status === "changed")) {
     try {
       claims.push(...changedDeclarationClaims(changeContext.symbols, parsed, loadGraph(o.baseGraphPath), changedPaths));
@@ -863,6 +912,8 @@ export function buildBrief(o: BriefOptions): Brief {
     selection,
     ...(changeContext !== undefined && { changeContext }),
     commits,
+    decisions: decisions.shown,
+    decisionsFound: decisions.found,
     claims,
     ...(review !== undefined && { review }),
     ...(concurrent !== undefined && { concurrent }),
