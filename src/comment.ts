@@ -645,7 +645,6 @@ function commitTable(commits: CommitBrief[], links: Links): string {
 
 /** How each kind of decision reads in front of its line. */
 const DECISION_LABEL: Record<BriefDecision["kind"], string> = {
-  steered: "steered",
   found: "found",
   tests: "tests",
   reverted: "reverted",

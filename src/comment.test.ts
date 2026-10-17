@@ -510,12 +510,12 @@ describe("renderBrief: what the agent decided", () => {
 
   it("lists each decision with its kind and commit, between the commit table and the claims", () => {
     const md = decided([
-      { kind: "steered", text: "you used the wrong git author on the last commit", at: 3, commit: sha },
+      { kind: "found", text: "I kept warn instead of stop because steps 4 and 9 share it", at: 3, commit: sha },
       { kind: "alternatives", text: "openspec/changes/cap/design.md", at: 5, commit: sha },
     ]);
     const section = md.slice(md.indexOf("#### What the agent decided"), md.indexOf("#### Claims checked"));
     expect(md.indexOf("#### What each commit did")).toBeLessThan(md.indexOf("#### What the agent decided"));
-    expect(section).toContain(`- **steered** [\`9999999\`](https://github.com/o/r/commit/${sha}): you used the wrong git author on the last commit`);
+    expect(section).toContain(`- **found** [\`9999999\`](https://github.com/o/r/commit/${sha}): I kept warn instead of stop because steps 4 and 9 share it`);
     expect(section).toContain("- **alternatives** [`9999999`](https://github.com/o/r/commit/" + sha + "): design notes weigh alternatives in `openspec/changes/cap/design.md`");
   });
 
@@ -526,7 +526,7 @@ describe("renderBrief: what the agent decided", () => {
   });
 
   it("never pings a GitHub user or opens HTML from a quoted line", () => {
-    const md = decided([{ kind: "steered", text: "ask @devyn whether <details> is fine, like in #742", at: 1, commit: sha }]);
+    const md = decided([{ kind: "found", text: "ask @devyn whether <details> is fine, like in #742", at: 1, commit: sha }]);
     expect(md).not.toMatch(/@devyn|#742/);
     expect(md).toContain("ask @\u200bdevyn whether &lt;details> is fine, like in #\u200b742");
   });

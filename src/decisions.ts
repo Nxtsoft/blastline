@@ -1,15 +1,14 @@
-import { askOf } from "./checkpoint.js";
-
 /**
  * What the agent decided while making a commit, read from the compact
  * transcript of its checkpoint, without a model. Each line is something the
- * transcript itself shows: a correction a person made, a sentence where the
- * agent states a finding or a choice with its reason, a test the commit's
+ * transcript itself shows: a sentence where the agent states a finding or a
+ * choice with its reason, a test the commit's
  * work made pass (or left failing), work it undid, design notes the change
  * adds that weigh alternatives. Nothing is summarised or rewritten.
  *
- * Left out on purpose: the request that opened the work (the Intent column
- * shows it), the titles of reviews the agent dispatched, and anything about
+ * Left out on purpose: anything a person typed (a short password reads like
+ * a word, so no filter can clear a person's raw words; the Intent column
+ * shows the opening request under its own rules), the titles of reviews the agent dispatched, and anything about
  * operating the change rather than the change itself (git authors, CI,
  * staging, merges, other PRs).
  *
@@ -20,7 +19,7 @@ import { askOf } from "./checkpoint.js";
  * revert by the agent's description of it or a fixed label; design notes by
  * the change's own path.
  */
-export type DecisionKind = "steered" | "found" | "tests" | "reverted" | "alternatives";
+export type DecisionKind = "found" | "tests" | "reverted" | "alternatives";
 
 export interface Decision {
   kind: DecisionKind;
@@ -142,9 +141,6 @@ export function shareable(line: string, files: string[] = []): boolean {
 const OPERATIONAL =
   /\b(?:git author|author(?:ed)?|staging|production|merge[ds]?|meregd|deploy\w*|promot\w*|rebase\w*|cherry-pick\w*|vercel|CI|e2e|lint\w*|eslint|typecheck\w*|watcher|pipeline|dependabot|push(?:ed|ing)?|PR\s?#?\d+|pull request)\b|(?:^|[\s(])#\d+\b/i;
 
-/** A reply that only says go on: it steers nothing a reviewer needs. */
-const ASSENT = /^(?:y(?:es|eah|ep)?|ok(?:ay)?|sure|go ahead|continue|proceed|sounds good|do it|lgtm|thanks?|thank you|done|great|perfect|nice)\b[\s!.,]*(?:let'?s (?:do|go)(?: (?:it|ahead))?)?[\s!.]*$/i;
-
 /** Sentences that state a finding or a choice: each cue names a reason or an alternative, which the diff cannot show. */
 const CUE =
   /\b(?:found|root cause|because|instead|rather than|turns out|the (?:real |actual )?(?:cause|problem|bug|issue|gap) (?:is|was)|decided|chose|choosing|went with|switched to|you were right|you're right|broke|regress(?:ed|ion)|trade-?off|the fix is|not a (?:bug|regression)|on purpose|deliberately)\b/i;
@@ -235,15 +231,12 @@ const ALTERNATIVES = /^#{1,6}\s*(?:alternatives?(?: considered)?|options conside
 /**
  * The decisions in one window of a compact transcript. `files` are the
  * repo-relative paths the change carries: a test file or design note is
- * named only when the change carries it. `opensTurn` says the window starts
- * at the request that began the work, which the Intent column already shows;
- * every later thing a person says in the window steers work under way.
+ * named only when the change carries it. What a person typed is not read.
  */
-export function decisionsIn(window: string, files: string[], opensTurn = true): Decision[] {
+export function decisionsIn(window: string, files: string[]): Decision[] {
   const out: Decision[] = [];
   const carried = (path: string): string | undefined => files.find((f) => path === f || path.endsWith(`/${f}`));
   const tests = new Map<string, { at: number; statuses: string[] }>();
-  let opened = !opensTurn;
   const push = (kind: DecisionKind, text: string, at: number): void => {
     if (shareable(text, files)) out.push({ kind, text: cap(text), at });
   };
@@ -253,15 +246,6 @@ export function decisionsIn(window: string, files: string[], opensTurn = true): 
     try {
       record = JSON.parse(line) as TranscriptRecord;
     } catch {
-      return;
-    }
-    if (record.type === "user") {
-      const said = askOf(record);
-      if (said === "") return;
-      const first = !opened;
-      opened = true;
-      if (first || ASSENT.test(said) || OPERATIONAL.test(said)) return;
-      push("steered", said, at);
       return;
     }
     if (record.type !== "assistant") return;
@@ -306,11 +290,11 @@ export function decisionsIn(window: string, files: string[], opensTurn = true): 
 }
 
 /**
- * Which decisions a brief shows when there are more than `limit`: a person's
- * corrections first, then test outcomes, reverts, findings and design notes.
+ * Which decisions a brief shows when there are more than `limit`: test
+ * outcomes first, then reverts, findings and design notes.
  * The chosen ones keep their order in the session.
  */
-const PRIORITY: DecisionKind[] = ["steered", "tests", "reverted", "found", "alternatives"];
+const PRIORITY: DecisionKind[] = ["tests", "reverted", "found", "alternatives"];
 
 export function chooseDecisions<T extends { kind: DecisionKind }>(all: T[], limit: number): T[] {
   if (all.length <= limit) return all;

@@ -451,7 +451,7 @@ describe("checkpointFor on the branch backend", () => {
     expect(checkpointFor(repo, commitA, [], new Map(), ["src/elsewhere.ts"])?.decisions).toEqual([]);
   });
 
-  it("reads none of an unrelated task between two checkpoints, and calls only what follows the commit's own opening request steering", () => {
+  it("reads none of an unrelated task between two checkpoints, only the turns that work on the commit's files", () => {
     const HEX_U = "7c3e9a1b2d4f";
     const between = [
       ...CUMULATIVE,
@@ -460,12 +460,12 @@ describe("checkpointFor on the branch backend", () => {
       rec("user", stamp(52), [user("now back to the cap, also handle zero")]),
       rec("assistant", stamp(53), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 0;")]),
       rec("user", stamp(54), [user("keep the minimum at one for the eval harness")]),
-      rec("assistant", stamp(55), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 1;")]),
+      rec("assistant", stamp(55), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 1;"), text("I kept the minimum at one because the eval harness divides by it.")]),
     ];
     writeBranchCheckpoint(HEX_U, branchFiles(HEX_U, stamp(56), between, ""));
     const u = commitFile("src/round-size.ts", "export const ROUND_SIZE_MIN = 1;\n", `fix: the cap handles zero\n\nEntire-Checkpoint: ${HEX_U}\n`);
     const cp = checkpointFor(repo, u, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
-    expect(cp?.decisions.map((d) => [d.kind, d.text])).toEqual([["steered", "keep the minimum at one for the eval harness"]]);
+    expect(cp?.decisions.map((d) => [d.kind, d.text])).toEqual([["found", "I kept the minimum at one because the eval harness divides by it."]]);
   });
 
   it("reads none of an aside after the commit's work, nor a session that only names a file with the same basename", () => {
@@ -555,7 +555,7 @@ describe("windowsOf and narrationIn", () => {
   it("keeps an unstamped transcript whole and counts texts and tool calls", () => {
     const t = [JSON.stringify({ type: "assistant", content: [text("a"), bash("ls")] }), "not json", JSON.stringify({ type: "assistant", content: [text("b")] })].join("\n");
     const lines = t.split("\n");
-    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "", worked: false, decisionWindow: "", opensTurn: true });
+    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "", worked: false, decisionWindow: "" });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: transcriptHash(lines.slice(0, 2)) }, ["x.ts"])).toMatchObject({ sinceWindow: lines[2], extended: true });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: "not the prefix" }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
     expect(windowsOf(t, { sha: "a", lines: 9, hash: transcriptHash(lines) }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });

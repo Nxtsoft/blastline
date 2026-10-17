@@ -517,7 +517,7 @@ describe("declares", () => {
 });
 
 describe("decisionsOf", () => {
-  const commit = (sha: string, decisions: { kind: "found" | "steered" | "tests"; text: string; at: number }[]) => ({
+  const commit = (sha: string, decisions: { kind: "found" | "reverted" | "tests"; text: string; at: number }[]) => ({
     sha,
     subject: "x",
     checkpoint: { decisions } as never,
@@ -546,11 +546,11 @@ describe("decisionsOf", () => {
     ]);
   });
 
-  it("cuts to eight, keeping what a person said and test outcomes before findings", () => {
+  it("cuts to eight, keeping test outcomes and reverts before findings", () => {
     const many = Array.from({ length: 9 }, (_, i) => ({ kind: "found" as const, text: `finding ${i} because reasons`, at: i }));
-    const { shown, found } = decisionsOf([commit("c".repeat(40), [...many, { kind: "steered", text: "keep the old export", at: 20 }])], () => true);
+    const { shown, found } = decisionsOf([commit("c".repeat(40), [...many, { kind: "reverted", text: "git revert", at: 20 }])], () => true);
     expect(found).toBe(10);
     expect(shown).toHaveLength(8);
-    expect(shown.at(-1)?.text).toBe("keep the old export");
+    expect(shown.at(-1)?.text).toBe("git revert");
   });
 });

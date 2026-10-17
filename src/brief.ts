@@ -201,7 +201,7 @@ export function decisionsOf(commits: CommitBrief[], carries: (name: string) => b
       const key = `${d.kind}\0${d.text}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const outside = d.kind === "found" || d.kind === "steered" ? codeNames(d.text).filter((n) => !carries(n)) : [];
+      const outside = d.kind === "found" ? codeNames(d.text).filter((n) => !carries(n)) : [];
       all.push({ ...d, commit: c.sha, ...(outside.length > 0 && { outside }) });
     }
   }

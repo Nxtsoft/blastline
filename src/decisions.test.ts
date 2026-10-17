@@ -8,27 +8,16 @@ const bash = (command: string, status: "success" | "error", description = ""): s
   JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Bash", input: { command, description }, result: { output: "SECRET OUTPUT", status } }] });
 const write = (file_path: string, content: string): string => JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Write", input: { file_path, content }, result: { output: "ok", status: "success" } }] });
 const window = (...records: string[]): string => records.join("\n");
-const texts = (window: string, files: string[] = [], opensTurn = true): string[] => decisionsIn(window, files, opensTurn).map((d) => `${d.kind}: ${d.text}`);
+const texts = (window: string, files: string[] = []): string[] => decisionsIn(window, files).map((d) => `${d.kind}: ${d.text}`);
 
-describe("decisionsIn: what a person said", () => {
-  it("leaves the opening request to the Intent column, skips a go-ahead, and calls a later instruction steering", () => {
-    expect(texts(window(person("move the round-size cap into one module"), said("On it."), person("sounds good let's do it"), person("keep the old export for the eval harness")))).toEqual([
-      "steered: keep the old export for the eval harness",
-    ]);
+describe("decisionsIn: what a person typed", () => {
+  it("is never quoted, however it is worded", () => {
+    expect(texts(window(person("move the round-size cap into one module"), person("no, use the router-driven key instead because the bot broke it"), person("use pass qwhtnzmr instead")))).toEqual([]);
   });
 
-  it("calls the first thing a person says steering when the window continues a turn", () => {
-    expect(texts(window(said("Done with the cap."), person("use the router-driven key instead")), [], false)).toEqual(["steered: use the router-driven key instead"]);
-  });
-
-  it("reads a person's words past a block the harness put first in the same record", () => {
-    expect(texts(window(person("<system-reminder>ctx</system-reminder>", "no, use the router-driven key instead")), [], false)).toEqual(["steered: no, use the router-driven key instead"]);
-  });
-
-  it("drops operating instructions: git authors, staging, merges, other PRs", () => {
-    expect(texts(window(person("you used the wrong git author since vercel failed"), person("move BUG-82 to staging"), person("fix the author on #742")), [], false)).toEqual([]);
-    expect(texts(window(person("close #742 when this lands please")), [], false)).toEqual([]);
+  it("leaves out an agent's sentence about operating the change: git authors, staging, merges, other PRs", () => {
     expect(findingIn("The fix for #742 regressed because the key was dropped.")).toBeUndefined();
+    expect(findingIn("I switched to the right git author because Vercel blocked the deploy.")).toBeUndefined();
   });
 });
 
@@ -227,7 +216,7 @@ describe("shareable", () => {
   });
 
   it("is applied to everything a person or the agent says", () => {
-    const d = texts(window(person("x"), person("use the token ghp_aB3dE6gH9jK2mN5pQ8 instead of the old one"), said("The root cause is /home/t/x because it is missing here.")), [], true);
+    const d = texts(window(said("I used the token ghp_aB3dE6gH9jK2mN5pQ8 instead of the old one."), said("The root cause is /home/t/x because it is missing here.")));
     expect(d).toEqual([]);
   });
 });
@@ -239,11 +228,11 @@ describe("cap", () => {
 });
 
 describe("chooseDecisions", () => {
-  it("keeps corrections, test outcomes and reverts over findings, in session order", () => {
+  it("keeps test outcomes and reverts over findings, in session order", () => {
     const all = [
       { kind: "found" as const, text: "a" },
       { kind: "found" as const, text: "b" },
-      { kind: "steered" as const, text: "c" },
+      { kind: "reverted" as const, text: "c" },
       { kind: "tests" as const, text: "d" },
       { kind: "alternatives" as const, text: "e" },
     ];
