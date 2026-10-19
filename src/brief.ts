@@ -401,7 +401,8 @@ function callersOf(
   // The repository root in the graph's absolute paths, exactly: the resolved symbol's source_file
   // less its repo path. File labels are not repo paths (CGraph labels a file by parent folder and name).
   const subjectFile = result.symbol.file;
-  const root = subjectFile?.endsWith(`/${symbol.path}`) ? subjectFile.slice(0, subjectFile.length - symbol.path.length) : undefined;
+  // A graph whose source_file paths are already repo-relative has the root "".
+  const root = subjectFile === symbol.path ? "" : subjectFile?.endsWith(`/${symbol.path}`) ? subjectFile.slice(0, subjectFile.length - symbol.path.length) : undefined;
   const repoPath = (c: { file?: string }): string => (c.file !== undefined && root !== undefined && c.file.startsWith(root) ? c.file.slice(root.length) : "");
   const describe = (c: { label: string; kind: string; file?: string; line?: number }): string => {
     const file = repoPath(c);

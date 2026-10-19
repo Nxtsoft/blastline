@@ -521,6 +521,22 @@ describe("narrative claims", () => {
       "still called by `Page` (app/page.tsx:4) in files this diff does not touch; check those call sites against the new declaration",
     );
   });
+
+  it("reads callers' paths from a graph whose source_file paths are already repo-relative", () => {
+    const graph = indexGraph(
+      [
+        { id: "fn_badge", label: "Badge", type: "function", source_file: "components/badge.tsx", source_location: { start_line: 1, end_line: 5 } },
+        { id: "fn_page", label: "Page", type: "function", source_file: "app/page.tsx", source_location: { start_line: 4, end_line: 9 } },
+      ],
+      [{ source: "fn_page", target: "fn_badge", relation: "CALLS" }],
+    );
+    const files = parseUnifiedDiff(
+      "diff --git a/components/badge.tsx b/components/badge.tsx\n--- a/components/badge.tsx\n+++ b/components/badge.tsx\n@@ -1 +1 @@\n-export function Badge() {\n+export function Badge(tone = \"plain\") {\n",
+    );
+    const symbols = [{ path: "components/badge.tsx", label: "Badge", kind: "function", status: "changed", line: 1 }];
+    expect(changedDeclarationClaims(symbols, files, graph, new Set(["components/badge.tsx", "app/page.tsx"]))).toEqual([]);
+    expect(changedDeclarationClaims(symbols, files, graph, new Set(["components/badge.tsx"]))[0]?.evidence).toContain("`Page` (app/page.tsx:4)");
+  });
 });
 
 describe("declares", () => {

@@ -32,7 +32,7 @@ describe("loadGraph / nodesInFile", () => {
 
 describe("isContract", () => {
   it("knows CGraph's contract ids, also with a fused graph's service prefix, and never a code id", () => {
-    for (const id of ["endpoint:GET /api/v1/orders/{}", "table:local:orders", "header:x-tenant", "env:DATABASE_URL", "claim:sub", "schema:ml-api:v3:ScoreResult", "service:ml-api", "backend::table:local:orders", "backend::env:DATABASE_URL"]) {
+    for (const id of ["endpoint:GET /api/v1/orders/{}", "table:local:orders", "header:x-tenant", "env:DATABASE_URL", "claim:sub", "schema:ml-api:v3:ScoreResult", "service:ml-api", "backend::table:local:orders", "backend::env:DATABASE_URL", "grpc:pkg::Svc/Do", "topic:orders::created", "endpoint:GET http://[::1]:3000/api"]) {
       expect(isContract(id), id).toBe(true);
     }
     // Code ids hold no colon (CGraph's make_id); a fused prefix is a service name, whatever it spells.

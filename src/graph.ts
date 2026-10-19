@@ -85,8 +85,9 @@ export function indexGraph(nodes: GraphNode[], links: GraphLink[]): CodeGraph {
 const CONTRACT_KINDS = new Set(["endpoint", "table", "label", "header", "claim", "env", "dynamo", "grpc", "topic", "schema", "service"]);
 
 export function isContract(id: string): boolean {
+  // Only a leading prefix: `::` before the first lone colon. A name may hold `::` itself (`grpc:pkg::Svc/Do`).
   const fused = id.indexOf("::");
-  const bare = fused === -1 ? id : id.slice(fused + 2);
+  const bare = fused !== -1 && fused === id.indexOf(":") ? id.slice(fused + 2) : id;
   const colon = bare.indexOf(":");
   return colon > 0 && CONTRACT_KINDS.has(bare.slice(0, colon));
 }
