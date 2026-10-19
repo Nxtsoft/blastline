@@ -385,19 +385,6 @@ function listOf(items: string[], limit = 4): string {
 }
 
 /**
- * Where the repository sits in the graph's absolute `source_file` paths: a
- * changed file's path less its diff path, trying the longest diff path first
- * so a root-level `index.ts` cannot claim a nested one. File labels are not
- * repo paths: CGraph labels a file by its parent folder and name only.
- */
-function repoRootIn(graph: CodeGraph, changedPaths: Set<string>): string | undefined {
-  for (const p of [...changedPaths].sort((a, b) => b.length - a.length)) {
-    for (const abs of graph.byFile.keys()) if (abs.endsWith(`/${p}`)) return abs.slice(0, abs.length - p.length);
-  }
-  return undefined;
-}
-
-/**
  * "Removed X" is refuted when the base graph shows a static caller in a file
  * this diff did not touch: that caller still names a symbol that no longer
  * exists. Callers inside changed files may have been updated, so they do not
@@ -409,10 +396,13 @@ function callersOf(
   baseGraph: CodeGraph,
   changedPaths: Set<string>,
 ): { kind: "fail-open"; why: string } | { kind: "ok"; remaining: string[]; updated: string[] } {
-  const root = repoRootIn(baseGraph, changedPaths);
   const result = checkCallers({ graph: baseGraph, symbol: `${symbol.path}:${symbol.label}` });
   if (result.kind === "fail-open") return { kind: "fail-open", why: result.reasons[0]?.kind ?? "unknown" };
-  const repoPath = (c: { file?: string }): string => (c.file !== undefined && root !== undefined && c.file.startsWith(root) ? c.file.slice(root.length) : (c.file ?? ""));
+  // The repository root in the graph's absolute paths, exactly: the resolved symbol's source_file
+  // less its repo path. File labels are not repo paths (CGraph labels a file by parent folder and name).
+  const subjectFile = result.symbol.file;
+  const root = subjectFile?.endsWith(`/${symbol.path}`) ? subjectFile.slice(0, subjectFile.length - symbol.path.length) : undefined;
+  const repoPath = (c: { file?: string }): string => (c.file !== undefined && root !== undefined && c.file.startsWith(root) ? c.file.slice(root.length) : "");
   const describe = (c: { label: string; kind: string; file?: string; line?: number }): string => {
     const file = repoPath(c);
     const at = file ? ` (${file}${c.line !== undefined && c.kind !== "file" ? `:${c.line}` : ""})` : "";

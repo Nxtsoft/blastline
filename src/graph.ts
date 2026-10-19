@@ -77,13 +77,18 @@ export function indexGraph(nodes: GraphNode[], links: GraphLink[]): CodeGraph {
  * node's id is `<kind>:<name>`, minted once per endpoint, table, header, env
  * variable and so on, with `handled_by` edges to the code that provides it and
  * `CONSUMES` edges from the code that uses it. A contract is a seam the walk
- * crosses, not code: it calls nothing and nobody runs it.
+ * crosses, not code: it calls nothing and nobody runs it. A fused seam graph
+ * prefixes a contract that does not cross services with `<service>::`
+ * (`backend::table:local:users`), and any node with it; code ids never hold a
+ * colon (CGraph's make_id replaces them).
  */
 const CONTRACT_KINDS = new Set(["endpoint", "table", "label", "header", "claim", "env", "dynamo", "grpc", "topic", "schema", "service"]);
 
 export function isContract(id: string): boolean {
-  const colon = id.indexOf(":");
-  return colon > 0 && CONTRACT_KINDS.has(id.slice(0, colon));
+  const fused = id.indexOf("::");
+  const bare = fused === -1 ? id : id.slice(fused + 2);
+  const colon = bare.indexOf(":");
+  return colon > 0 && CONTRACT_KINDS.has(bare.slice(0, colon));
 }
 
 /**
