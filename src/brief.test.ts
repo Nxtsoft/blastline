@@ -122,7 +122,7 @@ function brief(extra: Record<string, unknown> = {}) {
 }
 
 describe("parseChangeContext", () => {
-  it("keeps every symbol change with cgraph's status word and the omitted counters verbatim", () => {
+  it("keeps every symbol change with cgraph's status word, each impact's witness links, and the omitted counters verbatim", () => {
     const cc = parseChangeContext(readFileSync(join(FIXTURE, "change-context.json"), "utf8"));
     expect(cc.symbols).toEqual([
       { path: "src/lib.ts", label: "helper", kind: "function", status: "deleted_or_renamed", line: 1 },
@@ -130,6 +130,13 @@ describe("parseChangeContext", () => {
       { path: "src/lib.ts", label: "emit", kind: "function", status: "added_or_renamed", line: 5 },
     ]);
     expect(cc.omitted).toEqual({ impacts: 2, context: 0 });
+    // Each impact keeps its repo path and the witness links to the changed node, in cgraph's order.
+    expect(cc.impacts.filter((i) => i.path === "src/use.ts").map((i) => i.links.map((l) => `${l.relation} ${l.to.path}:${l.to.label}`))).toEqual([
+      ["imports src/lib.ts:helper"],
+      ["CALLS src/lib.ts:helper"],
+      ["imports src/lib.ts:parse"],
+      ["CALLS src/lib.ts:parse"],
+    ]);
     expect(cc.budget).toBe(6000);
     expect(cc.truncated).toBe(true);
   });

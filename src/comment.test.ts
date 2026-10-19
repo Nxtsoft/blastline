@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Brief } from "./brief.js";
+import type { Brief, Impact } from "./brief.js";
 import { COMMENT_MARKER, renderBrief, renderCheckRun, renderComment, reviewEffort } from "./comment.js";
 import type { CommentContext } from "./comment.js";
 import type { Selection } from "./types.js";
@@ -124,6 +124,23 @@ describe("renderComment: subset", () => {
     expect(md).toContain("```mermaid\ngraph LR\n  n0[[\"a.ts\"]] --> n1([\"a.test.ts\"])\n```");
     expect(md).toContain("Changed files are double-bordered, tests are rounded");
     expect(md).not.toContain("<picture>");
+  });
+
+  it("says why each reached file depends on the change, from change-context's shortest witness chain", () => {
+    const reached = (impacts: Impact[]): string =>
+      renderBrief({ ...brief, changeContext: { ...brief.changeContext!, impacts } }, ctx).split("\n").find((l) => l.startsWith("- `src/lib.ts` reaches")) ?? "";
+    // A call into a changed symbol names the symbol.
+    expect(renderBrief(brief, ctx)).toContain("- `src/lib.ts` reaches `use` (`src/c.ts`, calls `parse`)");
+    // Through another file, the chain reads in order and the changed file itself is "it"; the shortest chain wins.
+    expect(
+      reached([
+        { path: "src/c.ts", links: [{ relation: "imports", to: { path: "src/b.ts", label: "b.ts", kind: "file" } }, { relation: "re_exports", to: { path: "src/x.ts", label: "x.ts", kind: "file" } }, { relation: "imports_from", to: { path: "src/lib.ts", label: "lib.ts", kind: "file" } }] },
+        { path: "src/c.ts", links: [{ relation: "imports", to: { path: "src/b.ts", label: "b.ts", kind: "file" } }, { relation: "imports_from", to: { path: "src/lib.ts", label: "lib.ts", kind: "file" } }] },
+      ]),
+    ).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`, imports `src/b.ts`, which imports it)");
+    // A chain that ends in another changed file, or a reached file change-context left out, says nothing.
+    expect(reached([{ path: "src/c.ts", links: [{ relation: "CALLS", to: { path: "src/other.ts", label: "go", kind: "function" } }] }])).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`)");
+    expect(reached([])).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`)");
   });
 
   it("groups the blast radius by changed file behind a fold", () => {
@@ -340,6 +357,7 @@ const brief: Brief = {
       { path: "src/lib.ts", label: "helper", kind: "function", status: "deleted_or_renamed", line: 1 },
       { path: "src/lib.ts", label: "emit", kind: "function", status: "added_or_renamed", line: 9 },
     ],
+    impacts: [{ path: "src/c.ts", links: [{ relation: "CALLS", to: { path: "src/lib.ts", label: "parse", kind: "function" } }] }],
     budget: 20000,
     omitted: { impacts: 0, context: 388 },
     truncated: true,

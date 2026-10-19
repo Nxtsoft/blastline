@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.22.0
+
+The brief's blast radius says why each reached file depends on the change.
+
+- `parseChangeContext` keeps `cgraph change-context`'s `impacts[]`: each reached node's repo path and the witness links from it to a changed node. Until now only the `omitted` counters were read.
+- Under "Blast radius by changed file", each reached file names the shortest chain to a node in that changed file: `src/app.ts (imports inputs/index.ts, which imports it)`, `use (src/c.ts, calls parse)`. The changed end reads "it" when it is the file itself and names the symbol otherwise. A reached file that change-context left out of its budget shows no reason, as before.
+- On a real merged PR in a TypeScript service (36 impacts kept, 98 shed by the budget), the reasons filled in for the files change-context kept.
+- The plain comment (`blastline comment`) has no change-context and is unchanged.
+
 ## 0.21.0
 
 The Action installs CGraph bin-v0.9.5 by default (was bin-v0.5.0), and the brief stops treating CGraph's contract nodes as code.

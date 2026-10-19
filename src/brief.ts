@@ -29,9 +29,20 @@ export interface SymbolChange {
   line: number;
 }
 
+/**
+ * Why a node depends on the change, from `cgraph change-context`'s
+ * `impacts[]`: its repo path and the witness links from it to a changed
+ * node, nearest first. The last link's target is the changed node.
+ */
+export interface Impact {
+  path: string;
+  links: { relation: string; to: { path: string; label: string; kind: string } }[];
+}
+
 /** What the brief keeps of a `cgraph change-context` result. The counters are verbatim. */
 export interface ChangeContext {
   symbols: SymbolChange[];
+  impacts: Impact[];
   budget: number;
   omitted: { impacts: number; context: number };
   truncated: boolean;
@@ -307,6 +318,10 @@ interface ChangeContextJson {
   budget?: number;
   truncated?: boolean;
   omitted?: { impacts?: number; context?: number };
+  impacts?: {
+    path?: string;
+    witness?: { relation?: string; target?: { path?: string; label?: string; kind?: string } }[];
+  }[];
   changes?: {
     new_path?: string;
     old_path?: string;
@@ -334,8 +349,14 @@ export function parseChangeContext(text: string): ChangeContext {
       });
     }
   }
+  const impacts: Impact[] = [];
+  for (const i of raw.impacts ?? []) {
+    const links = (i.witness ?? []).map((w) => ({ relation: w.relation ?? "", to: { path: w.target?.path ?? "", label: w.target?.label ?? "", kind: w.target?.kind ?? "" } }));
+    if (i.path && links.length > 0 && links.every((l) => l.relation !== "" && l.to.path !== "")) impacts.push({ path: i.path, links });
+  }
   return {
     symbols,
+    impacts,
     budget: raw.budget ?? 0,
     omitted: { impacts: raw.omitted?.impacts ?? 0, context: raw.omitted?.context ?? 0 },
     truncated: raw.truncated ?? false,
