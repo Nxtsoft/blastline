@@ -72,6 +72,21 @@ export function indexGraph(nodes: GraphNode[], links: GraphLink[]): CodeGraph {
 }
 
 /**
+ * CGraph's contract kinds (`contract_kind_of` in cgraph/contracts.hpp, plus the
+ * `schema` and `service` nodes `cgraph seam` mints in seam.cpp): a contract
+ * node's id is `<kind>:<name>`, minted once per endpoint, table, header, env
+ * variable and so on, with `handled_by` edges to the code that provides it and
+ * `CONSUMES` edges from the code that uses it. A contract is a seam the walk
+ * crosses, not code: it calls nothing and nobody runs it.
+ */
+const CONTRACT_KINDS = new Set(["endpoint", "table", "label", "header", "claim", "env", "dynamo", "grpc", "topic", "schema", "service"]);
+
+export function isContract(id: string): boolean {
+  const colon = id.indexOf(":");
+  return colon > 0 && CONTRACT_KINDS.has(id.slice(0, colon));
+}
+
+/**
  * Every CGraph relation points dependency-ward at the source (CALLS
  * caller->callee, imports importer->imported) — except two seam contract
  * relations that read the other way: "endpoint CONSUMED_AT call-site" and

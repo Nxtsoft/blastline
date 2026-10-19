@@ -384,25 +384,17 @@ function listOf(items: string[], limit = 4): string {
   return items.length > limit ? `${shown}, +${items.length - limit}` : shown;
 }
 
-/** The file node's label: relative to the graph root (bin-v0.5.0), which is the repository root only when the graph was built there. */
-function fileLabel(graph: CodeGraph, abs: string): string {
-  return graph.byFile.get(abs)?.find((n) => n.type === "file")?.label ?? abs;
-}
-
 /**
- * Where the graph root sits in the repository, as a path prefix ("src/", or
- * "" when the graph was built at the root): the part a diff path carries that
- * the same file's label lacks. Learned from any changed file the graph knows.
+ * Where the repository sits in the graph's absolute `source_file` paths: a
+ * changed file's path less its diff path, trying the longest diff path first
+ * so a root-level `index.ts` cannot claim a nested one. File labels are not
+ * repo paths: CGraph labels a file by its parent folder and name only.
  */
-function labelPrefix(graph: CodeGraph, changedPaths: Set<string>): string {
-  for (const p of changedPaths) {
-    for (const [abs, nodes] of graph.byFile) {
-      const label = nodes.find((n) => n.type === "file")?.label;
-      if (label === undefined || !abs.endsWith(`/${p}`) || !p.endsWith(label)) continue;
-      return p.slice(0, p.length - label.length);
-    }
+function repoRootIn(graph: CodeGraph, changedPaths: Set<string>): string | undefined {
+  for (const p of [...changedPaths].sort((a, b) => b.length - a.length)) {
+    for (const abs of graph.byFile.keys()) if (abs.endsWith(`/${p}`)) return abs.slice(0, abs.length - p.length);
   }
-  return "";
+  return undefined;
 }
 
 /**
@@ -417,10 +409,10 @@ function callersOf(
   baseGraph: CodeGraph,
   changedPaths: Set<string>,
 ): { kind: "fail-open"; why: string } | { kind: "ok"; remaining: string[]; updated: string[] } {
-  const prefix = labelPrefix(baseGraph, changedPaths);
+  const root = repoRootIn(baseGraph, changedPaths);
   const result = checkCallers({ graph: baseGraph, symbol: `${symbol.path}:${symbol.label}` });
   if (result.kind === "fail-open") return { kind: "fail-open", why: result.reasons[0]?.kind ?? "unknown" };
-  const repoPath = (c: { file?: string }): string => (c.file ? prefix + fileLabel(baseGraph, c.file) : "");
+  const repoPath = (c: { file?: string }): string => (c.file !== undefined && root !== undefined && c.file.startsWith(root) ? c.file.slice(root.length) : (c.file ?? ""));
   const describe = (c: { label: string; kind: string; file?: string; line?: number }): string => {
     const file = repoPath(c);
     const at = file ? ` (${file}${c.line !== undefined && c.kind !== "file" ? `:${c.line}` : ""})` : "";

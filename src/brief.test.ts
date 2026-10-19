@@ -303,12 +303,12 @@ describe("buildBrief", () => {
     expect(brief().claims.some((c) => c.claim.startsWith(`\`${testCommit.slice(0, 7)}\``))).toBe(false);
   });
 
-  it("still tells changed from unchanged callers when the graph was built below the repository root (bin-v0.5.0 labels)", () => {
-    // bin-v0.5.0 labels file nodes relative to the graph root: built with --root src, the
-    // file at src/use.ts is labelled "use.ts". The claim check must not compare that to
-    // the diff's "src/lib.ts".
+  it("tells changed from unchanged callers by their paths, never their labels", () => {
+    // CGraph labels a file by its parent folder and name only ("deep/use.ts" for any
+    // a/b/deep/use.ts), and relative to the graph root when built below the repository
+    // root. Labels that say nothing true about the path must not change the claim.
     const rooted = JSON.parse(readFileSync(baseGraph, "utf8")) as { nodes: { type?: string; label: string }[] };
-    for (const n of rooted.nodes) if (n.type === "file" && n.label.startsWith("src/")) n.label = n.label.slice("src/".length);
+    for (const n of rooted.nodes) if (n.type === "file") n.label = `elsewhere/${n.label.slice(n.label.lastIndexOf("/") + 1)}`;
     const path = join(repo, "base-graph-rooted.json");
     writeFileSync(path, JSON.stringify(rooted));
     const removed = brief({ baseGraphPath: path }).claims.find((c) => c.claim.startsWith("`helper` removed"));

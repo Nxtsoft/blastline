@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import type { CodeGraph, GraphNode } from "./graph.js";
-import { loadGraph, resolveSymbol } from "./graph.js";
+import { isContract, loadGraph, resolveSymbol } from "./graph.js";
 import { dependents } from "./impact.js";
 import { daemonContentRoot } from "./run.js";
 import { fileMtimeMs } from "./select.js";
@@ -106,13 +106,15 @@ export function checkCallers(opts: CheckOptions): CheckResult {
   // Direct callers carry their real incoming relation; a transitive walk loses
   // per-edge relations, so those are tagged "transitive". A `contains` incoming
   // edge is the symbol's own declaring file/module — structural parentage, not a
-  // reference — so it is not a caller and is dropped from the direct query.
+  // reference — so it is not a caller and is dropped from the direct query. A
+  // contract (an endpoint or table the symbol provides, `handled_by` it) is a
+  // seam, not code that calls it, so it is never a caller either.
   const found = new Map<string, string>(); // caller id -> relation
   if (opts.transitive) {
-    for (const id of dependents(opts.graph, [subject.id])) found.set(id, "transitive");
+    for (const id of dependents(opts.graph, [subject.id])) if (!isContract(id)) found.set(id, "transitive");
   } else {
     for (const { from, relation } of opts.graph.incoming.get(subject.id) ?? []) {
-      if (relation === "contains") continue;
+      if (relation === "contains" || isContract(from)) continue;
       if (from !== subject.id && !found.has(from)) found.set(from, relation);
     }
   }

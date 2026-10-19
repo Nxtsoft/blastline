@@ -39,7 +39,7 @@ inputs:
       and a head graph share ids; bin-v0.4.0 is the first with change-context. Ignored when
       graph-root is unset.
     required: false
-    default: bin-v0.5.0
+    default: bin-v0.9.5
   base-graph-path:
     description: optional graph.json for the base commit (improves deletion mapping)
     required: false
