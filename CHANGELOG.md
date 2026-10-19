@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.21.0
+
+The Action installs CGraph bin-v0.9.5 by default (was bin-v0.5.0), and the brief stops treating CGraph's contract nodes as code.
+
+- `cgraph-version` defaults to `bin-v0.9.5`. Replayed on 51 merged PRs across five repositories (three TypeScript services, a Kotlin/Spring service and its web client), with a base and head graph per PR and each repository's own ignore list: no test bin-v0.5.0 selected is dropped and no verdict changes kind. bin-v0.9.5 adds tests on three PRs of the Kotlin service. The clearest is cross-service: a change to a Kotlin controller now selects the two TypeScript end-to-end specs that call its endpoint, where bin-v0.5.0 selected none. A token-claims change reaches the tests that read those claims, and one PR gains a test through a wrong edge both versions already had. Graph builds take about as long (median 2.9 s against 3.2 s on one service).
+- Config that Spring loads by convention (`application*.yml`) gets graph nodes in bin-v0.9.5, but still runs the full suite, as 0.19.0 made it do whatever the graph holds; only the reason now says `(convention)`.
+- bin-v0.9.5 links an ORM model to its migration's table, so a one-line migration change can now select most of a suite (0 tests before, 213 of 328 on one service). That is more tests run, never fewer, and the `--max-selected-fraction` fail-open catches the widest.
+- Contract nodes (`<kind>:<name>`: endpoints, tables, headers, env variables, claims, and `cgraph seam`'s schemas and services) are seams the walk crosses, not code (`isContract` in `src/graph.ts`, following CGraph's `contract_kind_of`). `check callers` never lists one, so removing an ORM model whose migration table remains is no longer refuted by the table. The blast list and reached files leave them out, so the "Downstream code" count is code only. A test file a contract was minted in still counts, so selection is unchanged (the same 51-PR replay matches before and after).
+- A removed symbol's callers take their repo path from the graph's `source_file`, less the repository root a changed file gives. CGraph labels a file by its parent folder and name only, so a caller nested deeper got a wrong path, and a caller in a file the diff changed could be counted as untouched.
+- `blastline tests --json` (and every other command) printed only the first 64 KiB when its stdout was a pipe: on a pipe Node writes asynchronously and `process.exit` dropped the rest. The CLI now makes stdout blocking, except for `blastline mcp`. The Action wrote to a file and was not affected.
+
 ## 0.20.0
 
 The brief says what the agent did across the PR that the diff cannot show: tests it made pass, work it undid, alternatives it weighed.
