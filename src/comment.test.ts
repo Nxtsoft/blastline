@@ -126,20 +126,45 @@ describe("renderComment: subset", () => {
     expect(md).not.toContain("<picture>");
   });
 
-  it("says why each reached file depends on the change, from change-context's shortest witness chain", () => {
+  it("says why each reached file depends on the change, from change-context's witness", () => {
+    const n = (path: string, label: string, kind: string) => ({ path, label, kind });
+    const link = (relation: string, from: ReturnType<typeof n>, to: ReturnType<typeof n>) => ({ relation, from, to });
     const reached = (impacts: Impact[]): string =>
       renderBrief({ ...brief, changeContext: { ...brief.changeContext!, impacts } }, ctx).split("\n").find((l) => l.startsWith("- `src/lib.ts` reaches")) ?? "";
+    const c = n("src/c.ts", "src/c.ts", "file");
+    const use = n("src/c.ts", "use", "function");
+    const lib = n("src/lib.ts", "src/lib.ts", "file");
     // A call into a changed symbol names the symbol.
     expect(renderBrief(brief, ctx)).toContain("- `src/lib.ts` reaches `use` (`src/c.ts`, calls `parse`)");
-    // Through another file, the chain reads in order and the changed file itself is "it"; the shortest chain wins.
+    // Through another file the chain reads in order, the changed file itself is "it", and the shorter chain wins.
+    const b = n("src/b.ts", "src/b.ts", "file");
     expect(
       reached([
-        { path: "src/c.ts", links: [{ relation: "imports", to: { path: "src/b.ts", label: "b.ts", kind: "file" } }, { relation: "re_exports", to: { path: "src/x.ts", label: "x.ts", kind: "file" } }, { relation: "imports_from", to: { path: "src/lib.ts", label: "lib.ts", kind: "file" } }] },
-        { path: "src/c.ts", links: [{ relation: "imports", to: { path: "src/b.ts", label: "b.ts", kind: "file" } }, { relation: "imports_from", to: { path: "src/lib.ts", label: "lib.ts", kind: "file" } }] },
+        { path: "src/c.ts", links: [link("imports", c, b), link("re_exports", b, n("src/x.ts", "src/x.ts", "file")), link("imports_from", n("src/x.ts", "src/x.ts", "file"), lib)] },
+        { path: "src/c.ts", links: [link("imports", c, b), link("imports_from", b, lib)] },
       ]),
     ).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`, imports `src/b.ts`, which imports it)");
-    // A chain that ends in another changed file, or a reached file change-context left out, says nothing.
-    expect(reached([{ path: "src/c.ts", links: [{ relation: "CALLS", to: { path: "src/other.ts", label: "go", kind: "function" } }] }])).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`)");
+    // A function in the middle reads by name, with its file when that is not the file before it; on a tie the call chain beats the file chain.
+    const run = n("src/b.ts", "run", "function");
+    expect(
+      reached([
+        { path: "src/c.ts", links: [link("imports_from", c, b), link("imports", b, n("src/lib.ts", "parse", "function"))] },
+        { path: "src/c.ts", links: [link("CALLS", use, run), link("CALLS", run, n("src/lib.ts", "parse", "function"))] },
+      ]),
+    ).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`, calls `run` in `src/b.ts`, which calls `parse`)");
+    // An endpoint reads by its name; handled_by reads as words.
+    const endpoint = n("src/routes.ts", "GET /api/items", "endpoint");
+    const handler = n("src/routes.ts", "app.get /api/items", "function");
+    expect(
+      reached([{ path: "src/c.ts", links: [link("CONSUMES", use, endpoint), link("handled_by", endpoint, handler), link("CALLS", handler, n("src/lib.ts", "parse", "function"))] }]),
+    ).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`, uses `GET /api/items`, which is handled by `app.get /api/items`, which calls `parse`)");
+    // CGraph steps from the file serving an endpoint to the endpoint: that reads as where it is served.
+    const routes = n("src/routes.ts", "src/routes.ts", "file");
+    expect(
+      reached([{ path: "src/c.ts", links: [link("CONSUMES", use, endpoint), link("contains", routes, endpoint), link("imports", routes, n("src/lib.ts", "Item", "type"))] }]),
+    ).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`, uses `GET /api/items`, served in `src/routes.ts`, which imports `Item`)");
+    // A witness that ends in another changed file, or no impact for the reached file, says nothing.
+    expect(reached([{ path: "src/c.ts", links: [link("CALLS", use, n("src/other.ts", "go", "function"))] }])).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`)");
     expect(reached([])).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`)");
   });
 
@@ -357,7 +382,7 @@ const brief: Brief = {
       { path: "src/lib.ts", label: "helper", kind: "function", status: "deleted_or_renamed", line: 1 },
       { path: "src/lib.ts", label: "emit", kind: "function", status: "added_or_renamed", line: 9 },
     ],
-    impacts: [{ path: "src/c.ts", links: [{ relation: "CALLS", to: { path: "src/lib.ts", label: "parse", kind: "function" } }] }],
+    impacts: [{ path: "src/c.ts", links: [{ relation: "CALLS", from: { path: "src/c.ts", label: "use", kind: "function" }, to: { path: "src/lib.ts", label: "parse", kind: "function" } }] }],
     budget: 20000,
     omitted: { impacts: 0, context: 388 },
     truncated: true,

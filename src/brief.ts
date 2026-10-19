@@ -29,14 +29,21 @@ export interface SymbolChange {
   line: number;
 }
 
+/** A node a change-context witness link names. */
+export interface ImpactNode {
+  path: string;
+  label: string;
+  kind: string;
+}
+
 /**
  * Why a node depends on the change, from `cgraph change-context`'s
- * `impacts[]`: its repo path and the witness links from it to a changed
+ * `impacts[]`: its repo path and CGraph's witness links from it to a changed
  * node, nearest first. The last link's target is the changed node.
  */
 export interface Impact {
   path: string;
-  links: { relation: string; to: { path: string; label: string; kind: string } }[];
+  links: { relation: string; from: ImpactNode; to: ImpactNode }[];
 }
 
 /** What the brief keeps of a `cgraph change-context` result. The counters are verbatim. */
@@ -320,7 +327,7 @@ interface ChangeContextJson {
   omitted?: { impacts?: number; context?: number };
   impacts?: {
     path?: string;
-    witness?: { relation?: string; target?: { path?: string; label?: string; kind?: string } }[];
+    witness?: { relation?: string; source?: { path?: string; label?: string; kind?: string }; target?: { path?: string; label?: string; kind?: string } }[];
   }[];
   changes?: {
     new_path?: string;
@@ -351,7 +358,8 @@ export function parseChangeContext(text: string): ChangeContext {
   }
   const impacts: Impact[] = [];
   for (const i of raw.impacts ?? []) {
-    const links = (i.witness ?? []).map((w) => ({ relation: w.relation ?? "", to: { path: w.target?.path ?? "", label: w.target?.label ?? "", kind: w.target?.kind ?? "" } }));
+    const node = (n?: { path?: string; label?: string; kind?: string }): ImpactNode => ({ path: n?.path ?? "", label: n?.label ?? "", kind: n?.kind ?? "" });
+    const links = (i.witness ?? []).map((w) => ({ relation: w.relation ?? "", from: node(w.source), to: node(w.target) }));
     if (i.path && links.length > 0 && links.every((l) => l.relation !== "" && l.to.path !== "")) impacts.push({ path: i.path, links });
   }
   return {

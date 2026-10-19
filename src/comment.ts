@@ -1,7 +1,8 @@
 import type { Checkpoint, SymbolReason } from "./checkpoint.js";
 import { TEST_RUNNER } from "./checkpoint.js";
 import { code } from "./decisions.js";
-import type { Brief, BriefDecision, ClaimCheck, CommitBrief, Impact, SymbolChange } from "./brief.js";
+import { CONTRACT_KINDS } from "./graph.js";
+import type { Brief, BriefDecision, ClaimCheck, CommitBrief, Impact, ImpactNode, SymbolChange } from "./brief.js";
 import { SNAPSHOT_MARKER } from "./brief.js";
 import { relativeTo, sharedDir } from "./paths.js";
 import { ignorePatternFor } from "./unnamed.js";
@@ -209,25 +210,54 @@ function whyCell(path: string, reasons: SymbolReason[]): string {
 }
 
 /** How a link reads in a sentence; any relation not named here reads as its own words. */
-const RELATION_WORDS: Record<string, string> = { imports: "imports", imports_from: "imports", re_exports: "re-exports", CALLS: "calls", CONSUMES: "uses", inherits: "extends", implements: "implements" };
+const RELATION_WORDS: Record<string, string> = {
+  imports: "imports",
+  imports_from: "imports",
+  re_exports: "re-exports",
+  CALLS: "calls",
+  CONSUMES: "uses",
+  inherits: "extends",
+  implements: "implements",
+  handled_by: "is handled by",
+  method: "has method",
+  references: "references",
+  RESPONDS_WITH: "responds with",
+  CONSUMED_AT: "is consumed at",
+  MIRRORED_BY: "is mirrored by",
+};
 
 /**
  * Why `reached` depends on the changed file `changed`, from change-context's
- * witness links: the shortest chain from it to a node in that file, as
- * "imports it", "calls `parse`" or "imports `b.ts`, which imports it". The
- * changed end reads "it" when it is the file itself. Undefined when
- * change-context left this pair out (its budget) or never ran.
+ * witness: the shorter of the chains CGraph kept (one per snapshot) that ends
+ * in a node of that file, as "imports it", "calls `parse`", or "calls `run`
+ * in `use.py`, which calls `Parser`". The changed end reads "it" when it is
+ * the file itself. A step names a symbol or contract by its label, with its
+ * file when that differs from the step before; a file serving an endpoint
+ * (CGraph steps from the file to its endpoint) reads "served in `file`".
+ * Undefined when CGraph's witness for this file leads to another changed
+ * file, when its budget shed it, or when change-context never ran.
  */
 function reachReason(impacts: Impact[], changed: string, reached: string, short: (rel: string) => string): string | undefined {
   const chain = impacts
     .filter((i) => i.path === reached && i.links[i.links.length - 1]?.to.path === changed)
-    .sort((a, b) => a.links.length - b.links.length)[0]?.links;
+    // Shortest first; on a tie, a chain that starts at a symbol says more than one that starts at the file.
+    .sort((a, b) => a.links.length - b.links.length || Number(a.links[0]!.from.kind === "file") - Number(b.links[0]!.from.kind === "file"))[0]?.links;
   if (chain === undefined) return undefined;
+  const same = (a: ImpactNode, b: ImpactNode): boolean => a.path === b.path && a.label === b.label && a.kind === b.kind;
+  let at = reached;
   return chain
     .map((l, k) => {
+      if (k > 0 && l.relation === "contains" && same(l.to, chain[k - 1]!.to)) {
+        at = l.from.path;
+        return `served in ${code(short(l.from.path))}`;
+      }
       const word = RELATION_WORDS[l.relation] ?? l.relation.toLowerCase().replace(/_/g, " ");
       const last = k === chain.length - 1;
-      const to = last ? (l.to.kind === "file" ? "it" : code(l.to.label)) : code(short(l.to.path));
+      let to: string;
+      if (last && l.to.kind === "file") to = "it";
+      else if (l.to.kind === "file") to = code(short(l.to.path));
+      else to = `${code(l.to.label)}${!last && !CONTRACT_KINDS.has(l.to.kind) && l.to.path !== at ? ` in ${code(short(l.to.path))}` : ""}`;
+      at = l.to.path;
       return `${k === 0 ? "" : "which "}${word} ${to}`;
     })
     .join(", ");

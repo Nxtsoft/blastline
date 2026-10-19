@@ -4,9 +4,9 @@
 
 The brief's blast radius says why each reached file depends on the change.
 
-- `parseChangeContext` keeps `cgraph change-context`'s `impacts[]`: each reached node's repo path and the witness links from it to a changed node. Until now only the `omitted` counters were read.
-- Under "Blast radius by changed file", each reached file names the shortest chain to a node in that changed file: `src/app.ts (imports inputs/index.ts, which imports it)`, `use (src/c.ts, calls parse)`. The changed end reads "it" when it is the file itself and names the symbol otherwise. A reached file that change-context left out of its budget shows no reason, as before.
-- On a real merged PR in a TypeScript service (36 impacts kept, 98 shed by the budget), the reasons filled in for the files change-context kept.
+- `parseChangeContext` keeps `cgraph change-context`'s `impacts[]`: each reached node's repo path and CGraph's witness links (source, relation, target) from it to a changed node. Until now only the `omitted` counters were read.
+- Under "Blast radius by changed file", each reached file names the chain CGraph kept to a node in that changed file: `src/a.ts (imports src/b.ts, which imports it)`, `use (src/c.ts, calls run in src/b.ts, which calls parse)`, `load (web/client.ts, uses GET /items, which is handled by listItems)`. The changed end reads "it" when it is the file itself. A step names a symbol or endpoint by its label, with its file when that differs from the step before; a file serving an endpoint reads "served in" that file. Of two equal chains, one starting at a symbol wins over one starting at the file.
+- A reached file shows no reason when CGraph's witness for it leads to another changed file (CGraph keeps one witness per node), or when the budget shed it.
 - The plain comment (`blastline comment`) has no change-context and is unchanged.
 
 ## 0.21.0
