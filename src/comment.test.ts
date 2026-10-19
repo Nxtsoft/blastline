@@ -163,6 +163,21 @@ describe("renderComment: subset", () => {
     expect(
       reached([{ path: "src/c.ts", links: [link("CONSUMES", use, endpoint), link("contains", routes, endpoint), link("imports", routes, n("src/lib.ts", "Item", "type"))] }]),
     ).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`, uses `GET /api/items`, served in `src/routes.ts`, which imports `Item`)");
+    // Several symbols of the reached file, each with its own chain: a chain that starts at a symbol names it, so
+    // `aa`, which calls a helper, never reads as calling `parse` because the hidden `zz` does.
+    const many = (impacts: Impact[]): string => {
+      const sel = { ...subset, files: subset.files.map((f) => (f.path === "src/lib.ts" ? { ...f, reaches: [{ file: "/r/src/c.ts", symbols: ["aa", "bb", "cc", "zz"] }] } : f)) };
+      return renderBrief({ ...brief, selection: sel, changeContext: { ...brief.changeContext!, impacts } }, ctx).split("\n").find((l) => l.startsWith("- `src/lib.ts` reaches")) ?? "";
+    };
+    const parse = n("src/lib.ts", "parse", "function");
+    const mid = n("src/lib.ts", "mid", "function");
+    expect(
+      many([
+        { path: "src/c.ts", links: [link("imports", c, parse)] },
+        { path: "src/c.ts", links: [link("CALLS", n("src/c.ts", "zz", "function"), parse)] },
+        { path: "src/c.ts", links: [link("CALLS", n("src/c.ts", "aa", "function"), mid), link("CALLS", mid, parse)] },
+      ]),
+    ).toBe("- `src/lib.ts` reaches `aa`, `bb`, `cc`, +1 (`src/c.ts`, `zz` calls `parse`)");
     // A witness that ends in another changed file, or no impact for the reached file, says nothing.
     expect(reached([{ path: "src/c.ts", links: [link("CALLS", use, n("src/other.ts", "go", "function"))] }])).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`)");
     expect(reached([])).toBe("- `src/lib.ts` reaches `use` (`src/c.ts`)");
