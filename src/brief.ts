@@ -384,27 +384,6 @@ function listOf(items: string[], limit = 4): string {
   return items.length > limit ? `${shown}, +${items.length - limit}` : shown;
 }
 
-/** The file node's label: relative to the graph root (bin-v0.5.0), which is the repository root only when the graph was built there. */
-function fileLabel(graph: CodeGraph, abs: string): string {
-  return graph.byFile.get(abs)?.find((n) => n.type === "file")?.label ?? abs;
-}
-
-/**
- * Where the graph root sits in the repository, as a path prefix ("src/", or
- * "" when the graph was built at the root): the part a diff path carries that
- * the same file's label lacks. Learned from any changed file the graph knows.
- */
-function labelPrefix(graph: CodeGraph, changedPaths: Set<string>): string {
-  for (const p of changedPaths) {
-    for (const [abs, nodes] of graph.byFile) {
-      const label = nodes.find((n) => n.type === "file")?.label;
-      if (label === undefined || !abs.endsWith(`/${p}`) || !p.endsWith(label)) continue;
-      return p.slice(0, p.length - label.length);
-    }
-  }
-  return "";
-}
-
 /**
  * "Removed X" is refuted when the base graph shows a static caller in a file
  * this diff did not touch: that caller still names a symbol that no longer
@@ -417,10 +396,14 @@ function callersOf(
   baseGraph: CodeGraph,
   changedPaths: Set<string>,
 ): { kind: "fail-open"; why: string } | { kind: "ok"; remaining: string[]; updated: string[] } {
-  const prefix = labelPrefix(baseGraph, changedPaths);
   const result = checkCallers({ graph: baseGraph, symbol: `${symbol.path}:${symbol.label}` });
   if (result.kind === "fail-open") return { kind: "fail-open", why: result.reasons[0]?.kind ?? "unknown" };
-  const repoPath = (c: { file?: string }): string => (c.file ? prefix + fileLabel(baseGraph, c.file) : "");
+  // The repository root in the graph's absolute paths, exactly: the resolved symbol's source_file
+  // less its repo path. File labels are not repo paths (CGraph labels a file by parent folder and name).
+  const subjectFile = result.symbol.file;
+  // A graph whose source_file paths are already repo-relative has the root "".
+  const root = subjectFile === symbol.path ? "" : subjectFile?.endsWith(`/${symbol.path}`) ? subjectFile.slice(0, subjectFile.length - symbol.path.length) : undefined;
+  const repoPath = (c: { file?: string }): string => (c.file !== undefined && root !== undefined && c.file.startsWith(root) ? c.file.slice(root.length) : "");
   const describe = (c: { label: string; kind: string; file?: string; line?: number }): string => {
     const file = repoPath(c);
     const at = file ? ` (${file}${c.line !== undefined && c.kind !== "file" ? `:${c.line}` : ""})` : "";

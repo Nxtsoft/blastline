@@ -15,6 +15,11 @@ import type { Selection } from "./types.js";
 
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
+// Every command prints, then calls process.exit. On a pipe Node writes stdout asynchronously and
+// process.exit drops what is still queued, so `blastline tests --json | jq` got the first 64 KiB.
+// A blocking pipe finishes each write before the next line runs. The MCP server keeps async stdio.
+if (process.argv[2] !== "mcp") (process.stdout as unknown as { _handle?: { setBlocking?: (blocking: boolean) => void } })._handle?.setBlocking?.(true);
+
 const USAGE = `blastline — graph-backed test impact and blast radius (built on CGraph)
 
 usage:

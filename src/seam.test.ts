@@ -30,7 +30,8 @@ describe("cross-repo selection over a fused seam graph", () => {
     // schema -> endpoint (RESPONDS_WITH) -> consumer call site (CONSUMED_AT,
     // flipped) and mirror type (MIRRORED_BY, flipped) -> consumer test.
     expect(sel.tests).toEqual(["/svc/backend/src/score.test.ts"]);
-    expect(sel.blast.join("\n")).toContain("endpoint POST /v3/score");
+    // The endpoint is crossed, not counted: a contract is no dependent code.
+    expect(sel.blast.join("\n")).not.toContain("endpoint POST /v3/score");
     expect(sel.blast.join("\n")).toContain("function scoreModel");
   });
 

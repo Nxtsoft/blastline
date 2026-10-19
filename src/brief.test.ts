@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { changedDeclarationClaims, declares, decisionsOf, narrativeClaims, buildBrief, commandRuns, concurrentPrs, othersIn, reviewsIn, parseChangeContext, snapshotIn, SNAPSHOT_MARKER } from "./brief.js";
 import { parseUnifiedDiff } from "./diff.js";
-import { loadGraph } from "./graph.js";
+import { indexGraph, loadGraph } from "./graph.js";
 import { checkpointRef } from "./checkpoint.js";
 import { DatabaseSync } from "node:sqlite";
 
@@ -303,12 +303,12 @@ describe("buildBrief", () => {
     expect(brief().claims.some((c) => c.claim.startsWith(`\`${testCommit.slice(0, 7)}\``))).toBe(false);
   });
 
-  it("still tells changed from unchanged callers when the graph was built below the repository root (bin-v0.5.0 labels)", () => {
-    // bin-v0.5.0 labels file nodes relative to the graph root: built with --root src, the
-    // file at src/use.ts is labelled "use.ts". The claim check must not compare that to
-    // the diff's "src/lib.ts".
+  it("tells changed from unchanged callers by their paths, never their labels", () => {
+    // CGraph labels a file by its parent folder and name only ("deep/use.ts" for any
+    // a/b/deep/use.ts), and relative to the graph root when built below the repository
+    // root. Labels that say nothing true about the path must not change the claim.
     const rooted = JSON.parse(readFileSync(baseGraph, "utf8")) as { nodes: { type?: string; label: string }[] };
-    for (const n of rooted.nodes) if (n.type === "file" && n.label.startsWith("src/")) n.label = n.label.slice("src/".length);
+    for (const n of rooted.nodes) if (n.type === "file") n.label = `elsewhere/${n.label.slice(n.label.lastIndexOf("/") + 1)}`;
     const path = join(repo, "base-graph-rooted.json");
     writeFileSync(path, JSON.stringify(rooted));
     const removed = brief({ baseGraphPath: path }).claims.find((c) => c.claim.startsWith("`helper` removed"));
@@ -498,6 +498,44 @@ describe("narrative claims", () => {
     const bodyOnly = parseUnifiedDiff("diff --git a/src/lib.ts b/src/lib.ts\n--- a/src/lib.ts\n+++ b/src/lib.ts\n@@ -6 +6 @@\n-  return 1;\n+  return 2;\n");
     expect(changedDeclarationClaims(symbols, bodyOnly, loadGraph(baseGraph), new Set(["src/lib.ts"]))).toEqual([]);
     expect(changedDeclarationClaims(symbols, files, loadGraph(baseGraph), new Set(["src/lib.ts", "src/use.ts", "src/lib.test.ts"]))).toEqual([]);
+  });
+
+  it("finds the repository root from the symbol itself when the same relative path also sits deeper", () => {
+    // `src/components/ui/badge.tsx` comes first in the graph and also ends in the changed `components/ui/badge.tsx`.
+    const graph = indexGraph(
+      [
+        { id: "src_copy", label: "src/components/ui/badge.tsx", type: "file", source_file: "/wt/src/components/ui/badge.tsx" },
+        { id: "fn_pill", label: "Pill", type: "function", source_file: "/wt/src/components/ui/badge.tsx", source_location: { start_line: 1, end_line: 3 } },
+        { id: "fn_badge", label: "Badge", type: "function", source_file: "/wt/components/ui/badge.tsx", source_location: { start_line: 1, end_line: 5 } },
+        { id: "fn_page", label: "Page", type: "function", source_file: "/wt/app/page.tsx", source_location: { start_line: 4, end_line: 9 } },
+      ],
+      [{ source: "fn_page", target: "fn_badge", relation: "CALLS" }],
+    );
+    const files = parseUnifiedDiff(
+      "diff --git a/components/ui/badge.tsx b/components/ui/badge.tsx\n--- a/components/ui/badge.tsx\n+++ b/components/ui/badge.tsx\n@@ -1 +1 @@\n-export function Badge() {\n+export function Badge(tone = \"plain\") {\n",
+    );
+    const symbols = [{ path: "components/ui/badge.tsx", label: "Badge", kind: "function", status: "changed", line: 1 }];
+    // `Page` sits in app/page.tsx, which the diff also changes: no call site is left unchecked.
+    expect(changedDeclarationClaims(symbols, files, graph, new Set(["components/ui/badge.tsx", "app/page.tsx"]))).toEqual([]);
+    expect(changedDeclarationClaims(symbols, files, graph, new Set(["components/ui/badge.tsx"]))[0]?.evidence).toBe(
+      "still called by `Page` (app/page.tsx:4) in files this diff does not touch; check those call sites against the new declaration",
+    );
+  });
+
+  it("reads callers' paths from a graph whose source_file paths are already repo-relative", () => {
+    const graph = indexGraph(
+      [
+        { id: "fn_badge", label: "Badge", type: "function", source_file: "components/badge.tsx", source_location: { start_line: 1, end_line: 5 } },
+        { id: "fn_page", label: "Page", type: "function", source_file: "app/page.tsx", source_location: { start_line: 4, end_line: 9 } },
+      ],
+      [{ source: "fn_page", target: "fn_badge", relation: "CALLS" }],
+    );
+    const files = parseUnifiedDiff(
+      "diff --git a/components/badge.tsx b/components/badge.tsx\n--- a/components/badge.tsx\n+++ b/components/badge.tsx\n@@ -1 +1 @@\n-export function Badge() {\n+export function Badge(tone = \"plain\") {\n",
+    );
+    const symbols = [{ path: "components/badge.tsx", label: "Badge", kind: "function", status: "changed", line: 1 }];
+    expect(changedDeclarationClaims(symbols, files, graph, new Set(["components/badge.tsx", "app/page.tsx"]))).toEqual([]);
+    expect(changedDeclarationClaims(symbols, files, graph, new Set(["components/badge.tsx"]))[0]?.evidence).toContain("`Page` (app/page.tsx:4)");
   });
 });
 

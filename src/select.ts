@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import { testFiles, testReachability } from "./detect.js";
 import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
-import { dependencyDirection, nodesInFile, translatePath } from "./graph.js";
+import { dependencyDirection, isContract, nodesInFile, translatePath } from "./graph.js";
 import { TraversalExhausted, dependents } from "./impact.js";
 import { mapDiffToSeeds, readerNodes } from "./mapping.js";
 import { isDeliberatelyIgnored } from "./paths.js";
@@ -277,7 +277,13 @@ export function select(diffText: string, opts: SelectOptions): Selection {
     const blast: string[] = [];
     const tests = new Set<string>();
     const reached = new Map<string, Set<string>>();
-    const record = (file: string, type: string, label: string, loc: string): void => {
+    // A contract the walk crosses is not code: it is neither blast radius nor a reached file. A
+    // test file it was minted in still counts, so selection stays a superset of what it was.
+    const record = (file: string, type: string, label: string, loc: string, contract: boolean): void => {
+      if (contract) {
+        if (testSet.has(file)) tests.add(file);
+        return;
+      }
       blast.push(`${type} ${label} (${file}${loc})`);
       if (testSet.has(file)) {
         tests.add(file);
@@ -292,8 +298,8 @@ export function select(diffText: string, opts: SelectOptions): Selection {
       const node = opts.graph.byId.get(id);
       if (!node) continue;
       const loc = node.source_location ? `:${node.source_location.start_line}` : "";
-      if (node.source_file) record(node.source_file, node.type, node.label, loc);
-      else blast.push(`${node.type} ${node.label}`);
+      if (node.source_file) record(node.source_file, node.type, node.label, loc, isContract(id));
+      else if (!isContract(id)) blast.push(`${node.type} ${node.label}`);
     }
     // Seeds that are themselves inside test files select those tests too.
     for (const id of headSeeds) {
@@ -307,7 +313,7 @@ export function select(diffText: string, opts: SelectOptions): Selection {
         const headFile = translatePath(node.source_file, headFiles);
         if (headFile === undefined) continue; // dependent itself gone at head — nothing to run
         const loc = node.source_location ? `:${node.source_location.start_line}` : "";
-        record(headFile, node.type, node.label, loc);
+        record(headFile, node.type, node.label, loc, isContract(id));
       }
     }
     return { blast, tests, reached };

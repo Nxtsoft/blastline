@@ -120,3 +120,32 @@ describe("checkCallers", () => {
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 });
+
+describe("checkCallers: contracts", () => {
+  // CGraph 0.9.5 mints contract nodes (`<kind>:<name>`) with `handled_by` edges to the code
+  // that provides them: an ORM model provides its migration's table, a function a header.
+  const contracts = indexGraph(
+    [
+      { id: "var_orders", label: "orders", type: "variable", source_file: "/r/src/db/schema.ts", source_location: { start_line: 4, end_line: 9 } },
+      { id: "table:local:orders", label: "orders", type: "table", source_file: "/r/src/db/migrations/0001.sql", source_location: { start_line: 1, end_line: 6 } },
+      { id: "fn_tenant", label: "tenantOf", type: "function", source_file: "/r/src/auth.ts", source_location: { start_line: 1, end_line: 9 } },
+      { id: "header:x-tenant", label: "x-tenant", type: "header", source_file: "/r/src/auth.ts", source_location: { start_line: 12, end_line: 12 } },
+      { id: "fn_client", label: "callAsTenant", type: "function", source_file: "/r/src/client.ts", source_location: { start_line: 1, end_line: 5 } },
+    ],
+    [
+      { source: "table:local:orders", target: "var_orders", relation: "handled_by" },
+      { source: "header:x-tenant", target: "fn_tenant", relation: "handled_by" },
+      { source: "fn_client", target: "header:x-tenant", relation: "CONSUMES" },
+    ],
+  );
+
+  it("never counts a contract the symbol provides as a caller", () => {
+    const r = checkCallers({ graph: contracts, symbol: "src/db/schema.ts:orders" });
+    expect(r).toMatchObject({ kind: "checked", verdict: "no-static-callers", callers: [] });
+  });
+
+  it("walks through a contract to the code that uses it, and lists only that code", () => {
+    const r = checkCallers({ graph: contracts, symbol: "src/auth.ts:tenantOf", transitive: true });
+    expect(r.kind === "checked" && r.callers.map((c) => c.id)).toEqual(["fn_client"]);
+  });
+});

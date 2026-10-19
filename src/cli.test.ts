@@ -66,3 +66,26 @@ describe("blastline brief --local", () => {
     expect(r.err).toMatch(/^blastline brief: no fleet session index at/);
   });
 });
+
+describe("blastline tests --json on a pipe", () => {
+  it("prints all of a selection larger than a pipe's 64 KiB buffer", () => {
+    // 1,500 of 1,600 test files call the changed function: the selection JSON runs far past 64 KiB.
+    const repo = repoWithCommit();
+    const tests = Array.from({ length: 1600 }, (_, i) => `tests/case-${String(i).padStart(4, "0")}.test.ts`);
+    const graph = {
+      nodes: [
+        { id: "fn_a", label: "a", type: "function", source_file: join(repo, "a.ts"), source_location: { start_line: 1, end_line: 1 } },
+        ...tests.map((t, i) => ({ id: `t${i}`, label: `case${i}`, type: "function", source_file: join(repo, t), source_location: { start_line: 1, end_line: 3 } })),
+      ],
+      links: tests.slice(0, 1500).map((_, i) => ({ source: `t${i}`, target: "fn_a", relation: "CALLS" })),
+    };
+    writeFileSync(join(repo, "graph.json"), JSON.stringify(graph));
+    writeFileSync(join(repo, "a.ts"), "export const a = 2;\n");
+    execFileSync("git", ["-C", repo, "commit", "-qam", "feat: a again"], { env: ENV });
+    const r = run(["tests", "HEAD~1..HEAD", "--repo", repo, "--graph", join(repo, "graph.json"), "--min-density", "0", "--min-test-reachability", "0", "--max-selected-fraction", "1", "--json"], repo);
+    expect(r.code).toBe(0);
+    expect(r.out.length).toBeGreaterThan(65_536);
+    const selection = JSON.parse(r.out) as { kind: string; tests?: string[] };
+    expect(selection.tests).toHaveLength(1500);
+  });
+});
