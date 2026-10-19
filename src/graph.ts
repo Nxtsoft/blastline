@@ -82,7 +82,7 @@ export function indexGraph(nodes: GraphNode[], links: GraphLink[]): CodeGraph {
  * (`backend::table:local:users`), and any node with it; code ids never hold a
  * colon (CGraph's make_id replaces them).
  */
-const CONTRACT_KINDS = new Set(["endpoint", "table", "label", "header", "claim", "env", "dynamo", "grpc", "topic", "schema", "service"]);
+export const CONTRACT_KINDS = new Set(["endpoint", "table", "label", "header", "claim", "env", "dynamo", "grpc", "topic", "schema", "service"]);
 
 export function isContract(id: string): boolean {
   // Only a leading prefix: `::` before the first lone colon. A name may hold `::` itself (`grpc:pkg::Svc/Do`).

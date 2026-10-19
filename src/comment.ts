@@ -1,7 +1,8 @@
 import type { Checkpoint, SymbolReason } from "./checkpoint.js";
 import { TEST_RUNNER } from "./checkpoint.js";
 import { code } from "./decisions.js";
-import type { Brief, BriefDecision, ClaimCheck, CommitBrief, SymbolChange } from "./brief.js";
+import { CONTRACT_KINDS } from "./graph.js";
+import type { Brief, BriefDecision, ClaimCheck, CommitBrief, Impact, ImpactNode, SymbolChange } from "./brief.js";
 import { SNAPSHOT_MARKER } from "./brief.js";
 import { relativeTo, sharedDir } from "./paths.js";
 import { ignorePatternFor } from "./unnamed.js";
@@ -208,7 +209,65 @@ function whyCell(path: string, reasons: SymbolReason[]): string {
   return seen.size > 2 ? `${shown.join("; ")}; +${seen.size - 2}` : shown.join("; ");
 }
 
-function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolChange[], reasons: SymbolReason[] = []): SubsetParts {
+/** How a link reads in a sentence; any relation not named here reads as its own words. */
+const RELATION_WORDS: Record<string, string> = {
+  imports: "imports",
+  imports_from: "imports",
+  re_exports: "re-exports",
+  CALLS: "calls",
+  CONSUMES: "uses",
+  inherits: "extends",
+  implements: "implements",
+  handled_by: "is handled by",
+  method: "has method",
+  references: "references",
+  RESPONDS_WITH: "responds with",
+  CONSUMED_AT: "is consumed at",
+  MIRRORED_BY: "is mirrored by",
+};
+
+/**
+ * Why `reached` depends on the changed file `changed`, from change-context's
+ * witness: the shortest of the chains CGraph kept (one per node of the
+ * reached file) that ends in a node of that file, as "imports it", "calls
+ * `parse`", or "calls `run` in `use.py`, which calls `Parser`". The changed
+ * end reads "it" when it is the file itself. A chain that starts at a symbol
+ * names it ("`zz` calls `parse`") unless it is the one symbol `shown` for
+ * the file, so the reason never borrows another symbol's call. A step names a symbol or contract by its label, with its
+ * file when that differs from the step before; a file serving an endpoint
+ * (CGraph steps from the file to its endpoint) reads "served in `file`".
+ * Undefined when CGraph's witness for this file leads to another changed
+ * file, when its budget shed it, or when change-context never ran.
+ */
+function reachReason(impacts: Impact[], changed: string, reached: string, shown: string[], short: (rel: string) => string): string | undefined {
+  const chain = impacts
+    .filter((i) => i.path === reached && i.links[i.links.length - 1]?.to.path === changed)
+    // Shortest first; on a tie, a chain that starts at a symbol says more than one that starts at the file.
+    .sort((a, b) => a.links.length - b.links.length || Number(a.links[0]!.from.kind === "file") - Number(b.links[0]!.from.kind === "file"))[0]?.links;
+  if (chain === undefined) return undefined;
+  const same = (a: ImpactNode, b: ImpactNode): boolean => a.path === b.path && a.label === b.label && a.kind === b.kind;
+  const start = chain[0]!.from;
+  const subject = start.kind !== "file" && !(shown.length === 1 && shown[0] === start.label) ? `${code(start.label)} ` : "";
+  let at = reached;
+  return subject + chain
+    .map((l, k) => {
+      if (k > 0 && l.relation === "contains" && same(l.to, chain[k - 1]!.to)) {
+        at = l.from.path;
+        return `served in ${code(short(l.from.path))}`;
+      }
+      const word = RELATION_WORDS[l.relation] ?? l.relation.toLowerCase().replace(/_/g, " ");
+      const last = k === chain.length - 1;
+      let to: string;
+      if (last && l.to.kind === "file") to = "it";
+      else if (l.to.kind === "file") to = code(short(l.to.path));
+      else to = `${code(l.to.label)}${!last && !CONTRACT_KINDS.has(l.to.kind) && l.to.path !== at ? ` in ${code(short(l.to.path))}` : ""}`;
+      at = l.to.path;
+      return `${k === 0 ? "" : "which "}${word} ${to}`;
+    })
+    .join(", ");
+}
+
+function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolChange[], reasons: SymbolReason[] = [], impacts: Impact[] = []): SubsetParts {
   const links = new Links(ctx);
   const mapped = selection.files.filter((f) => f.disposition === "mapped");
   const ignored = selection.files.filter((f) => f.disposition === "ignored");
@@ -286,7 +345,10 @@ function subsetParts(selection: Subset, ctx: CommentContext, symbols?: SymbolCha
                 const rel = relativeTo(ctx.repo, r.file);
                 const syms = r.symbols.slice(0, 3).map(code).join(", ");
                 const more = r.symbols.length > 3 ? `, +${r.symbols.length - 3}` : "";
-                return syms ? `${syms}${more} (${links.path(rel, short(rel))})` : links.path(rel, short(rel));
+                const why = reachReason(impacts, f.path, rel, r.symbols, short);
+                const path = links.path(rel, short(rel));
+                if (syms) return `${syms}${more} (${path}${why ? `, ${why}` : ""})`;
+                return why ? `${path} (${why})` : path;
               });
               const rest = f.reaches.length > 6 ? `, +${plural(f.reaches.length - 6, "file")}` : "";
               return `- ${code(short(f.path))} reaches ${parts.join(", ")}${rest}`;
@@ -809,7 +871,7 @@ export function renderBrief(brief: Brief, ctx: CommentContext): string {
       .filter((line): line is string => line !== undefined)
       .join("\n");
   }
-  const p = subsetParts(brief.selection, ctx, brief.changeContext?.symbols, brief.commits.flatMap((c) => c.checkpoint?.reasons ?? []));
+  const p = subsetParts(brief.selection, ctx, brief.changeContext?.symbols, brief.commits.flatMap((c) => c.checkpoint?.reasons ?? []), brief.changeContext?.impacts);
   const n = brief.selection.tests.length;
   const summary = [
     `| Summary | ${p.summaryTitle} |`,
