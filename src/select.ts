@@ -267,7 +267,7 @@ export function select(diffText: string, opts: SelectOptions): Selection {
   /** Walk one seed set (head ids, or base ids translated to head paths). */
   const walk = (
     seeds: Set<string>,
-  ): { blast: string[]; tests: Set<string>; reached: Map<string, Set<string>>; files: Set<string> } => {
+  ): { blast: string[]; tests: Set<string>; reached: Map<string, Set<string>> } => {
     const headSeeds = new Set<string>();
     const baseSeeds = new Set<string>();
     for (const id of seeds) {
@@ -277,12 +277,9 @@ export function select(diffText: string, opts: SelectOptions): Selection {
     const blast: string[] = [];
     const tests = new Set<string>();
     const reached = new Map<string, Set<string>>();
-    // Every file a dependent sits in, contract or not: the data-file check below needs to know whether anything outside the file was reached.
-    const files = new Set<string>();
     // A contract the walk crosses is not code: it is neither blast radius nor a reached file. A
     // test file it was minted in still counts, so selection stays a superset of what it was.
     const record = (file: string, type: string, label: string, loc: string, contract: boolean): void => {
-      files.add(file);
       if (contract) {
         if (testSet.has(file)) tests.add(file);
         return;
@@ -319,12 +316,12 @@ export function select(diffText: string, opts: SelectOptions): Selection {
         record(headFile, node.type, node.label, loc, isContract(id));
       }
     }
-    return { blast, tests, reached, files };
+    return { blast, tests, reached };
   };
 
   let whole: ReturnType<typeof walk>;
   const files: ChangedFileImpact[] = [];
-  // Data files whose own walk reached no test and nothing outside the file (see `isCodePath`).
+  // Data files whose own walk reached no test (see `isCodePath`).
   const unreached: string[] = [];
   try {
     whole = walk(mapping.seeds);
@@ -337,12 +334,10 @@ export function select(diffText: string, opts: SelectOptions): Selection {
       }
       const own = walk(seeds);
       const proof = opts.inert?.get(file.path)?.why;
-      // A data file's nodes that nothing points at say nothing about who reads it: CGraph records no reads of data,
-      // so a `.sql` or `.cypher` change would select zero tests. A manifest walked through the code naming its scripts is not one.
-      if (!isCodePath(file.path) && proof === undefined && own.tests.size === 0) {
-        const itself = new Set(nodesInFile(opts.graph, file.path).flatMap((n) => (n.source_file ? [n.source_file] : [])));
-        if ([...own.files].every((f) => itself.has(f))) unreached.push(file.path);
-      }
+      // A data file that reaches no test says nothing about who reads it: CGraph records no reads of data by code, so a
+      // `.sql` or `.cypher` change would select zero tests, whether nothing points at its nodes or only another migration's
+      // foreign key does. A manifest walked through the code naming its scripts is not one.
+      if (!isCodePath(file.path) && proof === undefined && own.tests.size === 0) unreached.push(file.path);
       const symbols = new Set<string>();
       for (const id of seeds) {
         const node = opts.graph.byId.get(id) ?? opts.baseGraph?.byId.get(id);
@@ -369,12 +364,7 @@ export function select(diffText: string, opts: SelectOptions): Selection {
     }
     throw e;
   }
-  if (unreached.length > 0) {
-    const reasons: FailOpenReason[] = unreached.map((path) => ({ kind: "unmapped-file", path, unreached: true }));
-    const references = opts.references;
-    if (references === undefined) return { kind: "all", reasons };
-    return { kind: "all", reasons: reasons.map((r) => (r.kind === "unmapped-file" ? advise(r, references.get(r.path), opts.graph, knownTests, budget) : r)) };
-  }
+  if (unreached.length > 0) return { kind: "all", reasons: unreached.map((path) => ({ kind: "unmapped-file", path, unreached: true })) };
   const tests = whole.tests;
   // Files cgraph deliberately skipped were dropped from `changed` above; they
   // still belong in the per-file report, as ignored, in diff order.

@@ -231,7 +231,7 @@ describe("select", () => {
     expect(JSON.stringify(sel.reasons[0])).toContain("no content root");
   });
 
-  describe("a data file whose graph nodes nothing points at", () => {
+  describe("a data file that reaches no test", () => {
     const node = (id: string, type: string, file: string, line?: number) => ({
       id,
       label: id,
@@ -257,6 +257,10 @@ describe("select", () => {
         node("f_cypher", "file", "/repo/db/q.cypher"),
         node("f_dead", "file", "/repo/src/dead.ts"),
         node("fn_dead", "function", "/repo/src/dead.ts", 1),
+        node("sql_new", "sql_file", "/repo/db/0003_teams.sql"),
+        node("sql_teams", "sql_table", "/repo/db/0003_teams.sql", 1),
+        node("f_routes", "file", "/repo/conf/routes.xml"),
+        node("f_pkg", "file", "/repo/package.json"),
       ],
       [
         { source: "f_lib", target: "fn_parse", relation: "contains" },
@@ -267,6 +271,10 @@ describe("select", () => {
         { source: "table:local:users", target: "sql_users", relation: "handled_by" },
         { source: "table:local:audit", target: "sql_audit", relation: "handled_by" },
         { source: "f_dead", target: "fn_dead", relation: "contains" },
+        // A later migration's foreign key: the audit table references teams.
+        { source: "sql_audit", target: "sql_teams", relation: "references" },
+        // Code no test reaches reads the routes file.
+        { source: "fn_dead", target: "f_routes", relation: "uses" },
       ],
     );
     const edit = (path: string): string => `diff --git a/${path} b/${path}\nindex 1..2 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,1 @@\n-a\n+b\n`;
@@ -291,6 +299,22 @@ describe("select", () => {
 
     it("keeps a code file with no dependents at zero tests: there the graph's silence is evidence", () => {
       const sel = select(edit("src/dead.ts"), opts);
+      expect(sel.kind === "subset" && sel.tests).toEqual([]);
+    });
+
+    it("fails open on a migration only another migration's foreign key points at", () => {
+      const sel = select(edit("db/0003_teams.sql"), opts);
+      expect(sel.kind === "all" && sel.reasons).toEqual([{ kind: "unmapped-file", path: "db/0003_teams.sql", unreached: true }]);
+    });
+
+    it("fails open on a data file only code that reaches no test points at", () => {
+      const sel = select(edit("conf/routes.xml"), opts);
+      expect(sel.kind === "all" && sel.reasons).toEqual([{ kind: "unmapped-file", path: "conf/routes.xml", unreached: true }]);
+    });
+
+    it("leaves a manifest whose new scripts code names to its readers' walk", () => {
+      const inert = new Map([["package.json", { why: "adds scripts only `src/dead.ts` names", readers: [{ file: "src/dead.ts", line: 1 }] }]]);
+      const sel = select(edit("package.json"), { ...opts, inert });
       expect(sel.kind === "subset" && sel.tests).toEqual([]);
     });
 

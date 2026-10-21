@@ -469,7 +469,7 @@ function renderUnmapped(reasons: Extract<FailOpenReason, { kind: "unmapped-file"
       ? [`**${loaded} file${loaded === 1 ? " is" : "s are"} loaded by convention** (framework config, a build or dependency manifest, toolchain config): the graph has nodes for ${loaded === 1 ? "it" : "them"}, but every test may depend on ${loaded === 1 ? "it" : "them"}.`, ""]
       : []),
     ...(unreached > 0
-      ? [`**${unreached} data file${unreached === 1 ? " has" : "s have"} graph nodes nothing points at** (SQL, Cypher, GraphQL and the like): the graph records no reads of data, so code may still read ${unreached === 1 ? "it" : "them"}, and selecting no tests would drop ${unreached === 1 ? "its" : "their"} tests.`, ""]
+      ? [`**${unreached} data file${unreached === 1 ? " reaches" : "s reach"} no test in the graph** (SQL, Cypher, GraphQL and the like): the graph records no reads of data by code, so code may still read ${unreached === 1 ? "it" : "them"}, and selecting no tests would drop ${unreached === 1 ? "its" : "their"} tests.`, ""]
       : []),
     "If these files cannot change which tests should run, add a pattern for them to `ignore`. If they feed tests (fixtures, data), this outcome is correct.",
     "",

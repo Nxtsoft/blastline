@@ -47,8 +47,8 @@ export type FailOpenReason =
       convention?: true;
       /**
        * The graph has nodes for this data file (SQL, Cypher, GraphQL, …), but
-       * nothing in the graph points at them: CGraph records no reads of data,
-       * so code may still read it, and selecting nothing would drop its tests.
+       * its walk reaches no test: CGraph records no reads of data by code, so
+       * code may still read it, and selecting nothing would drop its tests.
        */
       unreached?: true;
       /**
