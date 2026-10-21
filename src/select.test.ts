@@ -231,6 +231,99 @@ describe("select", () => {
     expect(JSON.stringify(sel.reasons[0])).toContain("no content root");
   });
 
+  describe("a data file that reaches no test", () => {
+    const node = (id: string, type: string, file: string, line?: number) => ({
+      id,
+      label: id,
+      type,
+      source_file: file,
+      ...(line !== undefined && { source_location: { start_line: line, end_line: line } }),
+    });
+    // A code path to one test, a migration whose table a model uses, and data files nothing in the graph points at.
+    const graph = indexGraph(
+      [
+        node("f_lib", "file", "/repo/src/lib.ts"),
+        node("fn_parse", "function", "/repo/src/lib.ts", 1),
+        node("f_test", "file", "/repo/src/lib.test.ts"),
+        node("f_model", "file", "/repo/src/model.ts"),
+        node("fn_model", "function", "/repo/src/model.ts", 1),
+        node("f_model_test", "file", "/repo/src/model.test.ts"),
+        node("sql_used", "sql_file", "/repo/db/0001_users.sql"),
+        node("sql_users", "sql_table", "/repo/db/0001_users.sql", 1),
+        { id: "table:local:users", label: "users", type: "table", source_file: "/repo/db/0001_users.sql" },
+        node("sql_lone", "sql_file", "/repo/db/0002_audit.sql"),
+        node("sql_audit", "sql_table", "/repo/db/0002_audit.sql", 1),
+        { id: "table:local:audit", label: "audit", type: "table", source_file: "/repo/db/0002_audit.sql" },
+        node("f_cypher", "file", "/repo/db/q.cypher"),
+        node("f_dead", "file", "/repo/src/dead.ts"),
+        node("fn_dead", "function", "/repo/src/dead.ts", 1),
+        node("sql_new", "sql_file", "/repo/db/0003_teams.sql"),
+        node("sql_teams", "sql_table", "/repo/db/0003_teams.sql", 1),
+        node("f_routes", "file", "/repo/conf/routes.xml"),
+        node("f_pkg", "file", "/repo/package.json"),
+      ],
+      [
+        { source: "f_lib", target: "fn_parse", relation: "contains" },
+        { source: "f_test", target: "fn_parse", relation: "imports" },
+        { source: "f_model", target: "fn_model", relation: "contains" },
+        { source: "fn_model", target: "table:local:users", relation: "uses" },
+        { source: "f_model_test", target: "fn_model", relation: "imports" },
+        { source: "table:local:users", target: "sql_users", relation: "handled_by" },
+        { source: "table:local:audit", target: "sql_audit", relation: "handled_by" },
+        { source: "f_dead", target: "fn_dead", relation: "contains" },
+        // A later migration's foreign key: the audit table references teams.
+        { source: "sql_audit", target: "sql_teams", relation: "references" },
+        // Code no test reaches reads the routes file.
+        { source: "fn_dead", target: "f_routes", relation: "uses" },
+      ],
+    );
+    const edit = (path: string): string => `diff --git a/${path} b/${path}\nindex 1..2 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,1 @@\n-a\n+b\n`;
+    const opts = { graph, minDensity: 0, minTestReachability: 0 };
+
+    it("fails open on a .sql file whose table nothing uses, instead of selecting zero tests", () => {
+      const sel = select(edit("db/0002_audit.sql"), opts);
+      expect(sel.kind).toBe("all");
+      if (sel.kind !== "all") return;
+      expect(sel.reasons).toEqual([{ kind: "unmapped-file", path: "db/0002_audit.sql", unreached: true }]);
+    });
+
+    it("fails open on a .cypher file with only its file node", () => {
+      const sel = select(edit("db/q.cypher"), opts);
+      expect(sel.kind === "all" && sel.reasons).toEqual([{ kind: "unmapped-file", path: "db/q.cypher", unreached: true }]);
+    });
+
+    it("keeps the subset for a .sql file whose table code uses", () => {
+      const sel = select(edit("db/0001_users.sql"), opts);
+      expect(sel.kind === "subset" && sel.tests).toEqual(["/repo/src/model.test.ts"]);
+    });
+
+    it("keeps a code file with no dependents at zero tests: there the graph's silence is evidence", () => {
+      const sel = select(edit("src/dead.ts"), opts);
+      expect(sel.kind === "subset" && sel.tests).toEqual([]);
+    });
+
+    it("fails open on a migration only another migration's foreign key points at", () => {
+      const sel = select(edit("db/0003_teams.sql"), opts);
+      expect(sel.kind === "all" && sel.reasons).toEqual([{ kind: "unmapped-file", path: "db/0003_teams.sql", unreached: true }]);
+    });
+
+    it("fails open on a data file only code that reaches no test points at", () => {
+      const sel = select(edit("conf/routes.xml"), opts);
+      expect(sel.kind === "all" && sel.reasons).toEqual([{ kind: "unmapped-file", path: "conf/routes.xml", unreached: true }]);
+    });
+
+    it("leaves a manifest whose new scripts code names to its readers' walk", () => {
+      const inert = new Map([["package.json", { why: "adds scripts only `src/dead.ts` names", readers: [{ file: "src/dead.ts", line: 1 }] }]]);
+      const sel = select(edit("package.json"), { ...opts, inert });
+      expect(sel.kind === "subset" && sel.tests).toEqual([]);
+    });
+
+    it("fails open on the data file even when another file in the diff selects tests", () => {
+      const sel = select(edit("src/lib.ts") + edit("db/q.cypher"), opts);
+      expect(sel.kind === "all" && sel.reasons.map((r) => r.kind === "unmapped-file" && r.path)).toEqual(["db/q.cypher"]);
+    });
+  });
+
   it("is deterministic: identical inputs produce identical output", () => {
     const a = JSON.stringify(select(DIFF_IN_PARSE, { graph: g, minDensity: 0 }));
     const b = JSON.stringify(select(DIFF_IN_PARSE, { graph: g, minDensity: 0 }));

@@ -909,6 +909,9 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     const decisions: Decision[] = [];
     const testCommands = new Set<string>();
     let narration: Narration = { started: "", ended: "", texts: 0, tools: 0 };
+    // Each session's own part, combined after the loop; `activity` counts texts and tool calls across every session.
+    const parts: { worked: boolean; narration: Narration; testCommands: string[] }[] = [];
+    let activity = 0;
     const sessions: CheckpointSession[] = [];
     let readBefore = 0;
     const reasons = new Map<string, SymbolReason>();
@@ -946,21 +949,28 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
       }
       if (extended) readBefore++;
       sessions.push({ id: sessionId, lines, hash });
-      for (const c of testCommandsIn(turnWindow)) testCommands.add(c);
       for (const r of symbolReasonsIn(sinceWindow, symbols, contents)) reasons.set(`${r.path}\0${r.label}`, r);
       const n = narrationIn(stepWindow);
+      activity += n.texts + n.tools;
+      parts.push({ worked, narration: n, testCommands: testCommandsIn(turnWindow) });
+    }
+    // Entire attaches every session live in the repo when the commit is made. When some worked on the commit's
+    // files, only theirs say what the commit's session did and ran; the rest (other tasks in the same checkout) are left out.
+    const own = parts.some((p) => p.worked) ? parts.filter((p) => p.worked) : parts;
+    for (const p of own) {
+      for (const c of p.testCommands) testCommands.add(c);
       narration = {
-        started: narration.started || n.started,
-        ended: n.texts > 0 ? n.ended || n.started : narration.ended,
-        texts: narration.texts + n.texts,
-        tools: narration.tools + n.tools,
+        started: narration.started || p.narration.started,
+        ended: p.narration.texts > 0 ? p.narration.ended || p.narration.started : narration.ended,
+        texts: narration.texts + p.narration.texts,
+        tools: narration.tools + p.narration.tools,
       };
     }
     if (narration.ended === narration.started) narration.ended = "";
     let prompt = ask;
     for (let i = 0; prompt === "" && i < sessionCount; i++) prompt = typed(i);
     // The same step: every session's transcript extends what an earlier commit read, and nothing came after.
-    const sameStep = readBefore > 0 && readBefore === sessions.length && narration.texts === 0 && narration.tools === 0 ? read.get(sessions[0]!.id)?.sha : undefined;
+    const sameStep = readBefore > 0 && readBefore === sessions.length && activity === 0 ? read.get(sessions[0]!.id)?.sha : undefined;
     return {
       id,
       commit: git(repo, ["rev-parse", `${commit}^{commit}`]).trim(),

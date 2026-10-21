@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { testFiles, testReachability } from "./detect.js";
+import { isCodePath, testFiles, testReachability } from "./detect.js";
 import { parseUnifiedDiff } from "./diff.js";
 import type { CodeGraph } from "./graph.js";
 import { dependencyDirection, isContract, nodesInFile, translatePath } from "./graph.js";
@@ -321,6 +321,8 @@ export function select(diffText: string, opts: SelectOptions): Selection {
 
   let whole: ReturnType<typeof walk>;
   const files: ChangedFileImpact[] = [];
+  // Data files whose own walk reached no test (see `isCodePath`).
+  const unreached: string[] = [];
   try {
     whole = walk(mapping.seeds);
     for (const file of changed) {
@@ -332,6 +334,10 @@ export function select(diffText: string, opts: SelectOptions): Selection {
       }
       const own = walk(seeds);
       const proof = opts.inert?.get(file.path)?.why;
+      // A data file that reaches no test says nothing about who reads it: CGraph records no reads of data by code, so a
+      // `.sql` or `.cypher` change would select zero tests, whether nothing points at its nodes or only another migration's
+      // foreign key does. A manifest walked through the code naming its scripts is not one.
+      if (!isCodePath(file.path) && proof === undefined && own.tests.size === 0) unreached.push(file.path);
       const symbols = new Set<string>();
       for (const id of seeds) {
         const node = opts.graph.byId.get(id) ?? opts.baseGraph?.byId.get(id);
@@ -358,6 +364,7 @@ export function select(diffText: string, opts: SelectOptions): Selection {
     }
     throw e;
   }
+  if (unreached.length > 0) return { kind: "all", reasons: unreached.map((path) => ({ kind: "unmapped-file", path, unreached: true })) };
   const tests = whole.tests;
   // Files cgraph deliberately skipped were dropped from `changed` above; they
   // still belong in the per-file report, as ignored, in diff order.

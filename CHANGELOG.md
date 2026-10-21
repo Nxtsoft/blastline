@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.23.1
+
+Two fixes: a data file could select zero tests, and a PR's Intent could open with another session's work.
+
+- A changed data file whose walk reaches no test now runs the full suite instead of selecting zero tests. "Data" means a file that isn't in one of the languages CGraph parses as code (C, C++, C#, Apex, Go, Rust, Groovy, Java, JavaScript, Kotlin, Delphi, Python, Ruby, Scala, TypeScript), such as SQL, Cypher, GraphQL, Protobuf, OpenAPI and XML. The graph records no reads of data by code, so a walk that finds no test is not evidence that no test reads the file. That holds whether nothing points at the file's nodes, only another migration's foreign key does, or only untested code does. On a TypeScript service, a one-line edit to each of five migrations selected 0 tests before and runs the full suite now; migrations were masked while their journal file had no graph node, and exposed once the journal folder was ignored. A data file whose walk reaches tests (a table a model uses) keeps its subset, and a code file nothing depends on still selects zero tests. The comment says the file "reaches no test in the graph" (`unreached` on the reason), not that it has no node.
+- The Intent cell's narration and the "Ran before push" commands come only from the sessions that worked on the commit's files, as the prompt already did. Entire attaches every session live in the checkout when a commit is made. On one web-app PR, ten sessions were attached. The Intent opened with a call-summary session's first line, and 30 test commands came from other tasks. Now it shows the working session's own words and its 2 commands. With no session working on the files, every session still counts.
+
 ## 0.23.0
 
 "What the agent decided" finds test outcomes, edits and subagents the way agents actually work. Replayed on 96 checkpointed commits of a web-app repository since 2026-09-20, the section had a line for 1 of them before (a design note) and for 20 after: 13 with runs that failed and then passed, 6 commits made right after a failing run with no pass, and 4 with design notes weighing alternatives (one commit can have several).
