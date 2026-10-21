@@ -461,11 +461,15 @@ function renderUnmapped(reasons: Extract<FailOpenReason, { kind: "unmapped-file"
   const listed = paths.slice(0, 50).join("\n");
   const more = paths.length > 50 ? `\n… ${paths.length - 50} more` : "";
   const loaded = reasons.filter((r) => r.convention).length;
-  const nodeless = paths.length - loaded;
+  const unreached = reasons.filter((r) => r.unreached).length;
+  const nodeless = paths.length - loaded - unreached;
   return [
     ...(nodeless > 0 ? [`**${nodeless} file${nodeless === 1 ? " has" : "s have"} no graph node** (config, asset, or unextracted).`, ""] : []),
     ...(loaded > 0
       ? [`**${loaded} file${loaded === 1 ? " is" : "s are"} loaded by convention** (framework config, a build or dependency manifest, toolchain config): the graph has nodes for ${loaded === 1 ? "it" : "them"}, but every test may depend on ${loaded === 1 ? "it" : "them"}.`, ""]
+      : []),
+    ...(unreached > 0
+      ? [`**${unreached} data file${unreached === 1 ? " has" : "s have"} graph nodes nothing points at** (SQL, Cypher, GraphQL and the like): the graph records no reads of data, so code may still read ${unreached === 1 ? "it" : "them"}, and selecting no tests would drop ${unreached === 1 ? "its" : "their"} tests.`, ""]
       : []),
     "If these files cannot change which tests should run, add a pattern for them to `ignore`. If they feed tests (fixtures, data), this outcome is correct.",
     "",

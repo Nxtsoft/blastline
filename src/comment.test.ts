@@ -288,6 +288,22 @@ describe("renderComment: fail-open", () => {
     expect(md).toContain("All 2 unmapped files");
   });
 
+  it("says a data file has graph nodes nothing points at instead of claiming it has none", () => {
+    const md = renderComment(
+      {
+        kind: "all",
+        reasons: [
+          { kind: "unmapped-file", path: "db/migrations/0002_audit.sql", unreached: true },
+          { kind: "unmapped-file", path: "assets/logo.svg" },
+        ],
+      },
+      ctx,
+    );
+    expect(md).toContain("**1 file has no graph node**");
+    expect(md).toContain("**1 data file has graph nodes nothing points at**");
+    expect(md).toContain("so code may still read it, and selecting no tests would drop its tests");
+  });
+
   it("offers the unmapped files nothing names as ignore patterns, and only those", () => {
     const md = renderComment(
       {

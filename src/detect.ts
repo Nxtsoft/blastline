@@ -29,6 +29,19 @@ export function isTestPath(path: string): boolean {
 }
 
 /**
+ * Code whose uses CGraph extracts: the languages its `detect.cpp` parses with a
+ * grammar (C, C++, C#, Apex, Go, Rust, Groovy, Java, JavaScript, Kotlin, Delphi,
+ * Python, Ruby, Scala, TypeScript). Every other file the graph holds (SQL, Cypher,
+ * Protobuf, GraphQL, OpenAPI, XML, configs) is data: CGraph records no read of it,
+ * so nothing pointing at its nodes is not evidence that nothing reads it.
+ */
+const CODE = /\.(?:c|h|cc|cpp|cxx|hpp|hh|hxx|cs|cls|trigger|go|rs|groovy|gvy|gradle|java|js|jsx|mjs|cjs|kt|kts|pas|pp|dpr|py|pyw|rb|scala|sc|ts|tsx)$/i;
+
+export function isCodePath(path: string): boolean {
+  return CODE.test(path);
+}
+
+/**
  * JVM test conventions for Java and Kotlin, taken from the build tools' own
  * default class-name patterns — the JVM analog of Go's compiler-enforced
  * `_test.go`. These are what Maven Surefire/Failsafe (and, by convention, Gradle)
