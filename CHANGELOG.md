@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.23.1
+
+Two fixes: a data file could select zero tests, and a PR's Intent could open with another session's work.
+
+- A changed data file whose graph nodes nothing points at now runs the full suite instead of selecting zero tests. CGraph extracts dependencies only from code (C, C++, C#, Apex, Go, Rust, Groovy, Java, JavaScript, Kotlin, Delphi, Python, Ruby, Scala, TypeScript), so for SQL, Cypher, GraphQL, Protobuf, OpenAPI and XML files the graph records no reads, and its silence is not evidence that nothing reads them. On a TypeScript service, a one-line edit to each of five migrations selected 0 tests before, and runs the full suite now. Before this, migrations were masked whenever their journal file had no graph node, and exposed once the journal folder was ignored. A data file whose nodes something in the graph does point at (a table a model uses) keeps its subset, and a code file nothing depends on still selects zero tests. The comment says the file "has graph nodes nothing points at" (`unreached` on the reason), not that it has none.
+- The Intent cell's narration and the "Ran before push" commands come only from the sessions that worked on the commit's files, as the prompt already did. Entire attaches every session live in the checkout when a commit is made. On one web-app PR, ten sessions were attached. The Intent opened with a call-summary session's first line, and 30 test commands came from other tasks. Now it shows the working session's own words and its 2 commands. With no session working on the files, every session still counts.
+
 ## 0.23.0
 
 "What the agent decided" finds test outcomes, edits and subagents the way agents actually work. Replayed on 96 checkpointed commits of a web-app repository since 2026-09-20, the section had a line for 1 of them before (a design note) and for 20 after: 13 with runs that failed and then passed, 6 commits made right after a failing run with no pass, and 4 with design notes weighing alternatives (one commit can have several).
