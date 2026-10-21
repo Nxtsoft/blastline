@@ -655,6 +655,28 @@ describe("checkpointFor on the branch backend", () => {
     expect(checkpointFor(repo, pc, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), files, files)?.decisions).toEqual([]);
   });
 
+  it("follows a cd to a variable the command assigns, in order, so a name reused later does not reach back", () => {
+    const HEX_V = "b1f6a2c3d4e5";
+    const run = (status: "success" | "error", command: string): object => ({ id: "v", type: "tool_use", name: "Bash", input: { command }, result: { output: "", status } });
+    const viaVar = [
+      ...CUMULATIVE,
+      rec("user", stamp(30), [user("raise the floor, then check the other repo")]),
+      rec("assistant", stamp(31), [run("success", "WT=/Users/x/wt; cd \"$WT\" && python3 - <<'EOF'\nopen('src/round-size.ts','a').write('x')\nEOF")]),
+      rec("assistant", stamp(32), [run("error", "npx vitest run src/round-size.test.ts")]),
+      rec("assistant", stamp(33), [run("success", "npx vitest run src/round-size.test.ts")]),
+      rec("assistant", stamp(34), [run("success", "O=/Users/x/other; cd \"$O\" && git status; O=/Users/x/wt")]),
+      rec("assistant", stamp(35), [run("error", "npx vitest run src/round-size.test.ts")]),
+      rec("assistant", stamp(36), [run("success", "git -C /Users/x/wt commit -qm floor")]),
+    ];
+    writeBranchCheckpoint(HEX_V, branchFiles(HEX_V, stamp(37), viaVar, ""));
+    const vc = commitFile("src/round-size.ts", "export const ROUND_SIZE_MIN = 3;\n", `fix: the floor is three\n\nEntire-Checkpoint: ${HEX_V}\n`);
+    const files = ["src/round-size.ts", "src/round-size.test.ts"];
+    // The run in the other repo is not this one's; the two at the root are.
+    expect(checkpointFor(repo, vc, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), files, files)?.decisions.map((d) => d.text)).toEqual([
+      "`vitest` on `src/round-size.test.ts` failed, then passed",
+    ]);
+  });
+
   it("never takes an agent's scratchpad for the repo, though it mirrors the repo's layout", () => {
     const HEX_D = "a1f6b2c3d4e5";
     const note = "# Design\n\n## Alternatives considered\n\n- one\n";

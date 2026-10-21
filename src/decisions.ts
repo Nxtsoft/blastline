@@ -60,9 +60,18 @@ const RUN =
  * another variable is left as it is.
  */
 export function expandAssigned(command: string): string {
+  // In command order: a use reads the value assigned before it, so a name assigned again later does not reach back.
   const values = new Map<string, string>();
-  for (const [, name, value] of command.matchAll(/(?:^|[\s;&|])(?:export\s+)?([A-Za-z_]\w*)=("[^"$`]*"|'[^']*'|[^\s;&|"'$`]+)/g)) values.set(name!, value!.replace(/^["']|["']$/g, ""));
-  return command.replace(/"?\$\{?([A-Za-z_]\w*)\}?"?/g, (whole, name: string) => values.get(name) ?? whole);
+  return command.replace(
+    /((?:^|[\s;&|])(?:export\s+)?)([A-Za-z_]\w*)=("[^"$`]*"|'[^']*'|[^\s;&|"'$`]+)|"?\$\{?([A-Za-z_]\w*)\}?"?/g,
+    (whole, lead: string | undefined, name: string | undefined, value: string | undefined, used: string | undefined) => {
+      if (name !== undefined) {
+        values.set(name, value!.replace(/^["']|["']$/g, ""));
+        return whole;
+      }
+      return values.get(used!) ?? whole;
+    },
+  );
 }
 
 /**
