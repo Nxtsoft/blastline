@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import type { Decision } from "./decisions.js";
-import { decisionsIn } from "./decisions.js";
+import { decisionsIn, expandAssigned } from "./decisions.js";
 
 /**
  * The reviewable subset of an Entire checkpoint (github.com/entireio/cli): the
@@ -515,9 +515,11 @@ interface Shell {
 }
 
 /**
- * Follow the shell through a transcript's Bash steps in order: an absolute
- * `cd` sets the directory, a relative one moves from a known one, `cd
- * "$PWD"` stays, any other (`cd -`, `~`, a variable) makes it unknown;
+ * Follow the shell through a transcript's Bash steps in order, redirects
+ * aside and with the variables a command assigns substituted
+ * (`expandAssigned`): an absolute `cd` or `pushd` (`builtin cd` too) sets the directory, a relative one moves
+ * from a known one, `cd "$PWD"` stays, and any other step that moves (`cd -`,
+ * a bare `cd`, `~`, a variable, `popd`, one it cannot read) makes it unknown;
  * `git -C <absolute> commit` names the commit's directory outright.
  */
 function shellOf(records: (TranscriptRecord | undefined)[]): Shell {
@@ -529,9 +531,14 @@ function shellOf(records: (TranscriptRecord | undefined)[]): Shell {
       const command = block.type === "tool_use" && block.name === "Bash" ? block.input?.command : undefined;
       if (typeof command !== "string") continue;
       let started = false;
-      for (const step of command.split(/\s*(?:&&|\|\||;|\n)\s*/)) {
-        const cd = /^(?:cd|pushd)\s+("[^"]+"|'[^']+'|\S+)$/.exec(step)?.[1]?.replace(/^["']|["']$/g, "");
-        if (cd !== undefined) {
+      for (const step of expandAssigned(command).split(/\s*(?:&&|\|\||;|\n)\s*/)) {
+        const bare = step.replace(/\s*\d?>&?\d?\S*/g, "").replace(/^builtin\s+/, "").trim();
+        if (/^(?:cd|pushd|popd)(?:\s|$)/.test(bare)) {
+          const cd = /^(?:cd|pushd)\s+("[^"]+"|'[^']+'|[^\s"']+)$/.exec(bare)?.[1]?.replace(/^["']|["']$/g, "");
+          if (cd === undefined) {
+            cwd = undefined;
+            continue;
+          }
           if (/^\$\{?PWD\}?$/.test(cd)) continue;
           cwd = cd.startsWith("/") ? posix.normalize(cd).replace(/\/$/, "") : /^[~$-]/.test(cd) || cwd === undefined ? undefined : posix.resolve(cwd, cd);
           continue;
@@ -600,6 +607,7 @@ function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], sh
       if (f !== undefined) roots.add(path.slice(0, path.length - f.length));
     }
   }
+  // An agent's scratchpad lives in a temp folder and can mirror the repo's layout: it is never the repo.
   for (const root of roots) if (TEMP.test(root)) roots.delete(root);
   if (roots.size <= 1) return [...roots][0];
   return shell.committed !== undefined && roots.has(`${shell.committed}/`) ? `${shell.committed}/` : undefined;
@@ -914,7 +922,7 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
       tasks = "";
     }
     for (const path of tasks.split("\n")) {
-      const task = /^(toolu_\w+)\/agent-\w+\.jsonl$/.exec(path)?.[1];
+      const task = /^(toolu_[\w-]+)\/agent-[\w-]+\.jsonl$/.exec(path)?.[1];
       if (task !== undefined) subagents.set(task, [...(subagents.get(task) ?? []), ...subagentRecords(show(`tasks/${path}`))]);
     }
     const contents = (path: string): string | undefined => {

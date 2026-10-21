@@ -96,6 +96,30 @@ describe("decisionsIn: tests", () => {
     expect(texts(window(ran("bunx vitest run src/cap.test.ts | tail -1", "Tests  1 failed (1)"), ran("bunx vitest run | tail -1", "Tests  40 passed (40)")), ["src/cap.test.ts"])).toEqual([]);
   });
 
+  it("never calls a run that exited non-zero a pass, whatever its Tests line says", () => {
+    // vitest exits 1 on a file that fails to import or an unhandled error, with every collected test passing.
+    const broken = " Test Files  1 failed | 2 passed (3)\n      Tests  4 passed (4)\n     Errors  1 error";
+    expect(texts(window(bash("npx vitest run", "error"), ran("npx vitest run", broken, "error")))).toEqual(["tests: `vitest` failed on its last run"]);
+    expect(texts(window(ran("npx vitest run 2>&1 | tail -4", broken)))).toEqual(["tests: `vitest` failed on its last run"]);
+    expect(texts(window(ran("npx jest 2>&1 | tail -3", "Test Suites: 1 failed, 3 passed, 4 total\nTests:       9 passed, 9 total")))).toEqual(["tests: `jest` failed on its last run"]);
+  });
+
+  it("takes no pass from go or cargo lines a pipe may have cut the failing package off", () => {
+    expect(texts(window(ran("go test ./... 2>&1 | tail -3", "FAIL\tx/a\t0.1s"), ran("go test ./... 2>&1 | tail -3", "ok  \tx/y\t0.1s\nok  \tx/z\t0.2s")))).toEqual([
+      "tests: `go test` failed on its last run",
+    ]);
+  });
+
+  it("reads a pytest summary in linear time, however long a line of = signs is", () => {
+    const started = Date.now();
+    expect(texts(window(ran("pytest | tail -1", "= passed in 1s ".repeat(2000))))).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("names no config file a flag points at, only test files", () => {
+    expect(texts(window(ran("npx vitest run --config vitest.config.ts 2>&1 | tail -3", "Tests  1 failed | 8 passed (9)")), ["vitest.config.ts"])).toEqual(["tests: `vitest` failed on its last run"]);
+  });
+
   it("says nothing about runs that only passed", () => {
     expect(texts(window(bash("npx jest", "success")))).toEqual([]);
   });

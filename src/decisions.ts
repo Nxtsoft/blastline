@@ -54,6 +54,18 @@ const RUN =
   /^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:npx|bunx|pnpm(?:\s+exec)?|yarn|npm(?:\s+exec)?|bun(?:\s+x)?|uv\s+run|poetry\s+run|python3?\s+-m)\s+)?(vitest|jest|mocha|pytest|go\s+test|cargo\s+test|ctest|\.?\/?gradlew?\s+test|mvn\s+(?:verify|test)|(?:npm|bun|pnpm|yarn)(?:\s+run)?\s+test)\b/;
 
 /**
+ * A command with each `$NAME` (`"$NAME"`, `${NAME}`) replaced by the literal
+ * value the command assigns it (`NAME=value`, `NAME="value"`), so a path held
+ * in a variable reads as the path. A name assigned from a substitution or
+ * another variable is left as it is.
+ */
+export function expandAssigned(command: string): string {
+  const values = new Map<string, string>();
+  for (const [, name, value] of command.matchAll(/(?:^|[\s;&|])(?:export\s+)?([A-Za-z_]\w*)=("[^"$`]*"|'[^']*'|[^\s;&|"'$`]+)/g)) values.set(name!, value!.replace(/^["']|["']$/g, ""));
+  return command.replace(/"?\$\{?([A-Za-z_]\w*)\}?"?/g, (whole, name: string) => values.get(name) ?? whole);
+}
+
+/**
  * The test run a Bash command holds: exactly one runner in command position
  * across its steps (`&&`, `||`, `;`, new lines, each pipe stage), with
  * `NAME=value` assignments the command makes substituted for `$NAME`, so a
@@ -67,9 +79,7 @@ const RUN =
  * or a probe.
  */
 function testRun(command: string): { runner: string; words: string[]; own: boolean } | undefined {
-  const values = new Map<string, string>();
-  for (const [, name, value] of command.matchAll(/(?:^|[\s;&|])([A-Za-z_]\w*)=("[^"$`]*"|'[^']*'|[^\s;&|"'$`]+)/g)) values.set(name!, value!.replace(/^["']|["']$/g, ""));
-  const expanded = command.replace(/"?\$\{?([A-Za-z_]\w*)\}?"?/g, (whole, name: string) => values.get(name) ?? whole);
+  const expanded = expandAssigned(command);
   const steps = expanded.split(/\s*(?:&&|\|\||;|\n)\s*/).filter((step) => step !== "");
   const runs = steps.flatMap((step, at) =>
     step
@@ -88,30 +98,45 @@ function testRun(command: string): { runner: string; words: string[]; own: boole
 }
 
 /**
- * A runner's own summary lines, by runner: vitest and jest print one
- * `Tests` line per run, pytest one closing `===` line, cargo one
- * `test result:` line per crate, go one `ok`/`FAIL` line per package.
+ * A runner's own summary lines, by runner. vitest prints `Test Files`,
+ * `Tests` and `Errors` lines and jest `Test Suites:` and `Tests:` lines,
+ * one `Tests` line per run; pytest one closing `===` line. cargo prints a
+ * `test result:` line per crate and go an `ok`/`FAIL` line per package, so a
+ * pipe can cut the failing one off: theirs count only toward a failure
+ * (`passes: false`). Patterns stay on one line (`[ \t]`, `[^=\n]`), so a long
+ * output cannot make them backtrack.
  */
-const SUMMARIES: { runners: RegExp; line: RegExp; one: boolean }[] = [
-  { runners: /^(?:vitest|jest|(?:npm|bun|pnpm|yarn)(?: run)? test)$/, line: /^\s*Tests:?\s+(.*\b(?:passed|failed)\b.*)$/gm, one: true },
-  { runners: /^pytest$/, line: /^=+ (.*\b(?:passed|failed|errors?)\b.*) in [\d.]+m?s\b.*=+\s*$/gm, one: true },
-  { runners: /^cargo test$/, line: /^test result: (ok|FAILED)\b(.*)$/gm, one: false },
-  { runners: /^go test$/, line: /^(ok|FAIL)\s+\S+/gm, one: false },
+const SUMMARIES: { runners: RegExp; line: RegExp; run?: RegExp; passes: boolean }[] = [
+  {
+    runners: /^(?:vitest|jest|(?:npm|bun|pnpm|yarn)(?: run)? test)$/,
+    line: /^[ \t]*(?:Test Files|Tests:?|Test Suites:|Errors)[ \t]+[^\n]*\b(?:passed|failed|errors?)\b[^\n]*$/gm,
+    run: /^[ \t]*Tests:?[ \t]/,
+    passes: true,
+  },
+  { runners: /^pytest$/, line: /^=+ [^=\n]*\b(?:passed|failed|errors?)\b[^=\n]* in [\d.]+m?s\b[^=\n]*=+[ \t]*$/gm, run: /^=/, passes: true },
+  { runners: /^cargo test$/, line: /^test result: (?:ok|FAILED)\b[^\n]*$/gm, passes: false },
+  { runners: /^go test$/, line: /^(?:ok|FAIL)[ \t]+\S+/gm, passes: false },
 ];
 
 /**
- * A run's outcome from the runner's summary in its output: "error" when the
- * summary counts a failure, "success" when it counts none. Undefined with no
- * summary, or with two where the runner prints one per run (the call ran it
- * twice, and which outcome is which cannot be told).
+ * A run's outcome from the runner's summary in its output: "error" when any
+ * summary line counts a failure, "success" when they count none and the
+ * runner's summary can say so. Undefined with no summary, or with two runs'
+ * worth where the runner prints one per run (the call ran it twice, and
+ * which outcome is which cannot be told).
  */
 function summaryStatus(runner: string, output: string): "success" | "error" | undefined {
   const summary = SUMMARIES.find((s) => s.runners.test(runner));
   if (summary === undefined) return undefined;
   const lines = [...output.matchAll(summary.line)].map((m) => m[0]);
-  if (lines.length === 0 || (summary.one && lines.length > 1)) return undefined;
-  return lines.some((l) => /\b[1-9]\d* (?:failed|errors?)\b|\bFAIL(?:ED)?\b/.test(l)) ? "error" : "success";
+  if (lines.length === 0) return undefined;
+  if (summary.run !== undefined && lines.filter((l) => summary.run!.test(l)).length > 1) return undefined;
+  if (lines.some((l) => /\b[1-9]\d* (?:failed|errors?)\b|\bFAIL(?:ED)?\b/.test(l))) return "error";
+  return summary.passes ? "success" : undefined;
 }
+
+/** A test file by its name: `x.test.ts`, `x_test.go`, `test_x.py`, or anything under `__tests__/`. */
+const TEST_FILE = /(?:[._-](?:test|spec)\.\w+$|_test\.\w+$|(?:^|\/)test_[^/]+$|(?:^|\/)__tests__\/)/;
 
 /** A tool call the harness never ran: a denied permission, or one the person turned down. */
 const NEVER_RAN = /^Permission to use \w+ .* has been denied|doesn't want to proceed with this tool use/;
@@ -155,11 +180,14 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
         const run = testRun(command);
         const output = typeof block.result?.output === "string" ? block.result.output : "";
         const own = run?.own === true && typeof block.result?.status === "string" && !NEVER_RAN.test(output) ? block.result.status : undefined;
-        const status = run === undefined ? undefined : (summaryStatus(run.runner, output) ?? own);
+        // A run that exited non-zero on its own failed, whatever a summary line it printed says.
+        const status = run === undefined ? undefined : own === "error" ? own : (summaryStatus(run.runner, output) ?? own);
         if (run !== undefined && status !== undefined) {
-          // Files are named only when the run targets nothing else: a run over a folder or another file may have failed there.
+          // Files are named only when the run targets nothing else: a run over a folder or another file may have failed
+          // there. Only test files are named: a carried config file a flag points at (`--config`) is not what ran.
           const targets = run.words.slice(run.words.findIndex((w) => w === run.runner.split(" ").pop()) + 1).filter((w) => !w.startsWith("-") && /[/.]/.test(w));
-          const named = targets.every((t) => carried(t) !== undefined) ? [...new Set(targets.map(carried).filter((f): f is string => f !== undefined))] : [];
+          const all = targets.map(carried);
+          const named = all.every((f) => f !== undefined && TEST_FILE.test(f)) ? [...new Set(all as string[])] : [];
           const more = named.length > NAMED_FILES ? ` and ${named.length - NAMED_FILES} more` : "";
           const key = named.length > 0 ? `${code(run.runner)} on ${named.slice(0, NAMED_FILES).map(code).join(", ")}${more}` : code(run.runner);
           const seen = tests.get(key) ?? { at, statuses: [], runner: run.runner, last: at };
