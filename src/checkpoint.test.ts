@@ -604,6 +604,70 @@ describe("checkpointFor on the branch backend", () => {
     expect(cp?.decisions).toEqual([]);
   });
 
+  it("reads, between two checkouts of the same layout, the one the commit was made in", () => {
+    const HEX_K = "c3d4e5f6a1b2";
+    const two = [
+      ...CUMULATIVE,
+      rec("user", stamp(70), [user("let the cap take zero")]),
+      rec("assistant", stamp(71), [{ id: "o", type: "tool_use", name: "Edit", input: { file_path: "/Users/x/billing/src/round-size.ts", old_string: "a", new_string: "b" }, result: { output: "", status: "success" } }, bash("cd /Users/x/billing && git reset --hard origin/other")]),
+      rec("user", stamp(72), [user("now ours")]),
+      rec("assistant", stamp(73), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 0;"), bash("cd /Users/x/wt && git revert --no-edit HEAD && git commit -qm cap")]),
+    ];
+    writeBranchCheckpoint(HEX_K, branchFiles(HEX_K, stamp(74), two, ""));
+    const k = commitFile("src/round-size.ts", "export const ROUND_SIZE_MIN = 0; // where it was made\n", `fix: the cap takes zero once more\n\nEntire-Checkpoint: ${HEX_K}\n`);
+    const cp = checkpointFor(repo, k, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
+    // The reset in the other checkout is not this commit's; the revert where the commit was made is.
+    expect(cp?.decisions.map((d) => d.text)).toEqual(["git revert"]);
+  });
+
+  it("follows an agent that edits through scripts: the shell's directory, kept across calls and `cd \"$PWD\"`", () => {
+    const HEX_S = "d4e5f6a1b2c3";
+    const out = (o: string, command: string): object => ({ id: "s", type: "tool_use", name: "Bash", input: { command }, result: { output: o, status: "success" } });
+    const scripted = [
+      ...CUMULATIVE,
+      rec("user", stamp(60), [user("the cap needs a floor too")]),
+      rec("assistant", stamp(61), [out("", "cd /Users/x/wt && python3 - <<'EOF'\nopen('src/round-size.ts','a').write('x')\nEOF")]),
+      rec("assistant", stamp(62), [out("      Tests  1 failed | 4 passed (5)", 'cd "$PWD"; bunx vitest run src/round-size.test.ts 2>&1 | tail -3')]),
+      rec("assistant", stamp(63), [out("      Tests  5 passed (5)", 'cd "$PWD"; bunx vitest run src/round-size.test.ts 2>&1 | tail -3; git status --short')]),
+    ];
+    writeBranchCheckpoint(HEX_S, branchFiles(HEX_S, stamp(64), scripted, ""));
+    const sc = commitFile("src/round-size.test.ts", "test('floor', () => {});\n", `test: the cap has a floor\n\nEntire-Checkpoint: ${HEX_S}\n`);
+    const files = ["src/round-size.ts", "src/round-size.test.ts"];
+    const cp = checkpointFor(repo, sc, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), files, files);
+    expect(cp?.decisions.map((d) => d.text)).toEqual(["`vitest` on `src/round-size.test.ts` failed, then passed"]);
+  });
+
+  it("reads a subagent's tool calls inside the turn that started it, only when Entire kept its transcript", () => {
+    const HEX_T = "e5f6a1b2c3d4";
+    const delegated = [
+      ...CUMULATIVE,
+      rec("user", stamp(80), [user("hand the floor to a subagent")]),
+      rec("assistant", stamp(81), [{ id: "toolu_01Floor", type: "tool_use", name: "Agent", input: { subagent_type: "general-purpose", description: "floor" }, result: { output: "done", status: "success" } }]),
+    ];
+    // A subagent's transcript is raw Claude Code JSONL: results arrive as tool_result records.
+    const raw = (...lines: object[]): string => lines.map((l) => JSON.stringify(l)).join("\n") + "\n";
+    const use = (id: string, name: string, input: object): object => ({ type: "assistant", isSidechain: true, message: { role: "assistant", content: [{ type: "tool_use", id, name, input }] } });
+    const result = (id: string, content: string, is_error = false): object => ({ type: "user", isSidechain: true, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, is_error }] } });
+    const subagent = raw(
+      { type: "user", isSidechain: true, message: { role: "user", content: "SUBAGENT PROMPT MUST NOT COUNT AS A TURN" } },
+      use("toolu_a", "Edit", { file_path: "/Users/x/wt/src/round-size.ts", old_string: "a", new_string: "b" }),
+      result("toolu_a", "ok"),
+      use("toolu_b", "Bash", { command: "cd /Users/x/wt && bunx vitest run src/round-size.test.ts 2>&1 | tail -2" }),
+      result("toolu_b", "      Tests  1 failed (1)"),
+      use("toolu_c", "Bash", { command: "cd /Users/x/wt && bunx vitest run src/round-size.test.ts 2>&1 | tail -2" }),
+      result("toolu_c", "      Tests  1 passed (1)"),
+    );
+    const files = ["src/round-size.ts", "src/round-size.test.ts"];
+    writeBranchCheckpoint(HEX_T, branchFiles(HEX_T, stamp(82), delegated, ""));
+    const bare = commitFile("src/round-size.test.ts", "test('floor by a subagent', () => {});\n", `test: a subagent adds the floor\n\nEntire-Checkpoint: ${HEX_T}\n`);
+    expect(checkpointFor(repo, bare, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), files, files)?.decisions).toEqual([]);
+    writeBranchCheckpoint(HEX_T, { "tasks/toolu_01Floor/agent-a1b2c3.jsonl": subagent });
+    const cp = checkpointFor(repo, bare, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), files, files);
+    expect(cp?.decisions.map((d) => d.text)).toEqual(["`vitest` on `src/round-size.test.ts` failed, then passed"]);
+    // Only the decision window reads the subagent: the commit's ask and test commands stay the parent's.
+    expect(cp?.testCommands).toEqual([]);
+  });
+
   it("reports the id but no checkpoint when the branch does not hold it", () => {
     expect(checkpointTrailer(repo, commitMissing)).toBe("0123456789ab");
     expect(checkpointFor(repo, commitMissing)).toBeUndefined();

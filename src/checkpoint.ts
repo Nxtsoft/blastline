@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { posix } from "node:path";
 import type { Decision } from "./decisions.js";
 import { decisionsIn } from "./decisions.js";
 
@@ -301,6 +302,7 @@ interface TranscriptRecord {
   type?: string;
   content?: {
     type?: string;
+    id?: string;
     name?: string;
     text?: string;
     input?: { command?: unknown; file_path?: unknown; path?: unknown; notebook_path?: unknown; old_string?: unknown; new_string?: unknown; content?: unknown; edits?: unknown };
@@ -501,20 +503,75 @@ function worksOn(block: NonNullable<TranscriptRecord["content"]>[number], files:
   return false;
 }
 
+/** Temp and device paths: they belong to no repo. */
+const TEMP = /^\/(?:dev|tmp|private\/tmp|var\/folders)\//;
+
+/** Where the shell stands, as far as the transcript tells: each Bash call's directory, and where the last `git commit` ran. */
+interface Shell {
+  /** The directory each Bash call's first step other than `cd` runs in; absent when unknown. */
+  at: Map<NonNullable<TranscriptRecord["content"]>[number], string>;
+  /** The directory the transcript's last `git commit` ran in: the commit the checkpoint was written for, since the transcript ends there. */
+  committed: string | undefined;
+}
+
+/**
+ * Follow the shell through a transcript's Bash steps in order: an absolute
+ * `cd` sets the directory, a relative one moves from a known one, `cd
+ * "$PWD"` stays, any other (`cd -`, `~`, a variable) makes it unknown;
+ * `git -C <absolute> commit` names the commit's directory outright.
+ */
+function shellOf(records: (TranscriptRecord | undefined)[]): Shell {
+  const at = new Map<NonNullable<TranscriptRecord["content"]>[number], string>();
+  let cwd: string | undefined;
+  let committed: string | undefined;
+  for (const r of records) {
+    for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
+      const command = block.type === "tool_use" && block.name === "Bash" ? block.input?.command : undefined;
+      if (typeof command !== "string") continue;
+      let started = false;
+      for (const step of command.split(/\s*(?:&&|\|\||;|\n)\s*/)) {
+        const cd = /^(?:cd|pushd)\s+("[^"]+"|'[^']+'|\S+)$/.exec(step)?.[1]?.replace(/^["']|["']$/g, "");
+        if (cd !== undefined) {
+          if (/^\$\{?PWD\}?$/.test(cd)) continue;
+          cwd = cd.startsWith("/") ? posix.normalize(cd).replace(/\/$/, "") : /^[~$-]/.test(cd) || cwd === undefined ? undefined : posix.resolve(cwd, cd);
+          continue;
+        }
+        if (!started && step !== "") {
+          started = true;
+          if (cwd !== undefined) at.set(block, cwd);
+        }
+        const named = /\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)\s+commit\b/.exec(step)?.[1]?.replace(/^["']|["']$/g, "");
+        if (named !== undefined) committed = named.startsWith("/") ? posix.normalize(named).replace(/\/$/, "") : undefined;
+        else if (/(?:^|\s)git\s+commit\b/.test(step)) committed = cwd;
+      }
+    }
+  }
+  return { at, committed };
+}
+
+/** The files of the change a command names by their repo path, as a whole path (not inside a longer one). */
+function namedIn(command: string, files: string[]): string[] {
+  return files.filter((f) => f.includes("/") && new RegExp(`(?<![\\w./-])${f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`).test(command));
+}
+
 /**
  * Whether a tool call works on one of `files` at this repo's `root`: an edit
- * tool whose absolute path is the root plus the file, or a Bash command that
- * names that absolute path. A relative path in a command is not read: the
- * shell keeps its directory between calls, so `cat package.json` after an
- * earlier `cd ../billing` reads another repo. Stricter than `worksOn`, whose
+ * tool whose absolute path is the root plus the file, a Bash command that
+ * names that absolute path, or one that runs at the root (`shellOf`) and
+ * names the file by its repo path (an agent that edits through scripts).
+ * A relative path is not read otherwise: the shell keeps its directory
+ * between calls, so `cat package.json` after an earlier `cd ../billing`
+ * reads another repo. Stricter than `worksOn`, whose
  * basename match lets a session that only read another `index.ts` count;
  * decisions are bound to this repo's work, so they need this.
  */
-function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], files: string[], root: string): boolean {
+function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], files: string[], root: string, shell: Shell): boolean {
   if (block.type !== "tool_use" || block.name === undefined) return false;
   if (block.name === "Bash") {
     const command = block.input?.command;
-    return typeof command === "string" && files.some((f) => new RegExp(`${`${root}${f}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`).test(command));
+    if (typeof command !== "string") return false;
+    if (shell.at.get(block) === root.slice(0, -1) && namedIn(command, files).length > 0) return true;
+    return files.some((f) => new RegExp(`${`${root}${f}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`).test(command));
   }
   const path = block.input?.file_path;
   return EDIT_TOOLS.has(block.name) && typeof path === "string" && files.some((f) => path === `${root}${f}`);
@@ -522,21 +579,30 @@ function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], fi
 
 /**
  * The repo root the edits name: each edit to a file of the change inside a
- * folder gives its absolute path less the repo path. Undefined when there
- * is none, or when two edits disagree (another checkout or worktree with the
- * same layout), so no turn is read rather than the wrong one.
+ * folder gives its absolute path less the repo path, and each Bash command
+ * that runs in a known directory (`shellOf`) and names such a file gives that
+ * directory. When they name more than one (a session that also worked in
+ * another checkout or worktree with the same layout), the one the commit was
+ * made in (`Shell.committed`) is the root. Undefined when there is
+ * none, or when the commit's directory cannot be told or is not among them,
+ * so no turn is read rather than the wrong one.
  */
-function repoRoot(records: (TranscriptRecord | undefined)[], files: string[]): string | undefined {
+function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], shell: Shell): string | undefined {
   const roots = new Set<string>();
   for (const r of records) {
     for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
+      const command = block.type === "tool_use" && block.name === "Bash" ? block.input?.command : undefined;
+      const at = shell.at.get(block);
+      if (at !== undefined && typeof command === "string" && namedIn(command, files).length > 0) roots.add(`${at}/`);
       const path = block.type === "tool_use" && block.name !== undefined && EDIT_TOOLS.has(block.name) ? block.input?.file_path : undefined;
       if (typeof path !== "string") continue;
       const f = files.find((file) => file.includes("/") && path.endsWith(`/${file}`));
       if (f !== undefined) roots.add(path.slice(0, path.length - f.length));
     }
   }
-  return roots.size === 1 ? [...roots][0] : undefined;
+  for (const root of roots) if (TEMP.test(root)) roots.delete(root);
+  if (roots.size <= 1) return [...roots][0];
+  return shell.committed !== undefined && roots.has(`${shell.committed}/`) ? `${shell.committed}/` : undefined;
 }
 
 /**
@@ -548,7 +614,8 @@ function repoRoot(records: (TranscriptRecord | undefined)[], files: string[]): s
  */
 function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[], start: number, files: string[]): string {
   const kept: string[] = [];
-  const root = repoRoot(records, files);
+  const shell = shellOf(records);
+  const root = repoRoot(records, files, shell);
   if (root === undefined) return "";
   // Whether the agent is away from this repo before each record, over the whole transcript: the shell keeps its directory
   // across turns. It starts away, leaves on any step outside the root, and is back only on work at the root or a `cd` to it.
@@ -559,7 +626,7 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
     let home = !out;
     for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
       if (leaves(block, root)) out = true;
-      else if (worksOnPath(block, files, root) || returns(block, root)) out = false;
+      else if (worksOnPath(block, files, root, shell) || returns(block, root)) out = false;
       home = home || !out;
     }
     away[k] = !home;
@@ -570,7 +637,7 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
     // The first segment can start inside a turn the previous checkpoint read part of: the whole turn says whether it worked on the files, only the unread part is read.
     let opened = from;
     while (opened > 0 && !(records[opened] !== undefined && humanTurn(records[opened]!))) opened--;
-    if (records.slice(opened, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOnPath(block, files, root)))) {
+    if (records.slice(opened, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOnPath(block, files, root, shell)))) {
       // Inside the turn, what the agent does while away from this repo is not read.
       for (let k = from; k < i; k++) if (!away[k]) kept.push(lines[k]!);
     }
@@ -603,12 +670,12 @@ function leaves(block: NonNullable<TranscriptRecord["content"]>[number], root: s
   }
   const command = block.input?.command;
   if (typeof command !== "string") return false;
-  if (targetsOf(command).some((t) => !inside(t))) return true;
+  if (targetsOf(command).some((t) => !inside(t) && !/^\$\{?PWD\}?$/.test(t))) return true;
   if (/(?:^|[\s'"=(:])\.\.\//.test(command) || /\$\{?\w+\}?\//.test(command)) return true;
   const top = root.split("/")[1] ?? "";
   const filesystem = new RegExp(`^(?:~/|/(?:${top.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|Users|home|root|opt|srv|mnt|media|var|etc|usr|private|Volumes|workspace|github)(?:/|$))`);
   for (const [, path] of command.matchAll(/(?:^|[\s'"=(:])((?:\/|~\/)[\w.~-][^\s'"`;|&)]*)/g)) {
-    if (filesystem.test(path!) && !/^\/(?:dev|tmp|private\/tmp|var\/folders)\//.test(path!) && !inside(path!)) return true;
+    if (filesystem.test(path!) && !TEMP.test(path!) && !inside(path!)) return true;
   }
   return false;
 }
@@ -633,9 +700,13 @@ function returns(block: NonNullable<TranscriptRecord["content"]>[number], root: 
  * earlier turn does not; `stepWindow` is the turn's part inside
  * `sinceWindow`. `decisionWindow` reads only the turns that work on `scope`
  * (the PR's files; the commit's own by default) at the one repo root those
- * edits agree on. Lines that are not JSON are kept; every reader skips them.
+ * edits agree on. `subagents` are the compact tool calls of the subagents the
+ * session started (`subagentRecords`), by the id of the tool call that
+ * started each; the decision window reads them inside the parent's turn, right
+ * after that call, and no other window does. Lines that are not JSON are kept;
+ * every reader skips them.
  */
-export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[], scope: string[] = files): Windows {
+export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[], scope: string[] = files, subagents: Map<string, string[]> = new Map()): Windows {
   const lines = transcript.split("\n").filter((line) => line.trim() !== "");
   const records = lines.map((line): TranscriptRecord | undefined => {
     try {
@@ -661,10 +732,31 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
     while (last >= sinceStart && !(records[last] !== undefined && humanTurn(records[last]!))) last--;
     opening = records[last >= sinceStart ? last : turnStart];
   }
+  // The decision window also reads what the session's subagents did: an agent that edits and tests through
+  // subagents leaves no tool call on the files in its own transcript. `at` maps a line to its place once they are in.
+  const dLines: string[] = [];
+  const dRecords: (TranscriptRecord | undefined)[] = [];
+  const at: number[] = [];
+  lines.forEach((line, k) => {
+    at.push(dLines.length);
+    dLines.push(line);
+    dRecords.push(records[k]);
+    for (const block of records[k]?.type === "assistant" ? (records[k]!.content ?? []) : []) {
+      for (const inner of block.type === "tool_use" && block.id !== undefined ? (subagents.get(block.id) ?? []) : []) {
+        dLines.push(inner);
+        dRecords.push(JSON.parse(inner) as TranscriptRecord);
+      }
+    }
+  });
+  at.push(dLines.length);
+  const dSince = at[sinceStart]!;
+  const dFirstWork = dRecords.findIndex((r, i) => i >= dSince && r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
+  let dTurnStart = dFirstWork === -1 ? dSince : dFirstWork;
+  while (dTurnStart > 0 && !(dRecords[dTurnStart] !== undefined && humanTurn(dRecords[dTurnStart]!))) dTurnStart--;
   return {
     ask: opening !== undefined && humanTurn(opening) ? askOf(opening) : "",
     worked: firstWork !== -1,
-    decisionWindow: firstWork === -1 ? "" : workingTurns(lines, records, stepStart, scope),
+    decisionWindow: dFirstWork === -1 ? "" : workingTurns(dLines, dRecords, Math.max(dSince, dTurnStart), scope),
     sinceWindow: lines.slice(sinceStart).join("\n"),
     stepWindow: lines.slice(stepStart).join("\n"),
     turnWindow: lines.slice(turnStart).join("\n"),
@@ -672,6 +764,46 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
     hash: transcriptHash(lines),
     extended,
   };
+}
+
+/**
+ * A subagent's raw Claude Code transcript, as Entire keeps it under
+ * `tasks/<tool_use_id>/`, as compact records holding only its tool calls:
+ * id, name, input, and the result as Entire compacts it (`status` from the
+ * `tool_result`'s `is_error`, `output` its text, which readers search and never
+ * show). Its own text is not carried, and its prompts are dropped, so it adds
+ * no turn. A line that is not JSON is skipped.
+ */
+export function subagentRecords(raw: string): string[] {
+  const results = new Map<string, { status: string; output: string }>();
+  const calls: { id: string; name: string; input?: unknown }[][] = [];
+  for (const line of raw.split("\n")) {
+    if (line.trim() === "") continue;
+    let record: { type?: string; message?: { content?: unknown } };
+    try {
+      record = JSON.parse(line) as typeof record;
+    } catch {
+      continue;
+    }
+    const content = record.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content as { type?: string; tool_use_id?: unknown; is_error?: unknown; content?: unknown }[]) {
+      if (record.type !== "user" || block?.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+      const output = typeof block.content === "string" ? block.content : Array.isArray(block.content) ? (block.content as { text?: unknown }[]).map((c) => (typeof c?.text === "string" ? c.text : "")).join("\n") : "";
+      results.set(block.tool_use_id, { status: block.is_error === true ? "error" : "success", output });
+    }
+    if (record.type !== "assistant") continue;
+    const uses = (content as { type?: string; id?: unknown; name?: unknown; input?: unknown }[]).filter(
+      (b): b is { type: string; id: string; name: string; input?: unknown } => b?.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string",
+    );
+    if (uses.length > 0) calls.push(uses);
+  }
+  return calls.map((uses) =>
+    JSON.stringify({
+      type: "assistant",
+      content: uses.map((b) => ({ type: "tool_use", id: b.id, name: b.name, input: b.input ?? {}, ...(results.has(b.id) && { result: results.get(b.id) }) })),
+    }),
+  );
 }
 
 /** What the agent said in a compact transcript: its first and last text, and how much it did. A line that is not JSON is skipped. */
@@ -739,7 +871,8 @@ export function testCommandsIn(transcript: string): string[] {
  *
  * The paths read are Entire's layout, spelled out here: `<i>/metadata.json`,
  * `<i>/transcript.jsonl` and, when present, `<i>/prompt.txt` per session, `metadata.json` at
- * the root, under the place `checkpointPlaces` names for the id's shape.
+ * the root, and `tasks/<tool_use_id>/agent-<id>.jsonl` (a subagent's transcript, read only
+ * for its tool calls, by `subagentRecords`), under the place `checkpointPlaces` names for the id's shape.
  * `metadata.json` also lists per-session paths; those are not followed, so no
  * checkpoint can point this reader at `<i>/full.jsonl`.
  */
@@ -772,6 +905,18 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     let readBefore = 0;
     const reasons = new Map<string, SymbolReason>();
     const committed = new Map<string, string | undefined>();
+    // Entire keeps a subagent's transcript only when its hooks saw the subagent start (`tasks/` is absent otherwise).
+    const subagents = new Map<string, string[]>();
+    let tasks = "";
+    try {
+      tasks = git(repo, ["ls-tree", "-r", "--name-only", `${place.ref}:${place.prefix}tasks`]);
+    } catch {
+      tasks = "";
+    }
+    for (const path of tasks.split("\n")) {
+      const task = /^(toolu_\w+)\/agent-\w+\.jsonl$/.exec(path)?.[1];
+      if (task !== undefined) subagents.set(task, [...(subagents.get(task) ?? []), ...subagentRecords(show(`tasks/${path}`))]);
+    }
     const contents = (path: string): string | undefined => {
       if (!committed.has(path)) {
         try {
@@ -785,7 +930,7 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     for (let i = 0; i < sessionCount; i++) {
       const sessionId = (i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata)).session_id ?? "";
       const before = sessionId === "" ? undefined : read.get(sessionId);
-      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files, changed.length > 0 ? changed : files);
+      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files, changed.length > 0 ? changed : files, subagents);
       decisions.push(...decisionsIn(decisionWindow, changed.length > 0 ? changed : files));
       if (opened !== "" && (ask === "" || (worked && !askWorked))) {
         ask = opened;

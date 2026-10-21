@@ -6,6 +6,8 @@ const person = (...texts: string[]): string => JSON.stringify({ type: "user", co
 const said = (text: string): string => JSON.stringify({ type: "assistant", content: [{ type: "text", text }] });
 const bash = (command: string, status: "success" | "error", description = ""): string =>
   JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Bash", input: { command, description }, result: { output: "SECRET OUTPUT", status } }] });
+const ran = (command: string, output: string, status: "success" | "error" = "success"): string =>
+  JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Bash", input: { command }, result: { output, status } }] });
 const write = (file_path: string, content: string): string => JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Write", input: { file_path, content }, result: { output: "ok", status: "success" } }] });
 const window = (...records: string[]): string => records.join("\n");
 const texts = (window: string, files: string[] = []): string[] => decisionsIn(window, files).map((d) => `${d.kind}: ${d.text}`);
@@ -52,6 +54,46 @@ describe("decisionsIn: tests", () => {
     expect(texts(window(bash(`bunx vitest run ${files.join(" ")}`, "error")), files)).toEqual([
       "tests: `vitest` on `src/feature/deeply/nested/module0.test.ts`, `src/feature/deeply/nested/module1.test.ts` and 10 more failed on its last run",
     ]);
+  });
+
+  it("reads a piped run's outcome from the runner's own summary, whatever the pipe exits", () => {
+    const d = texts(
+      window(
+        ran("bunx vitest run src/cap.test.ts 2>&1 | grep -E 'Tests|FAIL' | head", "      Tests  1 failed | 2 passed (3)"),
+        ran("cd /w/app && bunx vitest run src/cap.test.ts 2>&1 | tail -5; git status --short", " Test Files  1 passed (1)\n      Tests  3 passed (3)"),
+      ),
+      ["src/cap.test.ts"],
+    );
+    expect(d).toEqual(["tests: `vitest` on `src/cap.test.ts` failed, then passed"]);
+    // jest, pytest and go print their own summaries.
+    expect(texts(window(ran("npx jest 2>&1 | tail -3", "Tests:       1 failed, 4 passed, 5 total")))).toEqual(["tests: `jest` failed on its last run"]);
+    expect(texts(window(ran("uv run pytest -q | tail -1", "==== 2 failed, 9 passed in 1.20s ====")))).toEqual(["tests: `pytest` failed on its last run"]);
+    expect(texts(window(ran("go test ./... | tail -4", "ok  \tx/a\t0.1s\nFAIL\tx/b\t0.2s")))).toEqual(["tests: `go test` failed on its last run"]);
+  });
+
+  it("names the files a variable holds, when the command assigns it", () => {
+    const d = texts(window(ran('T="src/cap.test.ts"; bunx vitest run "$T" 2>&1 | tail -2', "Tests  1 failed (1)")), ["src/cap.test.ts"]);
+    expect(d).toEqual(["tests: `vitest` on `src/cap.test.ts` failed on its last run"]);
+  });
+
+  it("names no file when the run also covers a folder or a file the change does not carry", () => {
+    expect(texts(window(ran("bunx vitest run src/cap.test.ts src/other/ 2>&1 | tail -2", "Tests  1 failed | 9 passed (10)")), ["src/cap.test.ts"])).toEqual([
+      "tests: `vitest` failed on its last run",
+    ]);
+  });
+
+  it("reads nothing from a probe: a run against swapped-in code that is put back after", () => {
+    const probe = 'cp src/cap.ts /tmp/cap.bak && git show origin/dev:src/cap.ts > src/cap.ts && bunx vitest run src/cap.test.ts 2>&1 | tail -2; cp /tmp/cap.bak src/cap.ts';
+    expect(texts(window(ran("bunx vitest run src/cap.test.ts | tail -1", "Tests  3 passed (3)"), ran(probe, "Tests  2 failed | 1 passed (3)")), ["src/cap.test.ts"])).toEqual([]);
+  });
+
+  it("reads nothing from a command that runs the tests twice, or a run that never started", () => {
+    expect(texts(window(ran("bunx vitest run a.test.ts | tail -1; git stash; bunx vitest run a.test.ts | tail -1", "Tests  1 passed (1)\nTests  1 failed (1)")))).toEqual([]);
+    expect(texts(window(bash("bunx vitest run a.test.ts", "error").replace("SECRET OUTPUT", "Permission to use Bash with command bunx vitest run a.test.ts has been denied.")))).toEqual([]);
+  });
+
+  it("does not call a failure the last word when the runner passed after it, on any files", () => {
+    expect(texts(window(ran("bunx vitest run src/cap.test.ts | tail -1", "Tests  1 failed (1)"), ran("bunx vitest run | tail -1", "Tests  40 passed (40)")), ["src/cap.test.ts"])).toEqual([]);
   });
 
   it("says nothing about runs that only passed", () => {

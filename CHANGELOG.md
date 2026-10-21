@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.0
+
+"What the agent decided" finds test outcomes, edits and subagents the way agents actually work. Replayed on 96 checkpointed commits of a web-app repository since 2026-09-20, the section had a line for 1 of them before (a design note) and for 13 after: 6 runs that failed and then passed, 6 commits made right after a failing run with no pass, and the same design note.
+
+- A test run's outcome comes from the runner's own summary in its output when there is one (vitest's and jest's `Tests` line, pytest's closing `===` line, cargo's `test result:`, go's `ok`/`FAIL` lines), read and never shown. Until now only a bare run's exit status counted, and agents almost always pipe a run (`vitest … 2>&1 | tail`), so the rule almost never fired. A bare run with no summary still counts by its status, unless the harness never ran it (a denied permission).
+- A command counts as one run only when it holds exactly one runner in command position. A run followed by a step that puts files back (`cp`, `mv`, `git apply`/`checkout`/`restore`/`stash`, `patch`) is a probe against swapped-in code, not an outcome, and is skipped. A file named through a variable the command assigns (`T="src/a.test.ts"; vitest run "$T"`) still counts.
+- A test line names test files only when everything the run targets is a file the change carries. A run over a folder or another file may have failed there, so it names only the runner.
+- "Failed on its last run" is not said when the same runner passed later in the window, on any files.
+- The repo root also comes from Bash: a call that runs in a known directory (the shell's directory, followed across calls through absolute and relative `cd`s, with `cd "$PWD"` staying put) and names one of the change's files by its repo path. Agents that edit through scripts (`python3 - <<EOF`, `cat > file`) now have a root. Temp folders are never a root.
+- When edits name more than one checkout of the same layout, the root is the directory the transcript's last `git commit` ran in (the commit the checkpoint was written for), when it is one of them. Before, two roots meant nothing was read.
+- Entire 0.11.5 keeps a subagent's transcript under `tasks/<tool_use_id>/agent-<id>.jsonl` when its hooks see the subagent start. Its tool calls are read inside the turn that started the subagent, right after the `Agent` call, for decisions only: the ask, narration and test commands still come from the parent.
+
 ## 0.22.0
 
 The brief's blast radius says why each reached file depends on the change.
