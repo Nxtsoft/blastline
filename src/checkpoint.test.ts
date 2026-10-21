@@ -423,6 +423,23 @@ describe("checkpointFor on the branch backend", () => {
     expect(cp?.prompt).toBe("put the minimum back");
   });
 
+  it("says what the working session did and ran, not a session on another task that Entire attached", () => {
+    // Entire attaches every session live in the checkout: session 0 summarises a call, the other session does the commit.
+    const HEX_W = "6a1b2c3d4e5f";
+    const aside = [rec("user", stamp(1), [user("summarise the planning call")]), rec("assistant", stamp(2), [text("I'll read the call transcript and pull the comments.")]), rec("assistant", stamp(3), [bash("bunx vitest run src/unrelated.test.ts")])];
+    const work = [
+      rec("user", stamp(20), [user("let the cap go to sixteen")]),
+      rec("assistant", stamp(21), [text("I've read the ticket; raising the cap.")]),
+      rec("assistant", stamp(22), [edit("src/round-size.ts", "export const ROUND_SIZE_MAX = 16;"), bash("bunx vitest run src/round-size.test.ts")]),
+    ];
+    writeBranchCheckpoint(HEX_W, branchFiles(HEX_W, stamp(23), aside, "", { session: OTHER, transcript: work }));
+    const w = commitFile("src/round-size.ts", "export const ROUND_SIZE_MAX = 16;\n", `fix: the cap goes to sixteen\n\nEntire-Checkpoint: ${HEX_W}\n`);
+    const cp = checkpointFor(repo, w, [], new Map(), ["src/round-size.ts"]);
+    expect(cp?.prompt).toBe("let the cap go to sixteen");
+    expect(cp?.narration.started).toBe("I've read the ticket; raising the cap.");
+    expect(cp?.testCommands).toEqual(["bunx vitest run src/round-size.test.ts"]);
+  });
+
   it("finds a symbol's reason in the since-window even when the narration window starts later", () => {
     const cp = checkpointFor(repo, commitA, [{ path: "src/round-size.ts", label: "ROUND_SIZE_MAX" }], new Map(), ["src/round-size.ts"]);
     expect(cp?.reasons).toEqual([{ path: "src/round-size.ts", label: "ROUND_SIZE_MAX", turn: 4, why: "I'll start by reading the ticket, then set up a worktree off dev." }]);
