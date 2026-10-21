@@ -8,8 +8,9 @@
  * agent wrote. Every line is built from a fixed label, a test runner's name
  * and the change's own repo paths, so nothing private can leave the ref
  * however the session went: a test is read by its runner, the test files the
- * change carries, and its call's status; a revert by a fixed label; design
- * notes by the change's own path. Tool output never leaves.
+ * change carries, and its outcome (the runner's own summary line in the
+ * call's output, else the call's status); a revert by a fixed label; design
+ * notes by the change's own path. Tool output is read, and never leaves.
  */
 export type DecisionKind = "tests" | "reverted" | "alternatives";
 
@@ -24,7 +25,7 @@ interface Block {
   type?: string;
   name?: string;
   input?: { command?: unknown; file_path?: unknown; content?: unknown };
-  result?: { status?: unknown };
+  result?: { status?: unknown; output?: unknown };
 }
 
 interface TranscriptRecord {
@@ -53,24 +54,101 @@ const RUN =
   /^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:npx|bunx|pnpm(?:\s+exec)?|yarn|npm(?:\s+exec)?|bun(?:\s+x)?|uv\s+run|poetry\s+run|python3?\s+-m)\s+)?(vitest|jest|mocha|pytest|go\s+test|cargo\s+test|ctest|\.?\/?gradlew?\s+test|mvn\s+(?:verify|test)|(?:npm|bun|pnpm|yarn)(?:\s+run)?\s+test)\b/;
 
 /**
- * The test run a Bash command is, when its status is the run's own: a single
- * line, `cd` steps before it allowed, nothing after it, and the runner in
- * command position. Returns the runner and the command's words, or
- * undefined. A run inside a script, followed by `&&`/`||`/`;` steps, or piped
- * anywhere is not read: the call's status would be the script's or the last
- * pipe's (`vitest | grep FAIL` exits 1 on a pass, `vitest | tail` 0 on a fail).
+ * A command with each `$NAME` (`"$NAME"`, `${NAME}`) replaced by the literal
+ * value the command assigns it (`NAME=value`, `NAME="value"`), so a path held
+ * in a variable reads as the path. A name assigned from a substitution or
+ * another variable is left as it is.
  */
-function testRun(command: string): { runner: string; words: string[] } | undefined {
-  if (command.includes("\n")) return undefined;
-  const steps = command.split(/\s*(?:&&|\|\||;)\s*/);
-  const last = steps[steps.length - 1]!;
-  if (!steps.slice(0, -1).every((s) => /^cd\s+\S+$/.test(s))) return undefined;
-  if (last.includes("|")) return undefined;
-  const bare = last.replace(/\s*\d?>&?\d?\S*/g, "");
-  const m = RUN.exec(bare);
-  if (m === null) return undefined;
-  return { runner: m[1]!.replace(/\s+/g, " ").replace(/^\.?\/?/, ""), words: bare.split(/\s+/) };
+export function expandAssigned(command: string): string {
+  // In command order: a use reads the value assigned before it, so a name assigned again later does not reach back.
+  const values = new Map<string, string>();
+  return command.replace(
+    /((?:^|[\s;&|])(?:export\s+)?)([A-Za-z_]\w*)=("[^"$`]*"|'[^']*'|[^\s;&|"'$`]+)|"?\$\{?([A-Za-z_]\w*)\}?"?/g,
+    (whole, lead: string | undefined, name: string | undefined, value: string | undefined, used: string | undefined) => {
+      if (name !== undefined) {
+        values.set(name, value!.replace(/^["']|["']$/g, ""));
+        return whole;
+      }
+      return values.get(used!) ?? whole;
+    },
+  );
 }
+
+/**
+ * The test run a Bash command holds: exactly one runner in command position
+ * across its steps (`&&`, `||`, `;`, new lines, each pipe stage), with
+ * `NAME=value` assignments the command makes substituted for `$NAME`, so a
+ * file named through a variable still counts. A run followed by a step that
+ * puts files back (`cp`, `mv`, `git apply`/`checkout`/`restore`/`stash`,
+ * `patch`) is a probe (a test run against swapped-in code), not an outcome.
+ * Returns the runner, the run's words (quotes stripped), and whether the
+ * call's status is the run's own: a single line, `cd` steps before it
+ * allowed, nothing after it, not piped (`vitest | grep FAIL` exits 1 on a
+ * pass, `vitest | tail` 0 on a fail). Undefined with no run, more than one,
+ * or a probe.
+ */
+function testRun(command: string): { runner: string; words: string[]; own: boolean } | undefined {
+  const expanded = expandAssigned(command);
+  const steps = expanded.split(/\s*(?:&&|\|\||;|\n)\s*/).filter((step) => step !== "");
+  const runs = steps.flatMap((step, at) =>
+    step
+      .split(/\s*\|\s*/)
+      .map((stage) => stage.replace(/\s*\d?>&?\d?\S*/g, ""))
+      .flatMap((stage) => {
+        const m = RUN.exec(stage);
+        return m === null ? [] : [{ at, runner: m[1]!.replace(/\s+/g, " ").replace(/^\.?\/?/, ""), words: stage.split(/\s+/).map((w) => w.replace(/^["']|["']$/g, "")) }];
+      }),
+  );
+  if (runs.length !== 1) return undefined;
+  if (steps.slice(runs[0]!.at + 1).some((step) => /^(?:cp|mv|patch|git\s+(?:apply|checkout|restore|stash))\b/.test(step))) return undefined;
+  const plain = command.split(/\s*(?:&&|\|\||;)\s*/);
+  const own = !command.includes("\n") && plain.slice(0, -1).every((s) => /^cd\s+\S+$/.test(s)) && !plain[plain.length - 1]!.includes("|");
+  return { runner: runs[0]!.runner, words: runs[0]!.words, own };
+}
+
+/**
+ * A runner's own summary lines, by runner. vitest prints `Test Files`,
+ * `Tests` and `Errors` lines and jest `Test Suites:` and `Tests:` lines,
+ * one `Tests` line per run; pytest one closing `===` line. cargo prints a
+ * `test result:` line per crate and go an `ok`/`FAIL` line per package, so a
+ * pipe can cut the failing one off: theirs count only toward a failure
+ * (`passes: false`). Patterns stay on one line (`[ \t]`, `[^=\n]`), so a long
+ * output cannot make them backtrack.
+ */
+const SUMMARIES: { runners: RegExp; line: RegExp; run?: RegExp; passes: boolean }[] = [
+  {
+    runners: /^(?:vitest|jest|(?:npm|bun|pnpm|yarn)(?: run)? test)$/,
+    line: /^[ \t]*(?:Test Files|Tests:?|Test Suites:|Errors)[ \t]+[^\n]*\b(?:passed|failed|errors?)\b[^\n]*$/gm,
+    run: /^[ \t]*Tests:?[ \t]/,
+    passes: true,
+  },
+  { runners: /^pytest$/, line: /^=+ [^=\n]*\b(?:passed|failed|errors?)\b[^=\n]* in [\d.]+m?s\b[^=\n]*=+[ \t]*$/gm, run: /^=/, passes: true },
+  { runners: /^cargo test$/, line: /^test result: (?:ok|FAILED)\b[^\n]*$/gm, passes: false },
+  { runners: /^go test$/, line: /^(?:ok|FAIL)[ \t]+\S+/gm, passes: false },
+];
+
+/**
+ * A run's outcome from the runner's summary in its output: "error" when any
+ * summary line counts a failure, "success" when they count none and the
+ * runner's summary can say so. Undefined with no summary, or with two runs'
+ * worth where the runner prints one per run (the call ran it twice, and
+ * which outcome is which cannot be told).
+ */
+function summaryStatus(runner: string, output: string): "success" | "error" | undefined {
+  const summary = SUMMARIES.find((s) => s.runners.test(runner));
+  if (summary === undefined) return undefined;
+  const lines = [...output.matchAll(summary.line)].map((m) => m[0]);
+  if (lines.length === 0) return undefined;
+  if (summary.run !== undefined && lines.filter((l) => summary.run!.test(l)).length > 1) return undefined;
+  if (lines.some((l) => /\b[1-9]\d* (?:failed|errors?)\b|\bFAIL(?:ED)?\b/.test(l))) return "error";
+  return summary.passes ? "success" : undefined;
+}
+
+/** A test file by its name: `x.test.ts`, `x_test.go`, `test_x.py`, or anything under `__tests__/`. */
+const TEST_FILE = /(?:[._-](?:test|spec)\.\w+$|_test\.\w+$|(?:^|\/)test_[^/]+$|(?:^|\/)__tests__\/)/;
+
+/** A tool call the harness never ran: a denied permission, or one the person turned down. */
+const NEVER_RAN = /^Permission to use \w+ .* has been denied|doesn't want to proceed with this tool use/;
 
 /** Undoing work: a revert, a hard reset, discarding a file's changes. Unstaging and rewriting a commit's metadata are not. */
 const REVERTS: [RegExp, string][] = [
@@ -91,7 +169,9 @@ const ALTERNATIVES = /^#{1,6}\s*(?:alternatives?(?: considered)?|options conside
 export function decisionsIn(window: string, files: string[]): Decision[] {
   const out: Decision[] = [];
   const carried = (path: string): string | undefined => files.find((f) => path === f || path.endsWith(`/${f}`));
-  const tests = new Map<string, { at: number; statuses: string[] }>();
+  const tests = new Map<string, { at: number; statuses: string[]; runner: string; last: number }>();
+  // Where each runner last passed, any files: a later pass of the same runner outranks an earlier failure.
+  const passed = new Map<string, number>();
   window.split("\n").forEach((line, at) => {
     if (line.trim() === "") return;
     let record: TranscriptRecord;
@@ -107,12 +187,22 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
       if (block.name === "Bash" && typeof input.command === "string") {
         const command = input.command;
         const run = testRun(command);
-        if (run !== undefined && typeof block.result?.status === "string") {
-          const named = [...new Set(run.words.map(carried).filter((f): f is string => f !== undefined))];
+        const output = typeof block.result?.output === "string" ? block.result.output : "";
+        const own = run?.own === true && typeof block.result?.status === "string" && !NEVER_RAN.test(output) ? block.result.status : undefined;
+        // A run that exited non-zero on its own failed, whatever a summary line it printed says.
+        const status = run === undefined ? undefined : own === "error" ? own : (summaryStatus(run.runner, output) ?? own);
+        if (run !== undefined && status !== undefined) {
+          // Files are named only when the run targets nothing else: a run over a folder or another file may have failed
+          // there. Only test files are named: a carried config file a flag points at (`--config`) is not what ran.
+          const targets = run.words.slice(run.words.findIndex((w) => w === run.runner.split(" ").pop()) + 1).filter((w) => !w.startsWith("-") && /[/.]/.test(w));
+          const all = targets.map(carried);
+          const named = all.every((f) => f !== undefined && TEST_FILE.test(f)) ? [...new Set(all as string[])] : [];
           const more = named.length > NAMED_FILES ? ` and ${named.length - NAMED_FILES} more` : "";
           const key = named.length > 0 ? `${code(run.runner)} on ${named.slice(0, NAMED_FILES).map(code).join(", ")}${more}` : code(run.runner);
-          const seen = tests.get(key) ?? { at, statuses: [] };
-          seen.statuses.push(block.result.status);
+          const seen = tests.get(key) ?? { at, statuses: [], runner: run.runner, last: at };
+          seen.last = at;
+          seen.statuses.push(status);
+          if (status === "success") passed.set(run.runner, at);
           tests.set(key, seen);
         }
         const revert = REVERTS.find(([r]) => r.test(command));
@@ -125,9 +215,11 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
       }
     }
   });
-  for (const [key, { at, statuses }] of tests) {
+  for (const [key, { at, statuses, runner, last }] of tests) {
     if (!statuses.includes("error")) continue;
-    out.push({ kind: "tests", text: statuses[statuses.length - 1] === "success" ? `${key} failed, then passed` : `${key} failed on its last run`, at });
+    if (statuses[statuses.length - 1] === "success") out.push({ kind: "tests", text: `${key} failed, then passed`, at });
+    // A failure the runner passed after, on any files, is not called the last word: the later run may have covered it.
+    else if ((passed.get(runner) ?? -1) < last) out.push({ kind: "tests", text: `${key} failed on its last run`, at });
   }
   return out.sort((a, b) => a.at - b.at);
 }
