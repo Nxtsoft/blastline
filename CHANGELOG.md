@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.24.0
+
+The decisions section becomes the brief's lead: **How this PR was decided**, a table of what happened, what was decided and the commit as evidence. It now reads questions the agent asked and independent reviews, and it no longer loses work an agent carried from one worktree to another.
+
+- The section is a table and comes first, before "What each commit did". Each row is built from fixed labels, outcomes and the change's own paths. For example: `vitest` failed → **fixed**, then it passed; asked you a question → **you chose the recommended option 1 of 3**; asked an independent reviewer (`code-reviewer`) → **changes requested**. No transcript text is quoted.
+- **Questions:** an `AskUserQuestion` call says which option the person picked, by position only, or that they answered in their own words. Neither the question nor any label is quoted.
+- **Reviews:** an `Agent`/`Task` call whose type or description names a review or critic. The verdict comes from the reviewer's fixed words (`APPROVE`, `CHANGES REQUESTED`, `verdict: pass|fail`, a check lane's `result: findings|no findings`). It is read from the call's result, from a later task notification, or from the reviewer's last message in the subagent transcript Entire keeps under `tasks/`. Otherwise it says "verdict not recorded".
+- **Worktrees:** a checkout and its worktrees (`.agents/worktrees/`, `.claude/worktrees/`, `.worktrees/`) count as one repo, so an agent that fixes something in one worktree and commits it from another keeps its decisions. On a real web-app PR, the decision window went from 3 transcript lines to 84. The "left the repo" and "back at the root" checks also read a variable the command assigns (`W=/repo; cd "$W"`).
+- **Probes:** a test run against swapped-in code is skipped whether the old code is written in before the run (`git show <ref>:<path> > <path>`, `git stash`, `git apply -R`) or the fix is copied back after it, including from a loop's `do cp`.
+- **Replay:** on 100 checkpointed web-app commits, briefs with a decision went from 21 to 24, and every new or changed line was checked by hand against its transcript. One false "failed, then passed" that the new probe rule caught was removed.
+
 ## 0.23.1
 
 Two fixes: a data file could select zero tests, and a PR's Intent could open with another session's work.

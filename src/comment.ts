@@ -686,26 +686,46 @@ function commitTable(commits: CommitBrief[], links: Links): string {
   return [`<details><summary>${plural(commits.length, "commit")}</summary>`, "", table, "", "</details>"].join("\n");
 }
 
-/** How each kind of decision reads in front of its line. */
-const DECISION_LABEL: Record<BriefDecision["kind"], string> = {
-  tests: "tests",
-  reverted: "reverted",
-  alternatives: "alternatives",
-};
+/**
+ * One decision as a row of the story: what happened, and what was decided.
+ * Both are built from the decision's fixed label and its own text (a runner,
+ * the change's paths, a position, a reviewer's type and verdict), so no
+ * transcript text reaches the comment.
+ */
+function decisionRow(d: BriefDecision): [string, string] {
+  switch (d.kind) {
+    case "tests": {
+      const passed = /^(.*) failed, then passed$/.exec(d.text);
+      if (passed) return [`${passed[1]} failed`, "**fixed**, then it passed"];
+      const failing = /^(.*) failed on its last run$/.exec(d.text);
+      return failing ? [`${failing[1]} failed`, "**committed with it failing** on its last run"] : ["tests", d.text];
+    }
+    case "asked":
+      return ["asked you a question", `**${d.text}**`];
+    case "reviewed": {
+      const [reviewer, verdict] = d.text.split(": ");
+      return [`asked an independent reviewer (${reviewer})`, `**${verdict ?? d.text}**`];
+    }
+    case "reverted":
+      return ["undid work", `**reverted** with ${code(d.text)}`];
+    case "alternatives":
+      return ["wrote a design note weighing alternatives", `**kept it** in ${code(d.text)}`];
+  }
+}
 
 /**
- * What the agents decided, one bullet each, in session order, with the commit
- * whose checkpoint holds it. Undefined when no checkpoint held a decision,
- * so a range without checkpoints gets no empty section.
+ * How the PR was decided: one row per decision, in session order, with the
+ * commit whose checkpoint holds it as the evidence. Undefined when no
+ * checkpoint held a decision, so a range without checkpoints gets no empty section.
  */
-function decisionsList(brief: Brief, links: Links): string | undefined {
+function decisionStory(brief: Brief, links: Links): string | undefined {
   if (brief.decisions.length === 0) return undefined;
-  const bullets = brief.decisions.map((d) => {
-    const text = d.kind === "alternatives" ? `design notes weigh alternatives in ${code(d.text)}` : d.text;
-    return `- **${DECISION_LABEL[d.kind]}** ${links.commit(d.commit)}: ${text}`;
+  const rows = brief.decisions.map((d, i) => {
+    const [what, decided] = decisionRow(d);
+    return `| ${i + 1} | ${what} | ${decided} | ${links.commit(d.commit)} |`;
   });
-  const more = brief.decisionsFound > brief.decisions.length ? [`- _${brief.decisionsFound - brief.decisions.length} more in the checkpoints_`] : [];
-  return ["#### What the agent decided", "", ...bullets, ...more, ""].join("\n");
+  const more = brief.decisionsFound > brief.decisions.length ? [`<sub>${brief.decisionsFound - brief.decisions.length} more in the checkpoints.</sub>`, ""] : [];
+  return ["#### How this PR was decided", "", "| # | What happened | Decision | Evidence |", "|---:|---|---|---|", ...rows, "", ...more].join("\n");
 }
 
 function claimsList(claims: ClaimCheck[]): string {
@@ -841,11 +861,11 @@ export function renderBrief(brief: Brief, ctx: CommentContext): string {
   const title = `### PR brief: ${plural(agentCommits, "agent commit")} · `;
   const snapshot = `${SNAPSHOT_MARKER}${JSON.stringify(brief.snapshot)} -->`;
   const sections = (verdictParts: (string | undefined)[]): (string | undefined)[] => [
+    decisionStory(brief, links),
     "#### What each commit did",
     "",
     commitTable(brief.commits, links),
     "",
-    decisionsList(brief, links),
     "#### Claims checked",
     "",
     claimsList(brief.claims),

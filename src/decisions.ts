@@ -12,7 +12,7 @@
  * call's output, else the call's status); a revert by a fixed label; design
  * notes by the change's own path. Tool output is read, and never leaves.
  */
-export type DecisionKind = "tests" | "reverted" | "alternatives";
+export type DecisionKind = "tests" | "asked" | "reviewed" | "reverted" | "alternatives";
 
 export interface Decision {
   kind: DecisionKind;
@@ -23,8 +23,10 @@ export interface Decision {
 
 interface Block {
   type?: string;
+  id?: string;
   name?: string;
-  input?: { command?: unknown; file_path?: unknown; content?: unknown };
+  text?: string;
+  input?: { command?: unknown; file_path?: unknown; content?: unknown; questions?: unknown; subagent_type?: unknown; description?: unknown };
   result?: { status?: unknown; output?: unknown };
 }
 
@@ -78,9 +80,11 @@ export function expandAssigned(command: string): string {
  * The test run a Bash command holds: exactly one runner in command position
  * across its steps (`&&`, `||`, `;`, new lines, each pipe stage), with
  * `NAME=value` assignments the command makes substituted for `$NAME`, so a
- * file named through a variable still counts. A run followed by a step that
- * puts files back (`cp`, `mv`, `git apply`/`checkout`/`restore`/`stash`,
- * `patch`) is a probe (a test run against swapped-in code), not an outcome.
+ * file named through a variable still counts. A run against swapped-in code is
+ * a probe, not an outcome: one after a step that writes an old version over a
+ * file (`git show <ref>:<path> >`), stashes or reverses a patch, or followed by
+ * one that puts files back (`cp`, `mv`, `git apply`/`checkout`/`restore`/`stash`,
+ * `patch`, also as a loop's `do cp`).
  * Returns the runner, the run's words (quotes stripped), and whether the
  * call's status is the run's own: a single line, `cd` steps before it
  * allowed, nothing after it, not piped (`vitest | grep FAIL` exits 1 on a
@@ -100,7 +104,10 @@ function testRun(command: string): { runner: string; words: string[]; own: boole
       }),
   );
   if (runs.length !== 1) return undefined;
-  if (steps.slice(runs[0]!.at + 1).some((step) => /^(?:cp|mv|patch|git\s+(?:apply|checkout|restore|stash))\b/.test(step))) return undefined;
+  // A probe: code swapped in before the run (an old version written over a file, a stash, a reversed patch)
+  // or put back after it, a loop's `do cp` included.
+  if (steps.slice(0, runs[0]!.at).some((step) => /^(?:do\s+)?git\s+(?:show\s+[^\s:]*:\S+.*>|stash\b|apply\s+-R\b)/.test(step))) return undefined;
+  if (steps.slice(runs[0]!.at + 1).some((step) => /^(?:do\s+)?(?:cp|mv|patch|git\s+(?:apply|checkout|restore|stash))\b/.test(step))) return undefined;
   const plain = command.split(/\s*(?:&&|\|\||;)\s*/);
   const own = !command.includes("\n") && plain.slice(0, -1).every((s) => /^cd\s+\S+$/.test(s)) && !plain[plain.length - 1]!.includes("|");
   return { runner: runs[0]!.runner, words: runs[0]!.words, own };
@@ -158,6 +165,46 @@ const REVERTS: [RegExp, string][] = [
   [/\bgit\s+checkout\s+(?:\S+\s+)?--\s/, "git checkout --"],
 ];
 
+/** What a reviewer concluded, in fixed words. */
+export type Verdict = "approved" | "changes requested" | "no findings" | "findings";
+
+/**
+ * A reviewer's verdict, by the fixed words reviewers print (`APPROVE`,
+ * `CHANGES REQUESTED`, `verdict: pass|fail`, a check lane's `result: findings|no findings`),
+ * never by its prose.
+ */
+export function verdictOf(text: string): Verdict | undefined {
+  if (/\bCHANGES REQUESTED\b|\bREQUEST CHANGES\b|\bverdict:\s*fail\b/.test(text)) return "changes requested";
+  if (/\bAPPROVE[DS]?\b|\bverdict:\s*pass\b/.test(text)) return "approved";
+  if (/^result:\s*no findings\b/m.test(text)) return "no findings";
+  if (/^result:\s*findings\b/m.test(text)) return "findings";
+  return undefined;
+}
+
+/** A subagent that reviews: its type or its description says so. */
+const REVIEWER = /review|critic/i;
+
+/**
+ * Which option a person picked for each question of an `AskUserQuestion` call,
+ * by position only: "the recommended option (1 of 3)", "option 2 of 3", or
+ * their own words. No question or label is quoted. The answers come from the
+ * call's result, `"<question>"="<answer>"`.
+ */
+function askedIn(input: Block["input"], output: string): string[] {
+  const questions = Array.isArray(input?.questions) ? (input.questions as { question?: unknown; options?: { label?: unknown }[] }[]) : [];
+  const answers = new Map<string, string>();
+  for (const [, q, a] of output.matchAll(/"((?:[^"\\]|\\.)*)"="((?:[^"\\]|\\.)*)"/g)) answers.set(q!, a!);
+  return questions.flatMap((q, i) => {
+    if (typeof q.question !== "string") return [];
+    const answer = answers.get(q.question);
+    if (answer === undefined) return [];
+    const labels = (Array.isArray(q.options) ? q.options : []).map((o) => (typeof o?.label === "string" ? o.label : ""));
+    const picked = labels.indexOf(answer);
+    const which = picked === -1 ? "you answered in your own words" : `you chose ${/\(Recommended\)/.test(answer) ? "the recommended option" : "option"} ${picked + 1} of ${labels.length}`;
+    return [questions.length > 1 ? `question ${i + 1} of ${questions.length}: ${which}` : which];
+  });
+}
+
 /** A design note's heading that weighs options. */
 const ALTERNATIVES = /^#{1,6}\s*(?:alternatives?(?: considered)?|options considered|considered alternatives|rejected (?:options|alternatives))\b/im;
 
@@ -172,6 +219,9 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
   const tests = new Map<string, { at: number; statuses: string[]; runner: string; last: number }>();
   // Where each runner last passed, any files: a later pass of the same runner outranks an earlier failure.
   const passed = new Map<string, number>();
+  // A reviewer started in the background reports later, in a task notification naming its call.
+  const reviews: { id: string; at: number; reviewer: string; verdict: string | undefined }[] = [];
+  const notes: string[] = [];
   window.split("\n").forEach((line, at) => {
     if (line.trim() === "") return;
     let record: TranscriptRecord;
@@ -180,14 +230,27 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
     } catch {
       return;
     }
+    if (record.type === "user") {
+      for (const c of record.content ?? []) if (typeof c.text === "string" && c.text.includes("<task-notification>")) notes.push(c.text);
+      return;
+    }
     if (record.type !== "assistant") return;
     for (const block of record.content ?? []) {
       if (block.type !== "tool_use") continue;
       const input = block.input ?? {};
+      const output = typeof block.result?.output === "string" ? block.result.output : "";
+      if (block.name === "AskUserQuestion") {
+        for (const text of askedIn(input, output)) out.push({ kind: "asked", text, at });
+        continue;
+      }
+      if ((block.name === "Agent" || block.name === "Task") && (REVIEWER.test(String(input.subagent_type ?? "")) || REVIEWER.test(String(input.description ?? "")))) {
+        const type = typeof input.subagent_type === "string" && /^[a-z][a-z0-9-]{1,40}$/.test(input.subagent_type) ? input.subagent_type : "subagent";
+        reviews.push({ id: block.id ?? "", at, reviewer: type, verdict: verdictOf(output) });
+        continue;
+      }
       if (block.name === "Bash" && typeof input.command === "string") {
         const command = input.command;
         const run = testRun(command);
-        const output = typeof block.result?.output === "string" ? block.result.output : "";
         const own = run?.own === true && typeof block.result?.status === "string" && !NEVER_RAN.test(output) ? block.result.status : undefined;
         // A run that exited non-zero on its own failed, whatever a summary line it printed says.
         const status = run === undefined ? undefined : own === "error" ? own : (summaryStatus(run.runner, output) ?? own);
@@ -215,6 +278,10 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
       }
     }
   });
+  for (const r of reviews) {
+    const reported = r.verdict ?? (r.id === "" ? undefined : notes.filter((n) => n.includes(r.id)).map(verdictOf).find((v) => v !== undefined));
+    out.push({ kind: "reviewed", text: `${code(r.reviewer)}: ${reported ?? "verdict not recorded"}`, at: r.at });
+  }
   for (const [key, { at, statuses, runner, last }] of tests) {
     if (!statuses.includes("error")) continue;
     if (statuses[statuses.length - 1] === "success") out.push({ kind: "tests", text: `${key} failed, then passed`, at });
@@ -229,7 +296,7 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
  * outcomes first, then reverts and design notes.
  * The chosen ones keep their order in the session.
  */
-const PRIORITY: DecisionKind[] = ["tests", "reverted", "alternatives"];
+const PRIORITY: DecisionKind[] = ["tests", "asked", "reviewed", "reverted", "alternatives"];
 
 export function chooseDecisions<T extends { kind: DecisionKind }>(all: T[], limit: number): T[] {
   if (all.length <= limit) return all;

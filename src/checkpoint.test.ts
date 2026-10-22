@@ -694,6 +694,28 @@ describe("checkpointFor on the branch backend", () => {
     ]);
   });
 
+  it("keeps decisions an agent made in one worktree and committed from a sibling worktree of the same checkout", () => {
+    const HEX_G = "c1f6a2b3d4e5";
+    const run = (output: string, command: string): object => ({ id: "g", type: "tool_use", name: "Bash", input: { command }, result: { output, status: "success" } });
+    const wtA = "/Users/x/repo/.agents/worktrees/feature";
+    const wtB = "/Users/x/repo/.agents/worktrees/follow-up";
+    const carried = [
+      ...CUMULATIVE,
+      rec("user", stamp(10), [user("gate the upload, then ship it on its own branch")]),
+      rec("assistant", stamp(11), [{ id: "a", type: "tool_use", name: "Edit", input: { file_path: `${wtA}/src/round-size.ts`, old_string: "a", new_string: "b" }, result: { output: "", status: "success" } }]),
+      rec("assistant", stamp(12), [run("      Tests  1 failed | 4 passed (5)", `W=${wtA}; cd "$W" && bunx vitest run src/round-size.test.ts 2>&1 | tail -2`)]),
+      rec("assistant", stamp(13), [run("", "cd /private/tmp/scratch && git -C " + wtA + " diff > fix.patch")]),
+      rec("assistant", stamp(14), [run("      Tests  5 passed (5)", `W=${wtA}; cd "$W" && bunx vitest run src/round-size.test.ts 2>&1 | tail -2`)]),
+      rec("assistant", stamp(15), [run("", `cd ${wtB} && git apply /private/tmp/scratch/fix.patch && git add src/round-size.ts && git commit -qm gate`)]),
+    ];
+    writeBranchCheckpoint(HEX_G, branchFiles(HEX_G, stamp(16), carried, ""));
+    const gc = commitFile("src/round-size.ts", "export const ROUND_SIZE_MIN = 4;\n", `fix: the floor is four\n\nEntire-Checkpoint: ${HEX_G}\n`);
+    const files = ["src/round-size.ts", "src/round-size.test.ts"];
+    expect(checkpointFor(repo, gc, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), files, files)?.decisions.map((d) => d.text)).toEqual([
+      "`vitest` on `src/round-size.test.ts` failed, then passed",
+    ]);
+  });
+
   it("never takes an agent's scratchpad for the repo, though it mirrors the repo's layout", () => {
     const HEX_D = "a1f6b2c3d4e5";
     const note = "# Design\n\n## Alternatives considered\n\n- one\n";
