@@ -4,7 +4,7 @@
 
 A test that failed, then passed in a broader run, now shows in **How this PR was decided**.
 
-- A failing run that names test files is closed by a later passing run of the same runner that covers them: the whole suite, the same files, or a folder holding them. The row says "failed, then passed". Before, the broader pass was keyed differently, so it only stopped the failure from being called the last word, and the row was dropped. On a real web-app PR whose new tests failed twice and then passed in a run over their folder, the section was empty; it now shows both runs. A later pass on unrelated files still closes nothing.
+- A failing run that names test files is closed by a later passing run of the same runner that covers them: the whole suite, the same files, or a folder holding them. The row says "failed, then passed". Before, the broader pass was keyed differently, so it only stopped the failure from being called the last word, and the row was dropped. On a real web-app PR whose new tests failed twice and then passed in a run over their folder, the section was empty; it now shows both runs. A later pass on unrelated files still closes nothing. Neither does a pass from another directory, or one narrowed by a test-name filter, a project, a config or a bare name (`-t`, `--testNamePattern`, `--project`, `--config`, `-k`, `-run`, a file-name filter). Such a pass doesn't close a failure even under the same key. Flags that only report, time or schedule (`--coverage`, `--testTimeout=`, `--maxWorkers=`, …) don't narrow. A pass in the same transcript record also keeps a failure from being called its last run, since calls in one record have no known order.
 
 ## 0.24.0
 

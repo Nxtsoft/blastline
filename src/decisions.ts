@@ -96,7 +96,7 @@ export function expandAssigned(command: string): string {
  * pass, `vitest | tail` 0 on a fail). Undefined with no run, more than one,
  * or a probe.
  */
-function testRun(command: string): { runner: string; words: string[]; own: boolean } | undefined {
+function testRun(command: string): { runner: string; words: string[]; own: boolean; cd: string | undefined } | undefined {
   const expanded = expandAssigned(command);
   const steps = expanded.split(/\s*(?:&&|\|\||;|\n)\s*/).filter((step) => step !== "");
   const runs = steps.flatMap((step, at) =>
@@ -115,7 +115,32 @@ function testRun(command: string): { runner: string; words: string[]; own: boole
   if (steps.slice(runs[0]!.at + 1).some((step) => /^(?:do\s+)?(?:cp|mv|patch|git\s+(?:apply|checkout|restore|stash))\b/.test(step))) return undefined;
   const plain = command.split(/\s*(?:&&|\|\||;)\s*/);
   const own = !command.includes("\n") && plain.slice(0, -1).every((s) => /^cd\s+\S+$/.test(s)) && !plain[plain.length - 1]!.includes("|");
-  return { runner: runs[0]!.runner, words: runs[0]!.words, own };
+  // Where the run's paths are read from: the last `cd` before it in the same command, when there is one.
+  const cd = steps
+    .slice(0, runs[0]!.at)
+    .map((step) => /^(?:builtin\s+)?cd\s+("[^"]+"|'[^']+'|\S+)$/.exec(step.replace(/\s*\d?>&?\d?\S*/g, "").trim())?.[1]?.replace(/^["']|["']$/g, ""))
+    .filter((t): t is string => t !== undefined)
+    .pop();
+  return { runner: runs[0]!.runner, words: runs[0]!.words, own, cd };
+}
+
+/** Flags that change how a run reports, times or schedules its tests, not which tests it runs. */
+const NON_SELECTING_FLAG =
+  /^(?:--(?:coverage|silent|no-color|passWithNoTests|reporter=\S+|bail(?:=\d+)?|quiet|verbose|run|watch=false|ci|testTimeout=\d+|hookTimeout=\d+|teardownTimeout=\d+|maxWorkers=\S+|minWorkers=\S+|pool=\S+|no-file-parallelism|isolate|no-isolate|runInBand|detectOpenHandles|forceExit|logHeapUsage)|-[qvs]|-i)$/;
+
+/**
+ * What a passing run covers: every test of the runner (no argument but
+ * flags that do not select tests, `NON_SELECTING_FLAG`; vitest's own `run` word aside), or the folders and files it
+ * names. Any other flag (`-t`, `--project`, `--config`, `-k`, `-run`) or a bare
+ * word (vitest's file-name filter) narrows it in a way paths cannot say, so it
+ * covers nothing.
+ */
+function coverageOf(runner: string, words: string[]): { all: boolean; paths: string[] } | undefined {
+  const last = runner.split(" ").pop()!;
+  const args = words.slice(words.indexOf(last) + 1).filter((w, i) => !(i === 0 && runner === "vitest" && w === "run"));
+  const rest = args.filter((w) => !NON_SELECTING_FLAG.test(w));
+  if (rest.some((w) => w.startsWith("-") || !/[/.]/.test(w))) return undefined;
+  return { all: rest.length === 0, paths: rest.map((t) => t.replace(/^\.\//, "").replace(/\/$/, "")) };
 }
 
 /**
@@ -262,10 +287,11 @@ const ALTERNATIVES = /^#{1,6}\s*(?:alternatives?(?: considered)?|options conside
 export function decisionsIn(window: string, files: string[]): Decision[] {
   const out: Decision[] = [];
   const carried = (path: string): string | undefined => files.find((f) => path === f || path.endsWith(`/${f}`));
-  const tests = new Map<string, { at: number; statuses: string[]; runner: string; last: number; named: string[] }>();
-  // Every passing run, with what it targeted (none: the whole suite): a later pass of the same runner that
-  // covers a failure's files closes it, and any later pass of that runner keeps it from being the last word.
-  const passes: { runner: string; at: number; targets: string[] }[] = [];
+  const tests = new Map<string, { at: number; statuses: string[]; runner: string; last: number; named: string[]; cd: string | undefined }>();
+  // Every passing run, with what it covers (`coverageOf`) and where it ran: a later pass of the same runner that
+  // covers a failure's files from the same directory closes it, and any pass of that runner from the failure's
+  // record on keeps it from being called the last word.
+  const passes: { runner: string; at: number; covered: { all: boolean; paths: string[] } | undefined; cd: string | undefined }[] = [];
   // A reviewer started in the background reports later, in a task notification naming its call.
   const reviews: { id: string; at: number; reviewer: string; verdict: string | undefined }[] = [];
   const notes: string[] = [];
@@ -309,11 +335,16 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
           const named = all.every((f) => f !== undefined && TEST_FILE.test(f)) ? [...new Set(all as string[])] : [];
           const more = named.length > NAMED_FILES ? ` and ${named.length - NAMED_FILES} more` : "";
           const key = named.length > 0 ? `${code(run.runner)} on ${named.slice(0, NAMED_FILES).map(code).join(", ")}${more}` : code(run.runner);
-          const seen = tests.get(key) ?? { at, statuses: [], runner: run.runner, last: at, named };
-          seen.last = at;
-          seen.statuses.push(status);
-          if (status === "success") passes.push({ runner: run.runner, at, targets: targets.map((t) => t.replace(/^\.\//, "").replace(/\/$/, "")) });
-          tests.set(key, seen);
+          const covered = coverageOf(run.runner, run.words);
+          if (status === "success") passes.push({ runner: run.runner, at, covered, cd: run.cd });
+          // A narrowed pass (`-t`, `-k`, `-run`, `--project`, a bare name) closes no failure, even under the same key.
+          if (status === "error" || covered !== undefined) {
+            const seen = tests.get(key) ?? { at, statuses: [], runner: run.runner, last: at, named, cd: run.cd };
+            seen.last = at;
+            seen.cd = run.cd;
+            seen.statuses.push(status);
+            tests.set(key, seen);
+          }
         }
         const revert = REVERTS.find(([r]) => r.test(command));
         if (revert !== undefined) out.push({ kind: "reverted", text: revert[1], at });
@@ -329,15 +360,16 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
     const reported = r.verdict ?? (r.id === "" ? undefined : notes.filter((n) => n.includes(r.id)).map(verdictOf).find((v) => v !== undefined));
     out.push({ kind: "reviewed", text: `${code(r.reviewer)}: ${reported ?? "verdict not recorded"}`, at: r.at, ...(r.id !== "" && { call: r.id }) });
   }
-  for (const [key, { at, statuses, runner, last, named }] of tests) {
+  for (const [key, { at, statuses, runner, last, named, cd }] of tests) {
     if (!statuses.includes("error")) continue;
-    const later = passes.filter((p) => p.runner === runner && p.at > last);
-    // A later pass covers the failing files when it runs the whole suite, or names each file or a folder holding it.
+    // A later pass covers the failing files when, from the same directory, it runs every test of the runner or
+    // names each file or a folder holding it. Calls in one record have no known order, so only a later record closes.
     const covers = (p: (typeof passes)[number]): boolean =>
-      p.targets.length === 0 || (named.length > 0 && named.every((f) => p.targets.some((t) => f === t || f.startsWith(`${t}/`) || f.endsWith(`/${t}`))));
-    if (statuses[statuses.length - 1] === "success" || later.some(covers)) out.push({ kind: "tests", text: `${key} failed, then passed`, at });
-    // A failure the runner passed after, on other files, is not called the last word: the later run may have covered it.
-    else if (later.length === 0) out.push({ kind: "tests", text: `${key} failed on its last run`, at });
+      p.covered !== undefined && p.cd === cd && (p.covered.all || (named.length > 0 && named.every((f) => p.covered!.paths.some((t) => f === t || f.startsWith(`${t}/`)))));
+    const same = passes.filter((p) => p.runner === runner && p.at >= last);
+    if (statuses[statuses.length - 1] === "success" || same.some((p) => p.at > last && covers(p))) out.push({ kind: "tests", text: `${key} failed, then passed`, at });
+    // A failure the runner passed alongside or after, on other files, is not called the last word: that run may have covered it.
+    else if (same.length === 0) out.push({ kind: "tests", text: `${key} failed on its last run`, at });
   }
   return out.sort((a, b) => a.at - b.at);
 }
