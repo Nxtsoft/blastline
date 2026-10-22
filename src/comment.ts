@@ -722,7 +722,7 @@ function decisionStory(brief: Brief, links: Links): string | undefined {
   if (brief.decisions.length === 0) return undefined;
   const rows = brief.decisions.map((d, i) => {
     const [what, decided] = decisionRow(d);
-    return `| ${i + 1} | ${what} | ${decided} | ${links.commit(d.commit)} |`;
+    return `| ${i + 1} | ${cell(what)} | ${cell(decided)} | ${links.commit(d.commit)} |`;
   });
   const more = brief.decisionsFound > brief.decisions.length ? [`<sub>${brief.decisionsFound - brief.decisions.length} more in the checkpoints.</sub>`, ""] : [];
   return ["#### How this PR was decided", "", "| # | What happened | Decision | Evidence |", "|---:|---|---|---|", ...rows, "", ...more].join("\n");

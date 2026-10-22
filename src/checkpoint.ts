@@ -512,6 +512,11 @@ interface Shell {
   at: Map<NonNullable<TranscriptRecord["content"]>[number], string>;
   /** The directory the transcript's last `git commit` ran in: the commit the checkpoint was written for, since the transcript ends there. */
   committed: string | undefined;
+  /** Every `git commit`, by directory and record index. */
+  commits: { dir: string; at: number }[];
+  /** Patches written from a directory (`git diff > <file>`) and applied in one (`git apply <file>`), by file name and record index. */
+  patchesOut: { dir: string; name: string; at: number }[];
+  patchesIn: { dir: string; name: string; at: number }[];
 }
 
 /**
@@ -526,7 +531,12 @@ function shellOf(records: (TranscriptRecord | undefined)[]): Shell {
   const at = new Map<NonNullable<TranscriptRecord["content"]>[number], string>();
   let cwd: string | undefined;
   let committed: string | undefined;
-  for (const r of records) {
+  const commits: Shell["commits"] = [];
+  const patchesOut: Shell["patchesOut"] = [];
+  const patchesIn: Shell["patchesIn"] = [];
+  const unquote = (v: string | undefined): string | undefined => v?.replace(/^["']|["']$/g, "");
+  const abs = (dir: string | undefined): string | undefined => (dir === undefined ? cwd : dir.startsWith("/") ? posix.normalize(dir).replace(/\/$/, "") : undefined);
+  for (const [k, r] of records.entries()) {
     for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
       const command = block.type === "tool_use" && block.name === "Bash" ? block.input?.command : undefined;
       if (typeof command !== "string") continue;
@@ -550,10 +560,18 @@ function shellOf(records: (TranscriptRecord | undefined)[]): Shell {
         const named = /\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)\s+commit\b/.exec(step)?.[1]?.replace(/^["']|["']$/g, "");
         if (named !== undefined) committed = named.startsWith("/") ? posix.normalize(named).replace(/\/$/, "") : undefined;
         else if (/(?:^|\s)git\s+commit\b/.test(step)) committed = cwd;
+        if ((named !== undefined || /(?:^|\s)git\s+commit\b/.test(step)) && committed !== undefined) commits.push({ dir: committed, at: k });
+        // A change carried between checkouts as a patch: written from one, applied in another.
+        const out = /\bgit\s+(?:-C\s+("[^"]+"|'[^']+'|\S+)\s+)?diff\b[^>]*?(?<![0-9&])>\s*("[^"]+"|'[^']+'|\S+)/.exec(step);
+        const from = out === null ? undefined : abs(unquote(out[1]));
+        if (out !== null && from !== undefined) patchesOut.push({ dir: from, name: posix.basename(unquote(out[2])!), at: k });
+        const applied = /\bgit\s+(?:-C\s+("[^"]+"|'[^']+'|\S+)\s+)?apply\s+((?:-\S+\s+)*)("[^"]+"|'[^']+'|\S+)\s*$/.exec(step);
+        const into = applied === null || /(?:^|\s)(?:-R|--reverse|--check)\b/.test(applied[2]!) ? undefined : abs(unquote(applied[1]));
+        if (applied !== null && into !== undefined) patchesIn.push({ dir: into, name: posix.basename(unquote(applied[3])!), at: k });
       }
     }
   }
-  return { at, committed };
+  return { at, committed, commits, patchesOut, patchesIn };
 }
 
 /** The files of the change a command names by their repo path, as a whole path (not inside a longer one). */
@@ -588,23 +606,20 @@ function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], fi
  * The repo root the edits name: each edit to a file of the change inside a
  * folder gives its absolute path less the repo path, and each Bash command
  * that runs in a known directory (`shellOf`) and names such a file gives that
- * directory. Roots that are one checkout and its worktrees (`checkoutOf`) are
- * all the repo's. When they name more than one checkout (a session that also
- * worked in another clone with the same layout), the family of the one the
- * commit was made in (`Shell.committed`) is the repo. Undefined when there is
+ * directory. When they name more than one (a session that also worked in
+ * another checkout or worktree), the one the commit was made in
+ * (`Shell.committed`) is the root, joined by another only where the change was
+ * carried from it as a patch, and then only from after its last commit there. Undefined when there is
  * none, or when the commit's directory cannot be told or is not among them,
  * so no turn is read rather than the wrong one.
  */
-/**
- * The checkout a root belongs to: a worktree under `<checkout>/.agents/worktrees/`,
- * `.claude/worktrees/` or `.worktrees/` is that checkout's, so the agent carrying
- * a patch from one sibling worktree to another stays in one repo.
- */
-function checkoutOf(root: string): string {
-  return root.replace(/\/(?:\.agents\/worktrees|\.claude\/worktrees|\.worktrees)\/[^/]+\/$/, "/");
+/** A root of the repo and the record index its work counts from. */
+interface Root {
+  path: string;
+  from: number;
 }
 
-function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], shell: Shell): string[] | undefined {
+function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], shell: Shell): Root[] | undefined {
   const roots = new Set<string>();
   for (const r of records) {
     for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
@@ -620,11 +635,22 @@ function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], sh
   // An agent's scratchpad lives in a temp folder and can mirror the repo's layout: it is never the repo.
   for (const root of roots) if (TEMP.test(root)) roots.delete(root);
   if (roots.size === 0) return undefined;
-  // Roots that are one checkout and its worktrees are one repo; only other checkouts with the same layout compete.
-  if (new Set([...roots].map(checkoutOf)).size === 1) return [...roots];
+  if (roots.size === 1) return [{ path: [...roots][0]!, from: 0 }];
   if (shell.committed === undefined || !roots.has(`${shell.committed}/`)) return undefined;
-  const home = checkoutOf(`${shell.committed}/`);
-  return [...roots].filter((r) => checkoutOf(r) === home);
+  const home = shell.committed;
+  const out: Root[] = [{ path: `${home}/`, from: 0 }];
+  // Another checkout counts only where the change was carried from it: a patch written there and applied
+  // where the commit was made. Its work counts from after its own last commit before that, so the earlier
+  // work it shipped on its own (another PR) stays out.
+  for (const root of roots) {
+    const dir = root.slice(0, -1);
+    if (dir === home) continue;
+    const carried = shell.patchesOut.find((o) => o.dir === dir && shell.patchesIn.some((p) => p.dir === home && p.name === o.name && p.at >= o.at));
+    if (carried === undefined) continue;
+    const before = shell.commits.filter((c) => c.dir === dir && c.at <= carried.at).map((c) => c.at);
+    out.push({ path: root, from: before.length > 0 ? Math.max(...before) + 1 : 0 });
+  }
+  return out;
 }
 
 /**
@@ -639,10 +665,11 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
   const shell = shellOf(records);
   const roots = repoRoot(records, files, shell);
   if (roots === undefined) return "";
-  // Away means outside every root of the repo; work or a `cd` at any of them is home.
-  const leavesAll = (block: NonNullable<TranscriptRecord["content"]>[number]): boolean => roots.every((root) => leaves(block, root));
-  const worksAt = (block: NonNullable<TranscriptRecord["content"]>[number]): boolean => roots.some((root) => worksOnPath(block, files, root, shell));
-  const returnsTo = (block: NonNullable<TranscriptRecord["content"]>[number]): boolean => roots.some((root) => returns(block, root));
+  // Away means outside every root that counts at that record; work or a `cd` at any of them is home.
+  const live = (k: number): Root[] => roots.filter((r) => k >= r.from);
+  const leavesAll = (block: NonNullable<TranscriptRecord["content"]>[number], k: number): boolean => live(k).every((r) => leaves(block, r.path));
+  const worksAt = (block: NonNullable<TranscriptRecord["content"]>[number], k: number): boolean => live(k).some((r) => worksOnPath(block, files, r.path, shell));
+  const returnsTo = (block: NonNullable<TranscriptRecord["content"]>[number], k: number): boolean => live(k).some((r) => returns(block, r.path));
   // Whether the agent is away from this repo before each record, over the whole transcript: the shell keeps its directory
   // across turns. It starts away, leaves on any step outside the root, and is back only on work at the root or a `cd` to it.
   const away: boolean[] = [];
@@ -651,8 +678,8 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
     // Blocks run in order: a record counts as home when the agent is home before or after any of its calls.
     let home = !out;
     for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
-      if (leavesAll(block)) out = true;
-      else if (worksAt(block) || returnsTo(block)) out = false;
+      if (leavesAll(block, k)) out = true;
+      else if (worksAt(block, k) || returnsTo(block, k)) out = false;
       home = home || !out;
     }
     away[k] = !home;
@@ -663,7 +690,7 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
     // The first segment can start inside a turn the previous checkpoint read part of: the whole turn says whether it worked on the files, only the unread part is read.
     let opened = from;
     while (opened > 0 && !(records[opened] !== undefined && humanTurn(records[opened]!))) opened--;
-    if (records.slice(opened, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksAt(block)))) {
+    if (records.slice(opened, i).some((r, d) => r?.type === "assistant" && (r.content ?? []).some((block) => worksAt(block, opened + d)))) {
       // Inside the turn, what the agent does while away from this repo is not read.
       for (let k = from; k < i; k++) if (!away[k]) kept.push(lines[k]!);
     }

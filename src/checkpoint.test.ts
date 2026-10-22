@@ -716,6 +716,41 @@ describe("checkpointFor on the branch backend", () => {
     ]);
   });
 
+  it("reads none of a sibling worktree's own PR: without a patch carried from it, only the commit's worktree counts", () => {
+    const HEX_N = "d1f6a2b3c4e5";
+    const run = (output: string, command: string): object => ({ id: "n", type: "tool_use", name: "Bash", input: { command }, result: { output, status: "success" } });
+    const prB = "/Users/x/repo/.agents/worktrees/pr-b";
+    const prA = "/Users/x/repo/.agents/worktrees/pr-a";
+    const parallel = [
+      ...CUMULATIVE,
+      rec("user", stamp(10), [user("ship both PRs")]),
+      rec("assistant", stamp(11), [{ id: "b", type: "tool_use", name: "Edit", input: { file_path: `${prB}/src/round-size.ts`, old_string: "a", new_string: "b" }, result: { output: "", status: "success" } }]),
+      rec("assistant", stamp(12), [run("      Tests  1 failed (1)", `cd ${prB} && bunx vitest run src/round-size.test.ts 2>&1 | tail -1`)]),
+      rec("assistant", stamp(13), [run("      Tests  1 passed (1)", `cd ${prB} && bunx vitest run src/round-size.test.ts 2>&1 | tail -1`)]),
+      rec("assistant", stamp(14), [run("", `cd ${prB} && git commit -qam b`)]),
+      rec("assistant", stamp(15), [{ id: "a", type: "tool_use", name: "Edit", input: { file_path: `${prA}/src/round-size.ts`, old_string: "a", new_string: "c" }, result: { output: "", status: "success" } }]),
+      rec("assistant", stamp(16), [run("", `cd ${prA} && git commit -qam a`)]),
+    ];
+    writeBranchCheckpoint(HEX_N, branchFiles(HEX_N, stamp(17), parallel, ""));
+    const nc = commitFile("src/round-size.ts", "export const ROUND_SIZE_MIN = 5;\n", `fix: the floor is five\n\nEntire-Checkpoint: ${HEX_N}\n`);
+    const files = ["src/round-size.ts", "src/round-size.test.ts"];
+    expect(checkpointFor(repo, nc, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), files, files)?.decisions).toEqual([]);
+  });
+
+  it("reads a reviewer's verdict from the last message of the subagent transcript Entire keeps", () => {
+    const HEX_R = "e1f6a2b3c4d5";
+    const reviewed = [
+      ...CUMULATIVE,
+      rec("user", stamp(70), [user("get it reviewed")]),
+      rec("assistant", stamp(71), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 6;"), { id: "toolu_01Rev", type: "tool_use", name: "Agent", input: { subagent_type: "general-purpose", description: "gated-surfaces review" }, result: { output: "", status: "success" } }]),
+    ];
+    const last = { type: "assistant", isSidechain: true, message: { role: "assistant", content: [{ type: "text", text: "check: gated-surfaces\nresult: no findings\n\nNothing in the diff matches (SECRET detail)." }] } };
+    writeBranchCheckpoint(HEX_R, { ...branchFiles(HEX_R, stamp(72), reviewed, ""), "tasks/toolu_01Rev/agent-r1.jsonl": JSON.stringify(last) + "\n" });
+    const rc = commitFile("src/round-size.ts", "export const ROUND_SIZE_MIN = 6;\n", `fix: the floor is six\n\nEntire-Checkpoint: ${HEX_R}\n`);
+    const cp = checkpointFor(repo, rc, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
+    expect(cp?.decisions.map((d) => d.text)).toEqual(["`general-purpose`: no findings"]);
+  });
+
   it("never takes an agent's scratchpad for the repo, though it mirrors the repo's layout", () => {
     const HEX_D = "a1f6b2c3d4e5";
     const note = "# Design\n\n## Alternatives considered\n\n- one\n";

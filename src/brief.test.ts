@@ -562,7 +562,7 @@ describe("declares", () => {
 });
 
 describe("decisionsOf", () => {
-  const commit = (sha: string, decisions: { kind: "alternatives" | "reverted" | "tests"; text: string; at: number }[]) => ({
+  const commit = (sha: string, decisions: { kind: "alternatives" | "reverted" | "tests" | "reviewed" | "asked"; text: string; at: number; call?: string }[]) => ({
     sha,
     subject: "x",
     checkpoint: { decisions } as never,
@@ -584,6 +584,23 @@ describe("decisionsOf", () => {
     expect(shown.map((d) => [d.commit[0], d.kind])).toEqual([
       ["a", "tests"],
       ["b", "alternatives"],
+    ]);
+  });
+
+  it("keeps every review round and question that read alike, telling them apart by the call they came from", () => {
+    const { shown } = decisionsOf([
+      commit("a".repeat(40), [{ kind: "reviewed", text: "`code-reviewer`: changes requested", at: 1, call: "toolu_1" }]),
+      commit("b".repeat(40), [{ kind: "reviewed", text: "`code-reviewer`: approved", at: 1, call: "toolu_2" }]),
+      commit("c".repeat(40), [
+        { kind: "reviewed", text: "`code-reviewer`: changes requested", at: 1, call: "toolu_3" },
+        // A later snapshot of the same call is the same review.
+        { kind: "reviewed", text: "`code-reviewer`: changes requested", at: 9, call: "toolu_3" },
+      ]),
+    ]);
+    expect(shown.map((d) => [d.commit[0], d.text])).toEqual([
+      ["a", "`code-reviewer`: changes requested"],
+      ["b", "`code-reviewer`: approved"],
+      ["c", "`code-reviewer`: changes requested"],
     ]);
   });
 

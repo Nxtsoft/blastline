@@ -92,6 +92,19 @@ describe("decisionsIn: tests", () => {
     expect(texts(window(ran(red, "Tests  5 failed | 34 passed (39)"), ran("bunx vitest run src/a.test.ts | tail -1", "Tests  39 passed (39)")), ["src/a.test.ts"])).toEqual([]);
   });
 
+  it("still counts a run after a step that only saves an old copy elsewhere, pops a stash, or redirects stderr", () => {
+    const fail = ran("bunx vitest run src/a.test.ts | tail -1", "Tests  1 failed (1)");
+    for (const after of ["git show HEAD~1:src/a.ts > /tmp/old.ts && bunx vitest run src/a.test.ts | tail -1", "git stash pop && bunx vitest run src/a.test.ts | tail -1", "git show HEAD:src/a.ts 2>/dev/null | head -3; bunx vitest run src/a.test.ts | tail -1"]) {
+      expect(texts(window(fail, ran(after, "Tests  1 passed (1)")), ["src/a.test.ts"]), after).toEqual(["tests: `vitest` on `src/a.test.ts` failed, then passed"]);
+    }
+  });
+
+  it("reads nothing from a run after code is swapped in by a stash or a reversed patch", () => {
+    for (const probe of ["git stash && bunx vitest run src/a.test.ts | tail -1", "git apply -R fix.patch && bunx vitest run src/a.test.ts | tail -1"]) {
+      expect(texts(window(ran(probe, "Tests  1 failed (1)")), ["src/a.test.ts"]), probe).toEqual([]);
+    }
+  });
+
   it("reads nothing from a command that runs the tests twice, or a run that never started", () => {
     expect(texts(window(ran("bunx vitest run a.test.ts | tail -1; git stash; bunx vitest run a.test.ts | tail -1", "Tests  1 passed (1)\nTests  1 failed (1)")))).toEqual([]);
     expect(texts(window(bash("bunx vitest run a.test.ts", "error").replace("SECRET OUTPUT", "Permission to use Bash with command bunx vitest run a.test.ts has been denied.")))).toEqual([]);
@@ -141,7 +154,7 @@ describe("decisionsIn: questions and reviews", () => {
     const d = texts(window(ask([scope], 'Your questions have been answered: "How should the build go into dev? (SECRET name)"="Frontend first (Recommended)". You can now continue.')));
     expect(d).toEqual(["asked: you chose the recommended option 1 of 3"]);
     expect(texts(window(ask([scope], '"How should the build go into dev? (SECRET name)"="Full build"')))).toEqual(["asked: you chose option 2 of 3"]);
-    expect(texts(window(ask([scope], '"How should the build go into dev? (SECRET name)"="only the API, and call Amy first"')))).toEqual(["asked: you answered in your own words"]);
+    expect(texts(window(ask([scope], '"How should the build go into dev? (SECRET name)"="only the API, and call the owner first"')))).toEqual(["asked: you answered in your own words"]);
   });
 
   it("numbers the questions of one call, and says nothing of one left unanswered", () => {
@@ -159,6 +172,27 @@ describe("decisionsIn: questions and reviews", () => {
       "reviewed: `general-purpose`: approved",
       "reviewed: `artifact-critic`: verdict not recorded",
     ]);
+  });
+
+  it("reads a verdict only where a reviewer states one, so a sentence that says not APPROVED is not an approval", () => {
+    const r = (out: string): string[] => texts(window(agent("toolu_v", { subagent_type: "code-reviewer", description: "Review PR 7" }, out)));
+    expect(r("The PR is not APPROVED yet; two blockers remain.")).toEqual(["reviewed: `code-reviewer`: verdict not recorded"]);
+    expect(r("I cannot APPROVE this.")).toEqual(["reviewed: `code-reviewer`: verdict not recorded"]);
+    expect(r("Verdict: BLOCKED. Do not APPROVE until the race is fixed.")).toEqual(["reviewed: `code-reviewer`: changes requested"]);
+    expect(r("Notes first.\n\n## Verdict\nREADY TO MERGE")).toEqual(["reviewed: `code-reviewer`: approved"]);
+    expect(r("**APPROVE.** Nothing blocking.")).toEqual(["reviewed: `code-reviewer`: approved"]);
+  });
+
+  it("is not a review when only a word like critical or preview is in the description", () => {
+    expect(texts(window(agent("toolu_c", { subagent_type: "general-purpose", description: "Fix critical upload bug" }, "Done, tests APPROVED by CI")))).toEqual([]);
+    expect(texts(window(agent("toolu_p", { subagent_type: "general-purpose", description: "Build preview deploy" }, "")))).toEqual([]);
+  });
+
+  it("says which options a person ticked on a multi-select question, and no position when two labels are alike", () => {
+    const multi = { question: "Which checks?", multiSelect: true, options: [{ label: "Lint" }, { label: "Types" }, { label: "Tests" }] };
+    expect(texts(window(ask([multi], '"Which checks?"="Lint, Tests"')))).toEqual(["asked: you chose options 1, 3 of 3"]);
+    const twins = { question: "Which?", options: [{ label: "Same" }, { label: "Same" }] };
+    expect(texts(window(ask([twins], '"Which?"="Same"')))).toEqual(["asked: you answered in your own words"]);
   });
 
   it("is not a review when the subagent explores or builds", () => {
