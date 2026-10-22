@@ -751,6 +751,17 @@ describe("checkpointFor on the branch backend", () => {
     expect(cp?.decisions.map((d) => d.text)).toEqual(["`general-purpose`: no findings"]);
   });
 
+  it("reads an approving and a blocking verdict from stored reviewer transcripts too", () => {
+    const HEX_V2 = "f1e6a2b3c4d5";
+    const call = (id: string): object => ({ id, type: "tool_use", name: "Agent", input: { subagent_type: "code-reviewer", description: "review the diff" }, result: { output: "", status: "success" } });
+    const reviewed = [...CUMULATIVE, rec("user", stamp(80), [user("review it twice")]), rec("assistant", stamp(81), [edit("src/round-size.ts", "export const ROUND_SIZE_MIN = 7;"), call("toolu_01Ok"), call("toolu_01No")])];
+    const said = (text: string): string => JSON.stringify({ type: "assistant", isSidechain: true, message: { role: "assistant", content: [{ type: "text", text }] } }) + "\n";
+    writeBranchCheckpoint(HEX_V2, { ...branchFiles(HEX_V2, stamp(82), reviewed, ""), "tasks/toolu_01Ok/agent-ok.jsonl": said("Verdict: APPROVE"), "tasks/toolu_01No/agent-no.jsonl": said("Findings first.\n\n## Verdict\nCHANGES REQUESTED") });
+    const vc = commitFile("src/round-size.ts", "export const ROUND_SIZE_MIN = 7;\n", `fix: the floor is seven\n\nEntire-Checkpoint: ${HEX_V2}\n`);
+    const cp = checkpointFor(repo, vc, [], new Map([[SESSION, { sha: commitA, lines: 10, hash: HASH_A }]]), ["src/round-size.ts"]);
+    expect(cp?.decisions.map((d) => d.text)).toEqual(["`code-reviewer`: approved", "`code-reviewer`: changes requested"]);
+  });
+
   it("never takes an agent's scratchpad for the repo, though it mirrors the repo's layout", () => {
     const HEX_D = "a1f6b2c3d4e5";
     const note = "# Design\n\n## Alternatives considered\n\n- one\n";

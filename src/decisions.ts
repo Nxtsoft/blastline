@@ -201,6 +201,7 @@ export function verdictOf(text: string): Verdict | undefined {
     if (/^result:\s*no findings\b/i.test(line)) return "no findings";
     if (/^result:\s*findings\b/i.test(line)) return "findings";
     if (/\b(?:BLOCKED|CHANGES REQUESTED|REQUEST CHANGES)\b|^fail\b/.test(line) || /^fail\b/i.test(line)) return "changes requested";
+    if (/\bnot\s+(?:yet\s+)?(?:APPROVE[DS]?|READY TO MERGE)\b/i.test(line)) return undefined;
     if (/\b(?:APPROVE[DS]?|READY TO MERGE)\b/.test(line) || /^pass\b/i.test(line)) return "approved";
     return undefined;
   };

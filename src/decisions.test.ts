@@ -181,6 +181,7 @@ describe("decisionsIn: questions and reviews", () => {
     expect(r("Verdict: BLOCKED. Do not APPROVE until the race is fixed.")).toEqual(["reviewed: `code-reviewer`: changes requested"]);
     expect(r("Notes first.\n\n## Verdict\nREADY TO MERGE")).toEqual(["reviewed: `code-reviewer`: approved"]);
     expect(r("**APPROVE.** Nothing blocking.")).toEqual(["reviewed: `code-reviewer`: approved"]);
+    expect(r("Verdict: not APPROVED yet")).toEqual(["reviewed: `code-reviewer`: verdict not recorded"]);
   });
 
   it("is not a review when only a word like critical or preview is in the description", () => {

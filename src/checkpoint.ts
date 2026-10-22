@@ -865,9 +865,9 @@ export function subagentRecords(raw: string, toolUseId = ""): string[] {
   );
   const verdict = verdictOf(last);
   if (verdict !== undefined && toolUseId !== "") {
-    const word = { approved: "APPROVE", "changes requested": "CHANGES REQUESTED", "no findings": "\nresult: no findings", findings: "\nresult: findings" }[verdict];
+    const word = { approved: "APPROVE", "changes requested": "CHANGES REQUESTED", "no findings": "result: no findings", findings: "result: findings" }[verdict];
     // First, right after the call that started it: the subagent's own commands can read as leaving the repo, and the verdict belongs to the call.
-    records.unshift(JSON.stringify({ type: "user", content: [{ text: `<task-notification><tool-use-id>${toolUseId}</tool-use-id><result>${word}</result></task-notification>` }] }));
+    records.unshift(JSON.stringify({ type: "user", content: [{ text: `<task-notification>\n<tool-use-id>${toolUseId}</tool-use-id>\n<result>\n${word}\n</result>\n</task-notification>` }] }));
   }
   return records;
 }
