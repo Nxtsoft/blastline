@@ -200,16 +200,18 @@ export interface BriefDecision extends Decision {
 export const DECISIONS_SHOWN = 8;
 
 /**
- * Every checkpoint's decisions in commit order, each line once (a later
- * snapshot of a session repeats nothing, but two sessions can say the same
- * thing), then cut to `DECISIONS_SHOWN` by `chooseDecisions`.
+ * Every checkpoint's decisions in commit order, each once (a later snapshot of
+ * a session repeats nothing, but two sessions can say the same thing): a
+ * question or review by the tool call it came from, any other by its line.
+ * Then cut to `DECISIONS_SHOWN` by `chooseDecisions`.
  */
 export function decisionsOf(commits: CommitBrief[]): { shown: BriefDecision[]; found: number } {
   const seen = new Set<string>();
   const all: BriefDecision[] = [];
   for (const c of commits) {
     for (const d of c.checkpoint?.decisions ?? []) {
-      const key = `${d.kind}\0${d.text}`;
+      // A question or review is one tool call however its text reads; two review rounds can read alike.
+      const key = `${d.kind}\0${d.call ?? d.text}`;
       if (seen.has(key)) continue;
       seen.add(key);
       all.push({ ...d, commit: c.sha });

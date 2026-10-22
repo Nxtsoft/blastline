@@ -578,28 +578,34 @@ describe("renderCheckRun", () => {
   });
 });
 
-describe("renderBrief: what the agent decided", () => {
+describe("renderBrief: how this PR was decided", () => {
   const sha = "9".repeat(40);
   const decided = (decisions: Brief["decisions"], found = decisions.length): string => renderBrief({ ...brief, decisions, decisionsFound: found }, { ...ctx, repoUrl: "https://github.com/o/r" });
+  const commit = `[\`9999999\`](https://github.com/o/r/commit/${sha})`;
 
-  it("lists each decision with its kind and commit, between the commit table and the claims", () => {
+  it("leads with one row per decision, what happened and what was decided, with the commit as evidence", () => {
     const md = decided([
+      { kind: "asked", text: "you chose the recommended option 1 of 3", at: 1, commit: sha },
       { kind: "tests", text: "`vitest` on `app/[uuid]/cap.test.ts` failed, then passed", at: 3, commit: sha },
+      { kind: "reviewed", text: "`code-reviewer`: changes requested", at: 4, commit: sha },
       { kind: "alternatives", text: "openspec/changes/cap/design.md", at: 5, commit: sha },
     ]);
-    const section = md.slice(md.indexOf("#### What the agent decided"), md.indexOf("#### Claims checked"));
-    expect(md.indexOf("#### What each commit did")).toBeLessThan(md.indexOf("#### What the agent decided"));
+    const section = md.slice(md.indexOf("#### How this PR was decided"), md.indexOf("#### What each commit did"));
+    expect(md.indexOf("#### How this PR was decided")).toBeLessThan(md.indexOf("#### What each commit did"));
+    expect(section).toContain("| # | What happened | Decision | Evidence |");
+    expect(section).toContain(`| 1 | asked you a question | **you chose the recommended option 1 of 3** | ${commit} |`);
     // A path in code font is printed as it is: an entity there would show literally.
-    expect(section).toContain(`- **tests** [\`9999999\`](https://github.com/o/r/commit/${sha}): \`vitest\` on \`app/[uuid]/cap.test.ts\` failed, then passed`);
-    expect(section).toContain("- **alternatives** [`9999999`](https://github.com/o/r/commit/" + sha + "): design notes weigh alternatives in `openspec/changes/cap/design.md`");
+    expect(section).toContain(`| 2 | \`vitest\` on \`app/[uuid]/cap.test.ts\` failed | **fixed**, then it passed | ${commit} |`);
+    expect(section).toContain(`| 3 | asked an independent reviewer (\`code-reviewer\`) | **changes requested** | ${commit} |`);
+    expect(section).toContain(`| 4 | wrote a design note weighing alternatives | **kept it** in \`openspec/changes/cap/design.md\` | ${commit} |`);
   });
 
   it("says how many more the checkpoints held", () => {
-    expect(decided([{ kind: "reverted", text: "git revert", at: 1, commit: sha }], 11)).toContain("- _10 more in the checkpoints_");
+    expect(decided([{ kind: "reverted", text: "git revert", at: 1, commit: sha }], 11)).toContain("<sub>10 more in the checkpoints.</sub>");
   });
 
   it("has no section when no checkpoint held a decision", () => {
-    expect(decided([])).not.toContain("What the agent decided");
+    expect(decided([])).not.toContain("How this PR was decided");
   });
 });
 

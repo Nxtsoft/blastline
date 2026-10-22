@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import type { Decision } from "./decisions.js";
-import { decisionsIn, expandAssigned } from "./decisions.js";
+import { decisionsIn, expandAssigned, verdictOf } from "./decisions.js";
 
 /**
  * The reviewable subset of an Entire checkpoint (github.com/entireio/cli): the
@@ -512,6 +512,11 @@ interface Shell {
   at: Map<NonNullable<TranscriptRecord["content"]>[number], string>;
   /** The directory the transcript's last `git commit` ran in: the commit the checkpoint was written for, since the transcript ends there. */
   committed: string | undefined;
+  /** Every `git commit`, by directory and record index. */
+  commits: { dir: string; at: number }[];
+  /** Patches written from a directory (`git diff > <file>`) and applied in one (`git apply <file>`), by file name and record index. */
+  patchesOut: { dir: string; name: string; at: number }[];
+  patchesIn: { dir: string; name: string; at: number }[];
 }
 
 /**
@@ -526,7 +531,12 @@ function shellOf(records: (TranscriptRecord | undefined)[]): Shell {
   const at = new Map<NonNullable<TranscriptRecord["content"]>[number], string>();
   let cwd: string | undefined;
   let committed: string | undefined;
-  for (const r of records) {
+  const commits: Shell["commits"] = [];
+  const patchesOut: Shell["patchesOut"] = [];
+  const patchesIn: Shell["patchesIn"] = [];
+  const unquote = (v: string | undefined): string | undefined => v?.replace(/^["']|["']$/g, "");
+  const abs = (dir: string | undefined): string | undefined => (dir === undefined ? cwd : dir.startsWith("/") ? posix.normalize(dir).replace(/\/$/, "") : undefined);
+  for (const [k, r] of records.entries()) {
     for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
       const command = block.type === "tool_use" && block.name === "Bash" ? block.input?.command : undefined;
       if (typeof command !== "string") continue;
@@ -550,10 +560,18 @@ function shellOf(records: (TranscriptRecord | undefined)[]): Shell {
         const named = /\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)\s+commit\b/.exec(step)?.[1]?.replace(/^["']|["']$/g, "");
         if (named !== undefined) committed = named.startsWith("/") ? posix.normalize(named).replace(/\/$/, "") : undefined;
         else if (/(?:^|\s)git\s+commit\b/.test(step)) committed = cwd;
+        if ((named !== undefined || /(?:^|\s)git\s+commit\b/.test(step)) && committed !== undefined) commits.push({ dir: committed, at: k });
+        // A change carried between checkouts as a patch: written from one, applied in another.
+        const out = /\bgit\s+(?:-C\s+("[^"]+"|'[^']+'|\S+)\s+)?diff\b[^>]*?(?<![0-9&])>\s*("[^"]+"|'[^']+'|\S+)/.exec(step);
+        const from = out === null ? undefined : abs(unquote(out[1]));
+        if (out !== null && from !== undefined) patchesOut.push({ dir: from, name: posix.basename(unquote(out[2])!), at: k });
+        const applied = /\bgit\s+(?:-C\s+("[^"]+"|'[^']+'|\S+)\s+)?apply\s+((?:-\S+\s+)*)("[^"]+"|'[^']+'|\S+)\s*$/.exec(step);
+        const into = applied === null || /(?:^|\s)(?:-R|--reverse|--check)\b/.test(applied[2]!) ? undefined : abs(unquote(applied[1]));
+        if (applied !== null && into !== undefined) patchesIn.push({ dir: into, name: posix.basename(unquote(applied[3])!), at: k });
       }
     }
   }
-  return { at, committed };
+  return { at, committed, commits, patchesOut, patchesIn };
 }
 
 /** The files of the change a command names by their repo path, as a whole path (not inside a longer one). */
@@ -589,12 +607,19 @@ function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], fi
  * folder gives its absolute path less the repo path, and each Bash command
  * that runs in a known directory (`shellOf`) and names such a file gives that
  * directory. When they name more than one (a session that also worked in
- * another checkout or worktree with the same layout), the one the commit was
- * made in (`Shell.committed`) is the root. Undefined when there is
+ * another checkout or worktree), the one the commit was made in
+ * (`Shell.committed`) is the root, joined by another only where the change was
+ * carried from it as a patch, and then only from after its last commit there. Undefined when there is
  * none, or when the commit's directory cannot be told or is not among them,
  * so no turn is read rather than the wrong one.
  */
-function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], shell: Shell): string | undefined {
+/** A root of the repo and the record index its work counts from. */
+interface Root {
+  path: string;
+  from: number;
+}
+
+function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], shell: Shell): Root[] | undefined {
   const roots = new Set<string>();
   for (const r of records) {
     for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
@@ -609,8 +634,23 @@ function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], sh
   }
   // An agent's scratchpad lives in a temp folder and can mirror the repo's layout: it is never the repo.
   for (const root of roots) if (TEMP.test(root)) roots.delete(root);
-  if (roots.size <= 1) return [...roots][0];
-  return shell.committed !== undefined && roots.has(`${shell.committed}/`) ? `${shell.committed}/` : undefined;
+  if (roots.size === 0) return undefined;
+  if (roots.size === 1) return [{ path: [...roots][0]!, from: 0 }];
+  if (shell.committed === undefined || !roots.has(`${shell.committed}/`)) return undefined;
+  const home = shell.committed;
+  const out: Root[] = [{ path: `${home}/`, from: 0 }];
+  // Another checkout counts only where the change was carried from it: a patch written there and applied
+  // where the commit was made. Its work counts from after its own last commit before that, so the earlier
+  // work it shipped on its own (another PR) stays out.
+  for (const root of roots) {
+    const dir = root.slice(0, -1);
+    if (dir === home) continue;
+    const carried = shell.patchesOut.find((o) => o.dir === dir && shell.patchesIn.some((p) => p.dir === home && p.name === o.name && p.at >= o.at));
+    if (carried === undefined) continue;
+    const before = shell.commits.filter((c) => c.dir === dir && c.at <= carried.at).map((c) => c.at);
+    out.push({ path: root, from: before.length > 0 ? Math.max(...before) + 1 : 0 });
+  }
+  return out;
 }
 
 /**
@@ -623,8 +663,13 @@ function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], sh
 function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[], start: number, files: string[]): string {
   const kept: string[] = [];
   const shell = shellOf(records);
-  const root = repoRoot(records, files, shell);
-  if (root === undefined) return "";
+  const roots = repoRoot(records, files, shell);
+  if (roots === undefined) return "";
+  // Away means outside every root that counts at that record; work or a `cd` at any of them is home.
+  const live = (k: number): Root[] => roots.filter((r) => k >= r.from);
+  const leavesAll = (block: NonNullable<TranscriptRecord["content"]>[number], k: number): boolean => live(k).every((r) => leaves(block, r.path));
+  const worksAt = (block: NonNullable<TranscriptRecord["content"]>[number], k: number): boolean => live(k).some((r) => worksOnPath(block, files, r.path, shell));
+  const returnsTo = (block: NonNullable<TranscriptRecord["content"]>[number], k: number): boolean => live(k).some((r) => returns(block, r.path));
   // Whether the agent is away from this repo before each record, over the whole transcript: the shell keeps its directory
   // across turns. It starts away, leaves on any step outside the root, and is back only on work at the root or a `cd` to it.
   const away: boolean[] = [];
@@ -633,8 +678,8 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
     // Blocks run in order: a record counts as home when the agent is home before or after any of its calls.
     let home = !out;
     for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
-      if (leaves(block, root)) out = true;
-      else if (worksOnPath(block, files, root, shell) || returns(block, root)) out = false;
+      if (leavesAll(block, k)) out = true;
+      else if (worksAt(block, k) || returnsTo(block, k)) out = false;
       home = home || !out;
     }
     away[k] = !home;
@@ -645,7 +690,7 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
     // The first segment can start inside a turn the previous checkpoint read part of: the whole turn says whether it worked on the files, only the unread part is read.
     let opened = from;
     while (opened > 0 && !(records[opened] !== undefined && humanTurn(records[opened]!))) opened--;
-    if (records.slice(opened, i).some((r) => r?.type === "assistant" && (r.content ?? []).some((block) => worksOnPath(block, files, root, shell)))) {
+    if (records.slice(opened, i).some((r, d) => r?.type === "assistant" && (r.content ?? []).some((block) => worksAt(block, opened + d)))) {
       // Inside the turn, what the agent does while away from this repo is not read.
       for (let k = from; k < i; k++) if (!away[k]) kept.push(lines[k]!);
     }
@@ -676,8 +721,9 @@ function leaves(block: NonNullable<TranscriptRecord["content"]>[number], root: s
     const path = block.input?.file_path ?? block.input?.path ?? block.input?.notebook_path;
     return typeof path === "string" && path !== "" && !inside(path);
   }
-  const command = block.input?.command;
-  if (typeof command !== "string") return false;
+  if (typeof block.input?.command !== "string") return false;
+  // A variable the command assigns reads as its value (`W=/repo; cd "$W"`), as `shellOf` reads it.
+  const command = expandAssigned(block.input.command);
   if (targetsOf(command).some((t) => !inside(t) && !/^\$\{?PWD\}?$/.test(t))) return true;
   if (/(?:^|[\s'"=(:])\.\.\//.test(command) || /\$\{?\w+\}?\//.test(command)) return true;
   const top = root.split("/")[1] ?? "";
@@ -688,10 +734,10 @@ function leaves(block: NonNullable<TranscriptRecord["content"]>[number], root: s
   return false;
 }
 
-/** Whether a Bash command moves back to the root: a `cd` or `pushd` to it. */
+/** Whether a Bash command moves back to the root: a `cd` or `pushd` to it, a variable the command assigns read as its value. */
 function returns(block: NonNullable<TranscriptRecord["content"]>[number], root: string): boolean {
   const command = block.type === "tool_use" && block.name === "Bash" ? block.input?.command : undefined;
-  return typeof command === "string" && targetsOf(command).some((t) => t === root || t === root.slice(0, -1));
+  return typeof command === "string" && targetsOf(expandAssigned(command)).some((t) => t === root || t === root.slice(0, -1));
 }
 
 /**
@@ -780,11 +826,14 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
  * id, name, input, and the result as Entire compacts it (`status` from the
  * `tool_result`'s `is_error`, `output` its text, which readers search and never
  * show). Its own text is not carried, and its prompts are dropped, so it adds
- * no turn. A line that is not JSON is skipped.
+ * no turn. A reviewer's verdict in its last message (`verdictOf`: only the fixed
+ * words of `verdictOf`) is carried first, as a task notification naming
+ * `toolUseId`, the call that started it, the way a background agent reports. A line that is not JSON is skipped.
  */
-export function subagentRecords(raw: string): string[] {
+export function subagentRecords(raw: string, toolUseId = ""): string[] {
   const results = new Map<string, { status: string; output: string }>();
   const calls: { id: string; name: string; input?: unknown }[][] = [];
+  let last = "";
   for (const line of raw.split("\n")) {
     if (line.trim() === "") continue;
     let record: { type?: string; message?: { content?: unknown } };
@@ -801,17 +850,26 @@ export function subagentRecords(raw: string): string[] {
       results.set(block.tool_use_id, { status: block.is_error === true ? "error" : "success", output });
     }
     if (record.type !== "assistant") continue;
+    const said = (content as { type?: string; text?: unknown }[]).flatMap((b) => (b?.type === "text" && typeof b.text === "string" ? [b.text] : [])).join("\n");
+    if (said !== "") last = said;
     const uses = (content as { type?: string; id?: unknown; name?: unknown; input?: unknown }[]).filter(
       (b): b is { type: string; id: string; name: string; input?: unknown } => b?.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string",
     );
     if (uses.length > 0) calls.push(uses);
   }
-  return calls.map((uses) =>
+  const records = calls.map((uses) =>
     JSON.stringify({
       type: "assistant",
       content: uses.map((b) => ({ type: "tool_use", id: b.id, name: b.name, input: b.input ?? {}, ...(results.has(b.id) && { result: results.get(b.id) }) })),
     }),
   );
+  const verdict = verdictOf(last);
+  if (verdict !== undefined && toolUseId !== "") {
+    const word = { approved: "APPROVE", "changes requested": "CHANGES REQUESTED", "no findings": "result: no findings", findings: "result: findings" }[verdict];
+    // First, right after the call that started it: the subagent's own commands can read as leaving the repo, and the verdict belongs to the call.
+    records.unshift(JSON.stringify({ type: "user", content: [{ text: `<task-notification>\n<tool-use-id>${toolUseId}</tool-use-id>\n<result>\n${word}\n</result>\n</task-notification>` }] }));
+  }
+  return records;
 }
 
 /** What the agent said in a compact transcript: its first and last text, and how much it did. A line that is not JSON is skipped. */
@@ -926,7 +984,7 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     }
     for (const path of tasks.split("\n")) {
       const task = /^(toolu_[\w-]+)\/agent-[\w-]+\.jsonl$/.exec(path)?.[1];
-      if (task !== undefined) subagents.set(task, [...(subagents.get(task) ?? []), ...subagentRecords(show(`tasks/${path}`))]);
+      if (task !== undefined) subagents.set(task, [...(subagents.get(task) ?? []), ...subagentRecords(show(`tasks/${path}`), task)]);
     }
     const contents = (path: string): string | undefined => {
       if (!committed.has(path)) {
