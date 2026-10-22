@@ -110,8 +110,44 @@ describe("decisionsIn: tests", () => {
     expect(texts(window(bash("bunx vitest run a.test.ts", "error").replace("SECRET OUTPUT", "Permission to use Bash with command bunx vitest run a.test.ts has been denied.")))).toEqual([]);
   });
 
-  it("does not call a failure the last word when the runner passed after it, on any files", () => {
-    expect(texts(window(ran("bunx vitest run src/cap.test.ts | tail -1", "Tests  1 failed (1)"), ran("bunx vitest run | tail -1", "Tests  40 passed (40)")), ["src/cap.test.ts"])).toEqual([]);
+  it("calls a failure fixed when a later run of the runner covers its files: the whole suite, or a folder holding them", () => {
+    const fail = ran("bunx vitest run src/cap/cap.test.ts | tail -1", "Tests  1 failed (1)");
+    const fixed = ["tests: `vitest` on `src/cap/cap.test.ts` failed, then passed"];
+    expect(texts(window(fail, ran("bunx vitest run | tail -1", "Tests  40 passed (40)")), ["src/cap/cap.test.ts"])).toEqual(fixed);
+    expect(texts(window(fail, ran("bunx vitest run src/cap src/other 2>&1 | tail -1", "Tests  12 passed (12)")), ["src/cap/cap.test.ts"])).toEqual(fixed);
+  });
+
+  it("calls nothing fixed by a pass a filter, a project, a config or a bare name narrowed", () => {
+    const fail = ran("bunx vitest run src/cap/cap.test.ts | tail -1", "Tests  1 failed (1)");
+    for (const narrowed of ['bunx vitest run -t "rounds up"', "bunx vitest run other", "bunx vitest run --project e2e", "bunx vitest run --testNamePattern=other", "bunx vitest run tests", "bunx vitest run --config vitest.e2e.config.ts src/cap"]) {
+      expect(texts(window(fail, ran(`${narrowed} 2>&1 | tail -1`, "Tests  9 passed (9)")), ["src/cap/cap.test.ts"]), narrowed).toEqual([]);
+    }
+    // The same for pytest's -k and go's -run: the failure is closed by nothing, and not called the last word either.
+    expect(texts(window(ran("uv run pytest tests/test_cap.py | tail -1", "==== 1 failed in 0.10s ===="), ran("uv run pytest -k cap | tail -1", "==== 3 passed in 0.10s ====")), ["tests/test_cap.py"])).toEqual([]);
+    expect(texts(window(ran("go test ./cap/... | tail -2", "FAIL\tx/cap\t0.1s"), ran("go test -run TestCap ./cap/...", "ok  \tx/cap\t0.1s")), ["cap/cap_test.go"])).toEqual([]);
+    // Flags that report, time or schedule do not narrow it.
+    expect(texts(window(fail, ran("bunx vitest run --coverage --silent 2>&1 | tail -1", "Tests  40 passed (40)")), ["src/cap/cap.test.ts"])).toEqual(["tests: `vitest` on `src/cap/cap.test.ts` failed, then passed"]);
+    expect(texts(window(fail, ran("bunx vitest run --testTimeout=60000 src/cap 2>&1 | tail -1", "Tests  12 passed (12)")), ["src/cap/cap.test.ts"])).toEqual(["tests: `vitest` on `src/cap/cap.test.ts` failed, then passed"]);
+  });
+
+  it("calls nothing fixed by a pass from another directory, whose paths name other files", () => {
+    const fail = ran("bunx vitest run packages/api/src/index.test.ts | tail -1", "Tests  1 failed (1)");
+    expect(texts(window(fail, ran("cd packages/web && bunx vitest run src/index.test.ts | tail -1", "Tests  3 passed (3)")), ["packages/api/src/index.test.ts"])).toEqual([]);
+  });
+
+  it("does not call a failure its last run when the runner passed in the same record, in no known order", () => {
+    const both = JSON.stringify({
+      type: "assistant",
+      content: [
+        { type: "tool_use", name: "Bash", input: { command: "bunx vitest run src/cap/cap.test.ts | tail -1" }, result: { output: "Tests  1 failed (1)", status: "success" } },
+        { type: "tool_use", name: "Bash", input: { command: "bunx vitest run src/other | tail -1" }, result: { output: "Tests  4 passed (4)", status: "success" } },
+      ],
+    });
+    expect(texts(window(both), ["src/cap/cap.test.ts"])).toEqual([]);
+  });
+
+  it("does not call a failure the last word when the runner passed after it on other files, nor call it fixed", () => {
+    expect(texts(window(ran("bunx vitest run src/cap/cap.test.ts | tail -1", "Tests  1 failed (1)"), ran("bunx vitest run src/other 2>&1 | tail -1", "Tests  9 passed (9)")), ["src/cap/cap.test.ts"])).toEqual([]);
   });
 
   it("never calls a run that exited non-zero a pass, whatever its Tests line says", () => {
