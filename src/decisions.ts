@@ -262,9 +262,10 @@ const ALTERNATIVES = /^#{1,6}\s*(?:alternatives?(?: considered)?|options conside
 export function decisionsIn(window: string, files: string[]): Decision[] {
   const out: Decision[] = [];
   const carried = (path: string): string | undefined => files.find((f) => path === f || path.endsWith(`/${f}`));
-  const tests = new Map<string, { at: number; statuses: string[]; runner: string; last: number }>();
-  // Where each runner last passed, any files: a later pass of the same runner outranks an earlier failure.
-  const passed = new Map<string, number>();
+  const tests = new Map<string, { at: number; statuses: string[]; runner: string; last: number; named: string[] }>();
+  // Every passing run, with what it targeted (none: the whole suite): a later pass of the same runner that
+  // covers a failure's files closes it, and any later pass of that runner keeps it from being the last word.
+  const passes: { runner: string; at: number; targets: string[] }[] = [];
   // A reviewer started in the background reports later, in a task notification naming its call.
   const reviews: { id: string; at: number; reviewer: string; verdict: string | undefined }[] = [];
   const notes: string[] = [];
@@ -308,10 +309,10 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
           const named = all.every((f) => f !== undefined && TEST_FILE.test(f)) ? [...new Set(all as string[])] : [];
           const more = named.length > NAMED_FILES ? ` and ${named.length - NAMED_FILES} more` : "";
           const key = named.length > 0 ? `${code(run.runner)} on ${named.slice(0, NAMED_FILES).map(code).join(", ")}${more}` : code(run.runner);
-          const seen = tests.get(key) ?? { at, statuses: [], runner: run.runner, last: at };
+          const seen = tests.get(key) ?? { at, statuses: [], runner: run.runner, last: at, named };
           seen.last = at;
           seen.statuses.push(status);
-          if (status === "success") passed.set(run.runner, at);
+          if (status === "success") passes.push({ runner: run.runner, at, targets: targets.map((t) => t.replace(/^\.\//, "").replace(/\/$/, "")) });
           tests.set(key, seen);
         }
         const revert = REVERTS.find(([r]) => r.test(command));
@@ -328,11 +329,15 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
     const reported = r.verdict ?? (r.id === "" ? undefined : notes.filter((n) => n.includes(r.id)).map(verdictOf).find((v) => v !== undefined));
     out.push({ kind: "reviewed", text: `${code(r.reviewer)}: ${reported ?? "verdict not recorded"}`, at: r.at, ...(r.id !== "" && { call: r.id }) });
   }
-  for (const [key, { at, statuses, runner, last }] of tests) {
+  for (const [key, { at, statuses, runner, last, named }] of tests) {
     if (!statuses.includes("error")) continue;
-    if (statuses[statuses.length - 1] === "success") out.push({ kind: "tests", text: `${key} failed, then passed`, at });
-    // A failure the runner passed after, on any files, is not called the last word: the later run may have covered it.
-    else if ((passed.get(runner) ?? -1) < last) out.push({ kind: "tests", text: `${key} failed on its last run`, at });
+    const later = passes.filter((p) => p.runner === runner && p.at > last);
+    // A later pass covers the failing files when it runs the whole suite, or names each file or a folder holding it.
+    const covers = (p: (typeof passes)[number]): boolean =>
+      p.targets.length === 0 || (named.length > 0 && named.every((f) => p.targets.some((t) => f === t || f.startsWith(`${t}/`) || f.endsWith(`/${t}`))));
+    if (statuses[statuses.length - 1] === "success" || later.some(covers)) out.push({ kind: "tests", text: `${key} failed, then passed`, at });
+    // A failure the runner passed after, on other files, is not called the last word: the later run may have covered it.
+    else if (later.length === 0) out.push({ kind: "tests", text: `${key} failed on its last run`, at });
   }
   return out.sort((a, b) => a.at - b.at);
 }

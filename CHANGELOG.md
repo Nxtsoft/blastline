@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.24.1
+
+A test that failed, then passed in a broader run, now shows in **How this PR was decided**.
+
+- A failing run that names test files is closed by a later passing run of the same runner that covers them: the whole suite, the same files, or a folder holding them. The row says "failed, then passed". Before, the broader pass was keyed differently, so it only stopped the failure from being called the last word, and the row was dropped. On a real web-app PR whose new tests failed twice and then passed in a run over their folder, the section was empty; it now shows both runs. A later pass on unrelated files still closes nothing.
+
 ## 0.24.0
 
 The decisions section becomes the brief's lead: **How this PR was decided**, a table of what happened, what was decided and the commit as evidence. It now reads questions the agent asked and independent reviews, and it keeps work an agent carried to the commit's worktree as a patch.

@@ -110,8 +110,15 @@ describe("decisionsIn: tests", () => {
     expect(texts(window(bash("bunx vitest run a.test.ts", "error").replace("SECRET OUTPUT", "Permission to use Bash with command bunx vitest run a.test.ts has been denied.")))).toEqual([]);
   });
 
-  it("does not call a failure the last word when the runner passed after it, on any files", () => {
-    expect(texts(window(ran("bunx vitest run src/cap.test.ts | tail -1", "Tests  1 failed (1)"), ran("bunx vitest run | tail -1", "Tests  40 passed (40)")), ["src/cap.test.ts"])).toEqual([]);
+  it("calls a failure fixed when a later run of the runner covers its files: the whole suite, or a folder holding them", () => {
+    const fail = ran("bunx vitest run src/cap/cap.test.ts | tail -1", "Tests  1 failed (1)");
+    const fixed = ["tests: `vitest` on `src/cap/cap.test.ts` failed, then passed"];
+    expect(texts(window(fail, ran("bunx vitest run | tail -1", "Tests  40 passed (40)")), ["src/cap/cap.test.ts"])).toEqual(fixed);
+    expect(texts(window(fail, ran("bunx vitest run src/cap src/other 2>&1 | tail -1", "Tests  12 passed (12)")), ["src/cap/cap.test.ts"])).toEqual(fixed);
+  });
+
+  it("does not call a failure the last word when the runner passed after it on other files, nor call it fixed", () => {
+    expect(texts(window(ran("bunx vitest run src/cap/cap.test.ts | tail -1", "Tests  1 failed (1)"), ran("bunx vitest run src/other 2>&1 | tail -1", "Tests  9 passed (9)")), ["src/cap/cap.test.ts"])).toEqual([]);
   });
 
   it("never calls a run that exited non-zero a pass, whatever its Tests line says", () => {
