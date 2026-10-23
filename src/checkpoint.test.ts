@@ -1276,3 +1276,68 @@ describe("windowsOf: speed on long transcripts", () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 });
+
+describe("windowsOf: which git commit made this commit", () => {
+  const SHA = "abc1234def5678900000000000000000000000ff";
+  const run = (cmd: string, output = ""): object => ({ id: "c", type: "tool_use", name: "Bash", input: { command: cmd }, result: { output, status: "success" } });
+  const made = (cmd: string, output: string, subject: string, sha = SHA): boolean =>
+    windowsOf([rec("user", stamp(1), [user("ship it")]), rec("assistant", stamp(2), [run(cmd, output)])].join("\n"), undefined, ["src/a.ts"], ["src/a.ts"], new Map(), subject, sha).madeCommit;
+
+  it("knows the commit by the short sha git prints, whatever the message flags say", () => {
+    expect(made("cd /Users/x/wt && git commit -F /tmp/msg.txt", "[feat/x abc1234] fix: the reader keeps the tail\n 1 file changed", "fix: the reader keeps the tail")).toBe(true);
+    expect(made("cd /Users/x/wt && git commit --amend --no-edit", "[feat/x abc1234d] fix: the reader keeps the tail\n Date: Thu", "fix: the reader keeps the tail")).toBe(true);
+    expect(made("git commit -m 'first'", "[main (root-commit) abc1234] first", "first commit of the repo")).toBe(true);
+    // A sha in the output that is another commit's: not this one, whatever the subject says.
+    expect(made("git commit -m 'fix: the reader keeps the tail'", "[feat/x 9999999] fix: the reader keeps the tail", "fix: the reader keeps the tail")).toBe(false);
+  });
+
+  it("falls back to the whole message when git printed no sha, unescaping quotes, never a prefix", () => {
+    expect(made('git commit -q -m "fix: handle \\"quoted\\" names"', "", 'fix: handle "quoted" names')).toBe(true);
+    expect(made("git commit -qm 'fix: flaky tests in the parser'", "", "fix: flaky tests")).toBe(false);
+    expect(made("git commit -qm 'fix: flaky tests'", "", "fix: flaky tests in the parser")).toBe(false);
+    expect(made("git commit -q -F - <<'EOF'\nfix: flaky tests in the parser\n\nBody.\nEOF", "", "fix: flaky tests in the parser")).toBe(true);
+    expect(made('git commit -q -m "$(cat <<\'EOF\'\nfix: flaky tests in the parser\n\nBody.\nEOF\n)"', "", "fix: flaky tests in the parser")).toBe(true);
+  });
+});
+
+describe("checkpointFor: two sessions that committed the same subject", () => {
+  it("keeps the one whose commit ran where it worked on the files, not the one Entire saw write more", () => {
+    const tool = (name: string, input: object, output = "", status = "success"): object => ({ id: `t_${name}`, type: "tool_use", name, input, result: { output, status } });
+    const id = "1f2e3d4c5b6a";
+    const dir = `/${id.slice(0, 2)}/${id.slice(2)}`;
+    const session = (i: number, sid: string, model: string, touched: string[], transcript: string[]): Record<string, string> => ({
+      [`${i}/metadata.json`]: JSON.stringify({ cli_version: "0.11.5", checkpoint_id: id, session_id: sid, agent: "Claude Code", model, files_touched: touched }),
+      [`${i}/transcript.jsonl`]: transcript.join("\n") + "\n",
+      [`${i}/prompt.txt`]: "",
+    });
+    writeBranchCheckpoint(id, {
+      "metadata.json": JSON.stringify({ cli_version: "0.11.5", checkpoint_id: id, files_touched: null, sessions: [{ metadata: `${dir}/0/metadata.json` }, { metadata: `${dir}/1/metadata.json` }] }),
+      // Committed the same subject in a scratch clone where it never worked on the files; Entire still listed it.
+      ...session(0, "dd000000-0000-4000-8000-000000000000", "impostor-model", ["src/flaky.ts"], [
+        rec("user", stamp(60), [user("try it in a scratch clone")]),
+        rec("assistant", stamp(61), [text("Trying it elsewhere."), tool("Bash", { command: "cd /Users/x/scratch && git commit -qm 'fix: flaky tests are retried once'" })]),
+      ]),
+      ...session(1, "ee000000-0000-4000-8000-000000000000", "real-model", [], [
+        rec("user", stamp(62), [user("fix the flaky tests")]),
+        rec("assistant", stamp(63), [text("Retrying flaky tests once."), tool("Edit", { file_path: "/Users/x/wt/src/flaky.ts", old_string: "a", new_string: "b" })]),
+        rec("assistant", stamp(64), [tool("Bash", { command: "cd /Users/x/wt && git commit -qm 'fix: flaky tests are retried once'" })]),
+      ]),
+    });
+    const commit = commitFile("src/flaky.ts", "export const retries = 1;\n", `fix: flaky tests are retried once\n\nEntire-Checkpoint: ${id}\n`);
+    const cp = checkpointFor(repo, commit, [], new Map(), ["src/flaky.ts"]);
+    expect(cp?.model).toBe("real-model");
+    expect(cp?.narration.started).toBe("Retrying flaky tests once.");
+  });
+});
+
+describe("windowsOf: path matching, pinned", () => {
+  const roots = (cmd: string): string[] =>
+    windowsOf([rec("user", stamp(1), [user("go")]), rec("assistant", stamp(2), [{ id: "p", type: "tool_use", name: "Bash", input: { command: cmd }, result: { output: "", status: "success" } }])].join("\n"), undefined, ["src/a.ts"]).roots;
+  it("reads an absolute path only as a word of its own, so a flag glued to it, a bracket, or a longer name is no match", () => {
+    expect(roots("sed -n 1p /Users/x/wt/src/a.ts")).toEqual(["/Users/x/wt"]);
+    expect(roots("tsc --outFile=/Users/x/wt/src/a.ts")).toEqual(["/Users/x/wt"]);
+    expect(roots("cc -I/Users/x/wt/src/a.ts")).toEqual([]);
+    expect(roots("echo [/Users/x/wt/src/a.ts]")).toEqual([]);
+    expect(roots("cp /Users/x/wt/src/a.ts.orig /tmp/x")).toEqual([]);
+  });
+});

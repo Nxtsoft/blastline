@@ -400,8 +400,6 @@ describe("decisionsIn: review round on 0.25.0", () => {
     expect(d).toEqual(["verified: docs/verification.md: FAIL"]);
     // A note the session only edited is still one it wrote.
     expect(decisionsIn(window(edit), ["docs/verification.md"], committed).map((x) => x.text)).toEqual(["docs/verification.md: FAIL"]);
-    // Not in the commit: no row.
-    expect(decisionsIn(window(write2("/w/docs/verification.md", "---\nstatus: PASS\n---")), ["docs/verification.md"], () => undefined)).toEqual([]);
   });
 
   it("gives no status from a body whose status lines disagree", () => {
@@ -425,6 +423,20 @@ describe("decisionsIn: review round on 0.25.0", () => {
   it("never lets runs from two different directories share a target or close each other", () => {
     const web = ran("cd /w/web && npx vitest run 2>&1 | tail -3", " FAIL  src/cap.test.ts > x\n Test Files  1 failed | 4 passed (5)");
     const api = ran("cd /w/api && npx vitest run 2>&1 | tail -2", " Test Files  9 passed (9)\n      Tests  20 passed (20)");
-    expect(texts(window(web, api), ["web/src/cap.test.ts"])).toEqual([]);
+    // Neither closed by the other directory's pass, nor kept from being its last run by it.
+    expect(texts(window(web, api), ["web/src/cap.test.ts"])).toEqual(["tests: `vitest` on `web/src/cap.test.ts` failed on its last run"]);
+  });
+});
+
+describe("decisionsIn: second review round on 0.25.0", () => {
+  it("reads a note written here but committed later from what the session wrote", () => {
+    const d = decisionsIn(window(write("/w/docs/verification.md", "---\nstatus: PASS\n---")), ["docs/verification.md"], () => undefined).map((x) => x.text);
+    expect(d).toEqual(["docs/verification.md: PASS"]);
+  });
+
+  it("calls a failure its last run when the only later pass ran in another directory", () => {
+    const fail = ran("cd /w/web && bunx vitest run src/cap.test.ts 2>&1 | tail -1", "      Tests  1 failed (1)");
+    const elsewhere = ran("cd /w/api && bunx vitest run src/other.test.ts 2>&1 | tail -1", "      Tests  4 passed (4)");
+    expect(texts(window(fail, elsewhere), ["src/cap.test.ts"])).toEqual(["tests: `vitest` on `src/cap.test.ts` failed on its last run"]);
   });
 });

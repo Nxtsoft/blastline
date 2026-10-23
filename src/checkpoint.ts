@@ -308,6 +308,8 @@ interface TranscriptRecord {
     name?: string;
     text?: string;
     input?: { command?: unknown; file_path?: unknown; path?: unknown; notebook_path?: unknown; old_string?: unknown; new_string?: unknown; content?: unknown; edits?: unknown };
+    /** What the call returned, as Entire compacts it: read to find the commit a `git commit` made, never shown. */
+    result?: { output?: unknown; status?: unknown };
   }[];
 }
 
@@ -895,7 +897,7 @@ function returns(block: NonNullable<TranscriptRecord["content"]>[number], root: 
  * after that call, and no other window does. Lines that are not JSON are kept;
  * every reader skips them.
  */
-export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[], scope: string[] = files, subagents: Map<string, string[]> = new Map(), subject = ""): Windows {
+export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[], scope: string[] = files, subagents: Map<string, string[]> = new Map(), subject = "", sha = ""): Windows {
   const lines = transcript.split("\n").filter((line) => line.trim() !== "");
   const records = lines.map((line): TranscriptRecord | undefined => {
     try {
@@ -912,16 +914,23 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   const strict = strictRoots(records, files, shell);
   const intent = intentWindow(records, strict, shell, sinceStart);
   // Where the session worked on the commit's files by their path, and whether it ran the `git commit` that made this
-  // commit: a call whose command carries the commit's subject (a squash's ` (#123)` aside), at least 10 characters so a
-  // short one cannot match by chance. A session that writes through a shell leaves Entire's `files_touched` empty, and
-  // one that only ran a test of these files and committed other work in its own checkout is not the author (a web-app
-  // PR: another ticket's session, by checkout alone, gave the commit its model and rows); the subject tells them apart.
+  // commit. A call whose output names a commit (`[<branch> <sha>] …`, also after `--amend`) made that one, so it is this
+  // commit only when the sha it printed starts this commit's; a quiet call (`-q`) is this commit when the message its
+  // command shows (`commitSubjectIn`) is this commit's subject, whole (a squash's ` (#123)` aside), never a prefix of it.
+  // A session that writes through a shell leaves Entire's `files_touched` empty, and one that only ran a test of these
+  // files and committed other work in its own checkout is not the author (a web-app PR: another ticket's session, by
+  // checkout alone, gave the commit its model and rows).
   const roots = [...new Set(strict.flat())];
   const title = subject.replace(/ \(#\d+\)$/, "").trim();
   let made = -1;
-  for (let k = records.length - 1; k >= 0 && made === -1 && title.length >= 10; k--) {
+  for (let k = records.length - 1; k >= 0 && made === -1; k--) {
     const r = records[k];
-    if (r?.type === "assistant" && (r.content ?? []).some((b) => b.type === "tool_use" && b.name === "Bash" && typeof b.input?.command === "string" && /\bgit\b[^\n]*\bcommit\b/.test(b.input.command) && b.input.command.includes(title))) made = k;
+    for (const b of r?.type === "assistant" ? (r.content ?? []) : []) {
+      const command = b.type === "tool_use" && b.name === "Bash" ? b.input?.command : undefined;
+      if (typeof command !== "string" || !/\bgit\b[^\n]*\bcommit\b/.test(command)) continue;
+      const printed = /^\[[^\]\n]*\s([0-9a-f]{7,40})\]/m.exec(typeof b.result?.output === "string" ? b.result.output : "")?.[1];
+      if (printed !== undefined ? sha !== "" && sha.startsWith(printed) : title !== "" && commitSubjectIn(command) === title) made = k;
+    }
   }
   const committedAt = made === -1 ? undefined : shell.commits.filter((c) => c.at === made).at(-1)?.dir;
   const firstWork = records.findIndex((r, i) => i >= sinceStart && r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
@@ -1167,11 +1176,12 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     };
     const scope = changed.length > 0 ? changed : files;
     const subject = git(repo, ["log", "-1", "--format=%s", commit]).trim();
+    const full = git(repo, ["rev-parse", `${commit}^{commit}`]).trim();
     for (let i = 0; i < sessionCount; i++) {
       const meta = i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata);
       const sessionId = meta.session_id ?? "";
       const before = sessionId === "" ? undefined : read.get(sessionId);
-      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, strict, roots, madeCommit, committedAt, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files, scope, subagents, subject);
+      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, strict, roots, madeCommit, committedAt, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files, scope, subagents, subject, full);
       if (extended) readBefore++;
       sessions.push({ id: sessionId, lines, hash });
       for (const r of symbolReasonsIn(sinceWindow, symbols, contents)) reasons.set(`${r.path}\0${r.label}`, r);
@@ -1182,14 +1192,19 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     }
     // Entire attaches every session live in the repo when the commit is made. Only the sessions that did the commit's
     // work say what it did and ran, and give its model; the rest (other tasks in the same checkout) are left out. Strongest
-    // evidence first: the session ran the `git commit` that made this commit (`madeCommit`); Entire
+    // evidence first: the session ran the `git commit` that made this commit (`madeCommit`, by the sha it printed or the
+    // whole message); Entire
     // saw it write a committed file and it worked on one by its path; Entire saw it write one; it worked on one by its
     // path; by basename only, which another task's file of the same name also matches. Inside a tier, the session that
     // wrote the most of the commit's files speaks first: a session can have written one shared file for an earlier ticket
     // (a web-app PR: 2 of 23 files, against 21 by the session that made the commit), and one that writes through a shell
     // leaves `files_touched` empty, so that count alone never rules a session out.
     const byTouched = [...parts].sort((a, b) => b.touched - a.touched);
-    const committers = byTouched.filter((p) => p.madeCommit);
+    // Two sessions can show the same quiet commit message; then the one whose commit ran where it worked on the files is
+    // the author. Committers keep session order: Entire's list of written files can name a session that only ran alongside.
+    const madeIt = parts.filter((p) => p.madeCommit);
+    const atHome = madeIt.filter((p) => p.committedAt !== undefined && p.roots.includes(p.committedAt));
+    const committers = atHome.length > 0 ? atHome : madeIt;
     const tiers = [committers, byTouched.filter((p) => p.touched > 0 && p.strict), byTouched.filter((p) => p.touched > 0), parts.filter((p) => p.strict), parts.filter((p) => p.worked), parts];
     const own = tiers.find((t) => t.length > 0)!;
     // Decisions come from the session that made the commit and any that worked at the checkout it was made in, when a
@@ -1235,4 +1250,22 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The subject a `git commit` command gives its message, unescaped: the first line of the heredoc fed to `-F -` or to
+ * `-m "$(cat <<EOF`, else of its first `-m` (`-qm`, `-am`) or `--message=` argument, double-quoted (`\"` read as `"`),
+ * single-quoted or a bare word. Undefined when the command does not show it (`-F <file>`, `--amend --no-edit`).
+ */
+export function commitSubjectIn(command: string): string | undefined {
+  const at = command.search(/\bgit\b[^\n]*?\bcommit\b/);
+  if (at === -1) return undefined;
+  const rest = command.slice(at);
+  const heredoc = /(?:\s-F\s*-|\s--file[= ]-|\s-[a-zA-Z]*m\s*"\$\(cat)\s*<<-?\s*(['"]?)(\w+)\1[^\n]*\n([^\n]*)/.exec(rest);
+  if (heredoc !== null) return heredoc[3]!.trim();
+  const quoted = /(?:\s-[a-zA-Z]*m\s*|\s--message=)"((?:[^"\\]|\\.)*)"/.exec(rest);
+  if (quoted !== null) return quoted[1]!.replace(/\\(["\\$`])/g, "$1").split("\n")[0]!.trim();
+  const single = /(?:\s-[a-zA-Z]*m\s*|\s--message=)'([^']*)'/.exec(rest);
+  if (single !== null) return single[1]!.split("\n")[0]!.trim();
+  return /(?:\s-[a-zA-Z]*m\s+|\s--message=)([^\s"'`$;&|]+)/.exec(rest)?.[1];
 }

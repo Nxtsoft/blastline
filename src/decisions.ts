@@ -445,8 +445,9 @@ export function decisionsIn(window: string, files: string[], committed?: (path: 
         const path = carried(note.path);
         if (path === undefined || !path.endsWith(".md")) continue;
         if (note.content !== undefined && ALTERNATIVES.test(note.content)) out.push({ kind: "alternatives", text: path, at });
-        // The transcript proves the session wrote the note; its status is the one the commit holds.
-        const text = committed !== undefined ? committed(path) : note.content;
+        // The transcript proves the session wrote the note; its status is the one the commit holds. A note written here
+        // and first committed in a later commit is not in this one yet: then what the session wrote says it.
+        const text = (committed !== undefined ? committed(path) : undefined) ?? note.content;
         const status = /verif/i.test(path.slice(path.lastIndexOf("/") + 1)) && text !== undefined ? verificationStatus(text) : undefined;
         if (status !== undefined) verified.set(path, { kind: "verified", text: `${path}: ${status}`, at });
       }
@@ -545,7 +546,7 @@ export function decisionsIn(window: string, files: string[], committed?: (path: 
     // Failures all outside the change are said whatever ran after: the reviewer reads that the commit went in with them.
     else if (outside !== "") out.push({ kind: "tests", text: `${label} failed${count}${outside}${g.reran && g.failing !== undefined ? `; ${g.failing.length} still failed when re-run` : ""}`, at: g.at });
     // A failure the runner passed alongside or after, on other files, is not called the last word: that run may have covered it.
-    else if (!passes.some((p) => p.runner === g.runner && p.at >= g.last)) out.push({ kind: "tests", text: `${label} failed${count} on its last run`, at: g.at });
+    else if (!passes.some((p) => p.runner === g.runner && sameDir(p.cd, g.cd) && p.at >= g.last)) out.push({ kind: "tests", text: `${label} failed${count} on its last run`, at: g.at });
   }
   return out.sort((a, b) => a.at - b.at);
 }
