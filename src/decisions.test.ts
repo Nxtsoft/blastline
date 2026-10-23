@@ -183,7 +183,7 @@ describe("decisionsIn: runs read from logs, re-runs, failures outside the change
   // a web-app PR's shape: two failing files named from a folder run, each fixed and run alone; the whole
   // suite to a log, read later; its failures re-run from a list into another log, read later; the last one alone.
   const change = ["src/a/__tests__/x.test.tsx", "src/b.test.ts", "src/a/x.tsx"];
-  const pr859 = [
+  const longSession = [
     ran('cd /w && bunx vitest run "src/a/__tests__" "src/b.test.ts" 2>&1 | tail -8', " FAIL  src/b.test.ts > basis > sends it\n FAIL  src/a/__tests__/x.test.tsx > row > cites\n Test Files  2 failed | 10 passed (12)"),
     ran('cd /w && bunx vitest run "src/b.test.ts" 2>&1 | grep -E "Tests  "', "      Tests  55 passed (55)"),
     ran('cd /w && bunx vitest run "src/a/__tests__/x.test.tsx" 2>&1 | grep -E "Tests  "', "      Tests  4 passed (4)"),
@@ -196,25 +196,25 @@ describe("decisionsIn: runs read from logs, re-runs, failures outside the change
   ];
 
   it("reads a redirected run's outcome from the later call that read its log, and closes each failure only with runs of its own files", () => {
-    expect(texts(window(...withLogOutputs(pr859)), change)).toEqual([
+    expect(texts(window(...withLogOutputs(longSession)), change)).toEqual([
       "tests: `vitest` on `src/b.test.ts`, `src/a/__tests__/x.test.tsx` failed, then passed",
       "tests: `vitest` (whole suite) failed in 2 files, none in this change, then passed when re-run",
     ]);
   });
 
   it("reads nothing from a log without the reads: a redirected run alone has no outcome", () => {
-    expect(texts(window(pr859[3]!), change)).toEqual([]);
+    expect(texts(window(longSession[3]!), change)).toEqual([]);
   });
 
   it("says the commit went in with failures outside the change when nothing ran them again", () => {
-    expect(texts(window(...withLogOutputs(pr859.slice(3, 6))), change)).toEqual(["tests: `vitest` (whole suite) failed in 2 files, none in this change"]);
+    expect(texts(window(...withLogOutputs(longSession.slice(3, 6))), change)).toEqual(["tests: `vitest` (whole suite) failed in 2 files, none in this change"]);
     // A re-run that left one failing, and nothing after it.
-    expect(texts(window(...withLogOutputs(pr859.slice(3, 8))), change)).toEqual(["tests: `vitest` (whole suite) failed in 2 files, none in this change; 1 still failed when re-run"]);
+    expect(texts(window(...withLogOutputs(longSession.slice(3, 8))), change)).toEqual(["tests: `vitest` (whole suite) failed in 2 files, none in this change; 1 still failed when re-run"]);
   });
 
   it("does not let an unrelated file's pass close a failure the way one runner name used to", () => {
     // The folder run's two failures, then only a pass of a file outside the change: neither fixed nor the last word.
-    expect(texts(window(pr859[0]!, pr859[8]!), change)).toEqual([]);
+    expect(texts(window(longSession[0]!, longSession[8]!), change)).toEqual([]);
   });
 
   it("closes a failure of a run with no cd by a later pass that cds before naming the file, as the shell keeps its directory", () => {
@@ -227,7 +227,7 @@ describe("decisionsIn: runs read from logs, re-runs, failures outside the change
   });
 
   it("reads no log a later call wrote again before reading it", () => {
-    const overwritten = [pr859[3]!, ran("cd /w && bunx vitest run src/b.test.ts > /tmp/s/full.log 2>&1", ""), pr859[5]!];
+    const overwritten = [longSession[3]!, ran("cd /w && bunx vitest run src/b.test.ts > /tmp/s/full.log 2>&1", ""), longSession[5]!];
     expect(withLogOutputs(overwritten)[0]).toBe(overwritten[0]);
   });
 
@@ -366,5 +366,65 @@ describe("chooseDecisions", () => {
     ];
     expect(chooseDecisions(all, 3).map((d) => d.text)).toEqual(["a", "c", "d"]);
     expect(chooseDecisions(all, 9)).toBe(all);
+  });
+});
+
+describe("decisionsIn: review round on 0.25.0", () => {
+  const change = ["src/cap.test.ts", "src/cap.ts"];
+
+  it("does not let a narrowed pass that counts as many files close a whole-suite failure: only a list-fed re-run does", () => {
+    const fail = ran("npx vitest run 2>&1 | tail -4", " FAIL  src/cap.test.ts > cap\n Test Files  1 failed | 14 passed (15)");
+    for (const narrowed of ["npx vitest run -t parser 2>&1 | tail -2", "npx vitest run parser 2>&1 | tail -2"]) {
+      expect(texts(window(fail, ran(narrowed, " Test Files  1 passed (1)\n      Tests  3 passed (3)")), change), narrowed).toEqual([]);
+    }
+    // Fed the failing file from a list, a run that counts exactly that many files and passes is its re-run.
+    expect(texts(window(fail, ran("cat /tmp/failed.txt | xargs npx vitest run 2>&1 | tail -2", " Test Files  1 passed (1)\n      Tests  3 passed (3)")), change)).toEqual([
+      "tests: `vitest` on `src/cap.test.ts` failed, then passed when re-run",
+    ]);
+  });
+
+  it("says nothing is outside the change from a pytest list it cannot prove is whole", () => {
+    // Twelve tests failed; only one FAILED line is visible after the tail.
+    const cut = ran("uv run pytest 2>&1 | tail -3", "FAILED tests/test_other.py::test_x - assert 1 == 2\n==== 12 failed, 40 passed in 3.20s ====");
+    expect(texts(window(cut), ["tests/test_cap.py"])).toEqual(["tests: `pytest` (whole suite) failed on its last run"]);
+    // Every failing test listed: the files are known, and none is in the change.
+    const whole = ran("uv run pytest 2>&1 | tail -4", "FAILED tests/test_other.py::test_x - a\nFAILED tests/test_other.py::test_y - b\n==== 2 failed, 40 passed in 3.20s ====");
+    expect(texts(window(whole), ["tests/test_cap.py"])).toEqual(["tests: `pytest` (whole suite) failed in 1 file, none in this change"]);
+  });
+
+  it("takes a verification note's status from the note as committed, not from the first time it was written", () => {
+    const write2 = (p: string, c: string): string => write(p, c);
+    const edit = JSON.stringify({ type: "assistant", content: [{ type: "tool_use", name: "Edit", input: { file_path: "/w/docs/verification.md", old_string: "status: PASS", new_string: "status: FAIL" }, result: { output: "ok", status: "success" } }] });
+    const committed = (p: string): string | undefined => (p === "docs/verification.md" ? "---\nstatus: FAIL\n---\n# V" : undefined);
+    const d = decisionsIn(window(write2("/w/docs/verification.md", "---\nstatus: PASS\n---\n# V"), edit), ["docs/verification.md"], committed).map((x) => `${x.kind}: ${x.text}`);
+    expect(d).toEqual(["verified: docs/verification.md: FAIL"]);
+    // A note the session only edited is still one it wrote.
+    expect(decisionsIn(window(edit), ["docs/verification.md"], committed).map((x) => x.text)).toEqual(["docs/verification.md: FAIL"]);
+    // Not in the commit: no row.
+    expect(decisionsIn(window(write2("/w/docs/verification.md", "---\nstatus: PASS\n---")), ["docs/verification.md"], () => undefined)).toEqual([]);
+  });
+
+  it("gives no status from a body whose status lines disagree", () => {
+    expect(verificationStatus("## Unit\nResult: PASS\n\n## E2E against dev\nResult: FAIL")).toBeUndefined();
+    expect(verificationStatus("## Unit\nResult: PASS\n\n## E2E\nResult: PASS")).toBe("PASS");
+  });
+
+  it("reads a log only by its whole name, never another log whose name ends the same", () => {
+    const lines = [ran("npx vitest run > full.log 2>&1; echo done", "done"), ran("tail -3 web-full.log", " Test Files  3 passed (3)\n      Tests  9 passed (9)")];
+    expect(withLogOutputs(lines)[0]).toBe(lines[0]);
+  });
+
+  it("resolves a failing path against the run's own directory before naming a changed file", () => {
+    const fail = ran("cd packages/b && npx vitest run 2>&1 | tail -3", " FAIL  src/index.test.ts > x\n Test Files  1 failed | 4 passed (5)");
+    expect(texts(window(fail), ["packages/a/src/index.test.ts"])).toEqual(["tests: `vitest` (whole suite) failed in 1 file, none in this change"]);
+    // Two changed files end the same way and the directory is unknown: neither is named.
+    const bare = ran("npx vitest run 2>&1 | tail -3", " FAIL  src/index.test.ts > x\n Test Files  1 failed | 4 passed (5)");
+    expect(texts(window(bare), ["packages/a/src/index.test.ts", "packages/b/src/index.test.ts"])).toEqual(["tests: `vitest` (whole suite) failed in 1 file on its last run"]);
+  });
+
+  it("never lets runs from two different directories share a target or close each other", () => {
+    const web = ran("cd /w/web && npx vitest run 2>&1 | tail -3", " FAIL  src/cap.test.ts > x\n Test Files  1 failed | 4 passed (5)");
+    const api = ran("cd /w/api && npx vitest run 2>&1 | tail -2", " Test Files  9 passed (9)\n      Tests  20 passed (20)");
+    expect(texts(window(web, api), ["web/src/cap.test.ts"])).toEqual([]);
   });
 });

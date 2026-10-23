@@ -278,8 +278,8 @@ export interface LinkedPr {
   state?: "OPEN" | "CLOSED" | "MERGED";
   /** GitHub's `reviewDecision`: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED; absent when the repository requires none. */
   reviewDecision?: string;
-  /** Review threads on it, and how many are resolved. */
-  threads?: { resolved: number; total: number };
+  /** Review threads on it, how many of those read are resolved, and how many were read (GitHub returns at most 100). */
+  threads?: { resolved: number; total: number; checked: number };
 }
 
 /** The most linked PRs a brief looks up. */
@@ -314,8 +314,8 @@ export function linkedIn(json: string): LinkedPr[] {
   return rows.flatMap((r) => {
     if (typeof r.repo !== "string" || typeof r.number !== "number") return [];
     const state = r.state === "OPEN" || r.state === "CLOSED" || r.state === "MERGED" ? r.state : undefined;
-    const t = r.threads as { resolved?: unknown; total?: unknown } | undefined;
-    const threads = typeof t?.resolved === "number" && typeof t.total === "number" ? { resolved: t.resolved, total: t.total } : undefined;
+    const t = r.threads as { resolved?: unknown; total?: unknown; checked?: unknown } | undefined;
+    const threads = typeof t?.resolved === "number" && typeof t.total === "number" && typeof t.checked === "number" ? { resolved: t.resolved, total: t.total, checked: t.checked } : undefined;
     return [{ repo: r.repo, number: r.number, ...(state !== undefined && { state }), ...(typeof r.reviewDecision === "string" && { reviewDecision: r.reviewDecision }), ...(threads !== undefined && { threads }) }];
   });
 }

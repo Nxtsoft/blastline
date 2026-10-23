@@ -726,7 +726,13 @@ function decisionRow(d: BriefDecision): [string, string] {
 function linkedState(l: NonNullable<Brief["linked"]>[number]): string {
   if (l.state === undefined) return "_not readable with this token_";
   const state = { MERGED: "**merged**", OPEN: "**open**", CLOSED: "**closed** without merging" }[l.state];
-  const threads = l.threads === undefined || l.threads.total === 0 ? "no review threads" : `${l.threads.resolved} of ${plural(l.threads.total, "review thread")} resolved`;
+  // GitHub returns at most 100 threads: past that, the count says how many were read.
+  const threads =
+    l.threads === undefined || l.threads.total === 0
+      ? "no review threads"
+      : l.threads.checked >= l.threads.total
+        ? `${l.threads.resolved} of ${plural(l.threads.total, "review thread")} resolved`
+        : `${l.threads.resolved} of the first ${l.threads.checked} of ${plural(l.threads.total, "review thread")} resolved`;
   const decision = { APPROVED: "approved", CHANGES_REQUESTED: "changes requested", REVIEW_REQUIRED: "review required" }[l.reviewDecision ?? ""];
   return [state, threads, ...(decision !== undefined ? [decision] : [])].join(" · ");
 }

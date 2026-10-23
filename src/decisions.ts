@@ -12,6 +12,8 @@
  * call's output, else the call's status); a revert by a fixed label; design
  * notes by the change's own path. Tool output is read, and never leaves.
  */
+import { posix } from "node:path";
+
 export type DecisionKind = "tests" | "verified" | "asked" | "reviewed" | "reverted" | "alternatives";
 
 export interface Decision {
@@ -151,21 +153,35 @@ function fileCounts(output: string): { failed: number; total: number } | undefin
 }
 
 /**
- * The test files a failing run's output names: vitest's and jest's `FAIL <file>` lines (a vitest
- * project tag `|web|` aside), pytest's `FAILED <file>::<test>`, each file once. Undefined when it
- * names none, or fewer than its summary counts failing (`fileCounts`): the list was cut short
- * (`| head`) and cannot say which failed. Read to match later runs, never shown unless the change
- * carries the file.
+ * The test files a failing run's output names, each once, only when the output proves the list
+ * whole: vitest's and jest's `FAIL <file>` lines (a vitest project tag `|web|` aside) counted
+ * against the summary's failed files (`fileCounts`), or pytest's `FAILED <file>::<test>` lines,
+ * which are one per test, counted as distinct tests against the closing line's `N failed`.
+ * Undefined with no such list, no count to check it against, or a count it falls short of (a
+ * `| tail` cut it): a partial list cannot say which files failed. Read to match later runs, never
+ * shown unless the change carries the file.
  */
 function failingFiles(output: string): string[] | undefined {
+  const tests = [...output.matchAll(/^[ \t]*FAILED[ \t]+([^\s:]+)::(\S+)/gm)];
+  if (tests.length > 0) {
+    const failed = /^=+ [^=\n]*?\b(\d+) failed\b[^=\n]* in [\d.]+m?s\b[^=\n]*=+[ \t]*$/m.exec(output)?.[1];
+    const ids = new Set(tests.map((m) => `${m[1]}::${m[2]}`));
+    if (failed === undefined || Number(failed) !== ids.size) return undefined;
+    return [...new Set(tests.map((m) => m[1]!.replace(/^\.\//, "")))];
+  }
   const files = new Set<string>();
-  for (const m of output.matchAll(/^[ \t]*FAIL(?:ED)?[ \t]+(?:\|[^|\n]+\|[ \t]+)?([^\s:]+)/gm)) {
+  for (const m of output.matchAll(/^[ \t]*FAIL[ \t]+(?:\|[^|\n]+\|[ \t]+)?([^\s:]+)/gm)) {
     const file = m[1]!.replace(/^\.\//, "");
     if (/\.\w+$/.test(file)) files.add(file);
   }
   const counts = fileCounts(output);
-  if (files.size === 0 || (counts !== undefined && counts.failed !== files.size)) return undefined;
+  if (files.size === 0 || counts === undefined || counts.failed !== files.size) return undefined;
   return [...files];
+}
+
+/** `path` as a whole word in `command`: not inside a longer name (`web-full.log` is not `full.log`). */
+function namesPath(command: string, path: string): boolean {
+  return new RegExp(`(?<![\\w./-])${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w./-])`).test(command);
 }
 
 /** Whether a command writes to `path`: a redirect onto it or a `tee` into it. */
@@ -203,7 +219,7 @@ export function withLogOutputs(lines: string[]): string[] {
     const log = run?.log;
     if (run === undefined || log === undefined || summaryStatus(run.runner, typeof call.block.result?.output === "string" ? call.block.result.output : "") !== undefined) return;
     for (const later of calls.slice(i + 1)) {
-      if (!later.command.includes(log)) continue;
+      if (!namesPath(later.command, log)) continue;
       if (writesTo(later.command, log)) return;
       const read = typeof later.block.result?.output === "string" ? later.block.result.output : "";
       if (summaryStatus(run.runner, read) === undefined) continue;
@@ -373,19 +389,36 @@ const ALTERNATIVES = /^#{1,6}\s*(?:alternatives?(?: considered)?|options conside
 /**
  * The decisions in one window of a compact transcript. `files` are the
  * repo-relative paths the change carries: a test file or design note is
- * named only when the change carries it.
+ * named only when the change carries it. `committed` reads a carried file as
+ * the commit holds it: a verification note's status is read there, so an edit
+ * after the note was first written is not missed (without it, from what the
+ * transcript wrote).
  */
-export function decisionsIn(window: string, files: string[]): Decision[] {
+export function decisionsIn(window: string, files: string[], committed?: (path: string) => string | undefined): Decision[] {
   const out: Decision[] = [];
   const carried = (path: string): string | undefined => files.find((f) => path === f || path.endsWith(`/${f}`));
-  // A runner prints paths from where it ran, which can be a folder of the repo: `src/x.test.ts` from `web/` is `web/src/x.test.ts`.
-  const inChange = (path: string): string | undefined => carried(path) ?? files.find((f) => f.endsWith(`/${path}`));
-  // One entry per run target (runner, directory, what it ran): two runs of different files never close each other.
-  const tests = new Map<string, TestGroup>();
-  // Every passing run, with what it covers (`coverageOf`), where it ran, and how many files it counts: later passes of
-  // the same runner that together cover a failure's files from the same directory close it, and any pass of that
-  // runner from the failure's record on keeps it from being called the last word.
-  const passes: { runner: string; at: number; covered: { all: boolean; paths: string[] } | undefined; cd: string | undefined; total: number | undefined }[] = [];
+  // A runner prints paths from where it ran. With the run's directory known, the path is read from there: relative to
+  // the repo root for a relative `cd`, or the changed file that the absolute path ends with (the longest one). With it
+  // unknown, the path is the changed file itself, or the one changed file it ends. Undefined: not in the change; null:
+  // cannot be told (two changed files end alike), so the file is neither named nor said to be outside.
+  const inChange = (path: string, cd: string | undefined): string | undefined | null => {
+    if (cd !== undefined && !/^[~$]/.test(cd)) {
+      const full = posix.normalize(`${cd}/${path}`);
+      if (!cd.startsWith("/")) return files.find((f) => f === full);
+      return files.filter((f) => full.endsWith(`/${f}`)).sort((a, b) => b.length - a.length)[0];
+    }
+    const exact = files.find((f) => f === path);
+    if (exact !== undefined) return exact;
+    const ends = files.filter((f) => f.endsWith(`/${path}`));
+    return ends.length === 0 ? undefined : ends.length === 1 ? ends[0] : null;
+  };
+  // One entry per run target (runner, what it ran, and where: two different known directories never share one), so two
+  // runs of different files, or of the same files in two checkouts, never close each other.
+  const tests: TestGroup[] = [];
+  // Every passing run, with what it covers (`coverageOf`), where it ran, how many files it counts, and whether it took
+  // its files from a pipe: later passes of the same runner that together cover a failure's files from the same
+  // directory close it, and any pass of that runner from the failure's record on keeps it from being called the last word.
+  const passes: { runner: string; at: number; covered: { all: boolean; paths: string[] } | undefined; cd: string | undefined; total: number | undefined; stdin: boolean }[] = [];
   // The last verification note written per path: a note rewritten after a FAIL says the final word.
   const verified = new Map<string, Decision>();
   // A reviewer started in the background reports later, in a task notification naming its call.
@@ -409,11 +442,13 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
       const input = block.input ?? {};
       const output = typeof block.result?.output === "string" ? block.result.output : "";
       for (const note of notesWritten(block)) {
-        const committed = carried(note.path);
-        if (committed === undefined || !committed.endsWith(".md")) continue;
-        if (ALTERNATIVES.test(note.content)) out.push({ kind: "alternatives", text: committed, at });
-        const status = /verif/i.test(committed.slice(committed.lastIndexOf("/") + 1)) ? verificationStatus(note.content) : undefined;
-        if (status !== undefined) verified.set(committed, { kind: "verified", text: `${committed}: ${status}`, at });
+        const path = carried(note.path);
+        if (path === undefined || !path.endsWith(".md")) continue;
+        if (note.content !== undefined && ALTERNATIVES.test(note.content)) out.push({ kind: "alternatives", text: path, at });
+        // The transcript proves the session wrote the note; its status is the one the commit holds.
+        const text = committed !== undefined ? committed(path) : note.content;
+        const status = /verif/i.test(path.slice(path.lastIndexOf("/") + 1)) && text !== undefined ? verificationStatus(text) : undefined;
+        if (status !== undefined) verified.set(path, { kind: "verified", text: `${path}: ${status}`, at });
       }
       if (block.name === "AskUserQuestion") {
         for (const text of askedIn(input, output)) out.push({ kind: "asked", text, at, ...(block.id !== undefined && { call: block.id }) });
@@ -440,12 +475,13 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
           const covered = run.stdin ? undefined : coverageOf(run.runner, run.words);
           const counts = fileCounts(output);
           const failing = status === "error" ? failingFiles(output) : undefined;
-          if (status === "success") passes.push({ runner: run.runner, at, covered, cd: run.cd, total: counts?.total });
-          // A re-run of an earlier failure's files, fed from a list or a variable so its words do not say which: it ran as
-          // many files as that failure still had failing, and each file failing now was failing then.
+          if (status === "success") passes.push({ runner: run.runner, at, covered, cd: run.cd, total: counts?.total, stdin: run.stdin });
+          // A re-run of an earlier failure's files, fed from a pipe (`xargs vitest run`) so its words do not say which: it
+          // ran as many files as that failure still had failing, and each file failing now was failing then. A narrowed
+          // run (`-t`, a bare name) can count the same number of files by chance, so it is never one.
           const rerunOf =
-            covered === undefined && failing !== undefined && counts !== undefined
-              ? [...tests.values()].find((g) => g.runner === run.runner && sameDir(g.cd, run.cd) && g.failing !== undefined && g.failing.length === counts.total && failing.every((f) => g.failing!.includes(f)))
+            run.stdin && failing !== undefined && counts !== undefined
+              ? tests.find((g) => g.runner === run.runner && sameDir(g.cd, run.cd) && g.failing !== undefined && g.failing.length === counts.total && failing.every((f) => g.failing!.includes(f)))
               : undefined;
           if (rerunOf !== undefined) {
             rerunOf.last = at;
@@ -454,19 +490,24 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
             rerunOf.reran = true;
           } else if (status === "error" || covered !== undefined) {
             // A narrowed pass (`-t`, `-k`, `-run`, `--project`, a bare name) closes no failure, even of the same target.
-            // Not keyed by the command's own `cd`: the shell keeps its directory between calls, so a run that repeats
-            // the `cd` and one that relies on it can be the same run.
+            // A run with no `cd` of its own joins one that has one (the shell keeps its directory between calls); two
+            // different known directories never share a target.
             const target = covered === undefined ? `?${at}` : covered.all ? "*" : [...covered.paths].sort().join("\0");
-            const key = `${run.runner}\0${target}`;
-            const seen = tests.get(key) ?? { at, last: at, statuses: [], runner: run.runner, cd: run.cd, named, whole: covered?.all === true, failing: undefined, first: undefined, reran: false };
+            let seen = tests.find((g) => g.runner === run.runner && g.target === target && sameDir(g.cd, run.cd));
+            if (seen === undefined) {
+              seen = { at, last: at, statuses: [], runner: run.runner, target, cd: run.cd, firstCd: run.cd, named, whole: covered?.all === true, failing: undefined, first: undefined, reran: false };
+              tests.push(seen);
+            }
             seen.last = at;
-            seen.cd = run.cd;
+            if (run.cd !== undefined) seen.cd = run.cd;
             seen.statuses.push(status);
             if (status === "error") {
               seen.failing = failing;
-              seen.first ??= failing;
+              if (seen.first === undefined) {
+                seen.first = failing;
+                seen.firstCd = run.cd;
+              }
             }
-            tests.set(key, seen);
           }
         }
         const revert = REVERTS.find(([r]) => r.test(command));
@@ -480,22 +521,22 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
     const reported = r.verdict ?? (r.id === "" ? undefined : notes.filter((n) => n.includes(r.id)).map(verdictOf).find((v) => v !== undefined));
     out.push({ kind: "reviewed", text: `${code(r.reviewer)}: ${reported ?? "verdict not recorded"}`, at: r.at, ...(r.id !== "" && { call: r.id }) });
   }
-  for (const g of tests.values()) {
+  for (const g of tests) {
     if (!g.statuses.includes("error")) continue;
     // Later passes close a failure when, from the same directory, one runs every test of the runner, or together they
     // name each file still failing (by the output's own list, else the run's named files) or a folder holding it, or one
-    // fed from a list counts exactly as many files as were failing. Calls in one record have no known order, so only a
+    // fed from a pipe counts exactly as many files as were failing. Calls in one record have no known order, so only a
     // later record closes.
     const later = passes.filter((p) => p.runner === g.runner && sameDir(p.cd, g.cd) && p.at > g.last);
     const need = g.failing ?? (g.named.length > 0 ? g.named : undefined);
     const covers = (p: (typeof passes)[number], f: string): boolean => p.covered !== undefined && p.covered.paths.some((t) => f === t || f.startsWith(`${t}/`));
-    const rerun = g.failing !== undefined && later.some((p) => p.covered === undefined && p.total === g.failing!.length);
+    const rerun = g.failing !== undefined && later.some((p) => p.stdin && p.total === g.failing!.length);
     const closed =
       g.statuses[g.statuses.length - 1] === "success" || later.some((p) => p.covered?.all === true) || (need !== undefined && need.every((f) => later.some((p) => covers(p, f)))) || rerun;
     // The failing files are named when the change carries each as a test file; otherwise counted, and said to be outside
     // the change when none of them is in it.
-    const listed = g.first?.map(inChange);
-    const shown = g.named.length > 0 ? g.named : listed !== undefined && listed.every((f) => f !== undefined && TEST_FILE.test(f)) ? [...new Set(listed as string[])] : [];
+    const listed = g.first?.map((f) => inChange(f, g.firstCd));
+    const shown = g.named.length > 0 ? g.named : listed !== undefined && listed.every((f) => typeof f === "string" && TEST_FILE.test(f)) ? [...new Set(listed as string[])] : [];
     const more = shown.length > NAMED_FILES ? ` and ${shown.length - NAMED_FILES} more` : "";
     const label = shown.length > 0 ? `${code(g.runner)} on ${shown.slice(0, NAMED_FILES).map(code).join(", ")}${more}` : g.whole ? `${code(g.runner)} (whole suite)` : code(g.runner);
     const count = shown.length === 0 && g.first !== undefined ? ` in ${g.first.length} ${g.first.length === 1 ? "file" : "files"}` : "";
@@ -523,7 +564,12 @@ interface TestGroup {
   last: number;
   statuses: string[];
   runner: string;
+  /** What it ran: `*` for every test, the sorted paths, or a one-off key for a run whose words do not say. */
+  target: string;
+  /** The `cd` its runs gave, when one did. */
   cd: string | undefined;
+  /** Where its first failing run's output was read from, for its failing paths. */
+  firstCd: string | undefined;
   /** The change's test files the run named, when it named nothing else. */
   named: string[];
   /** It ran every test of the runner. */
@@ -537,17 +583,19 @@ interface TestGroup {
 }
 
 /**
- * The notes a tool call writes whole: a `Write`'s file, or a Bash heredoc
- * (`cat > <file> <<'EOF'`, `cat <<'EOF' > <file>`), with the variables the
- * command assigns read as their values. Read for headings and a status line,
- * never shown.
+ * The notes a tool call writes: a `Write`'s file or a Bash heredoc (`cat >
+ * <file> <<'EOF'`, `cat <<'EOF' > <file>`) with the whole text, and an `Edit`
+ * or `MultiEdit` with none (it proves the session wrote the note, not what the
+ * note says). Variables the command assigns read as their values. Read for
+ * headings and a status line, never shown.
  */
-function notesWritten(block: Block): { path: string; content: string }[] {
+function notesWritten(block: Block): { path: string; content: string | undefined }[] {
   const input = block.input ?? {};
   if (block.name === "Write") return typeof input.file_path === "string" && typeof input.content === "string" ? [{ path: input.file_path, content: input.content }] : [];
+  if (block.name === "Edit" || block.name === "MultiEdit") return typeof input.file_path === "string" ? [{ path: input.file_path, content: undefined }] : [];
   if (block.name !== "Bash" || typeof input.command !== "string") return [];
   const command = expandAssigned(input.command);
-  const notes: { path: string; content: string }[] = [];
+  const notes: { path: string; content: string | undefined }[] = [];
   const unquote = (s: string): string => s.replace(/^["']|["']$/g, "");
   for (const m of command.matchAll(/\bcat\s+>\s*("[^"]+"|'[^']+'|[^\s<>;&|]+)\s*<<-?\s*(['"]?)(\w+)\2[ \t]*\n([\s\S]*?)\n\3[ \t]*(?=\n|$)/g)) notes.push({ path: unquote(m[1]!), content: m[4]! });
   for (const m of command.matchAll(/\bcat\s+<<-?\s*(['"]?)(\w+)\1\s*>\s*("[^"]+"|'[^']+'|[^\s<>;&|]+)[ \t]*\n([\s\S]*?)\n\2[ \t]*(?=\n|$)/g)) notes.push({ path: unquote(m[3]!), content: m[4]! });
@@ -556,16 +604,18 @@ function notesWritten(block: Block): { path: string; content: string }[] {
 
 /**
  * The status a verification note states, in fixed words: its front matter's
- * `status:` (or `result:`, `verdict:`) line, else such a line in its body
- * (`**Status:** PASS`). PASS, FAIL or PARTIAL; undefined with none.
+ * `status:` (or `result:`, `verdict:`) line, else the status lines in its body
+ * (`**Status:** PASS`) when they all agree; one section passing and another
+ * failing is no overall verdict. PASS, FAIL or PARTIAL; undefined otherwise.
  */
 export function verificationStatus(content: string): "PASS" | "FAIL" | "PARTIAL" | undefined {
+  const line = /^[ \t>*_-]*(?:status|result|verdict)[*_]*[ \t]*:[ \t]*[*_]*[ \t]*(PASS(?:ED)?|FAIL(?:ED)?|PARTIAL)\b/gim;
+  const word = (w: string): "PASS" | "FAIL" | "PARTIAL" => (w.toUpperCase().startsWith("PASS") ? "PASS" : w.toUpperCase().startsWith("FAIL") ? "FAIL" : "PARTIAL");
   const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content)?.[1];
-  const line = /^[ \t>*_-]*(?:status|result|verdict)[*_]*[ \t]*:[ \t]*[*_]*[ \t]*(PASS(?:ED)?|FAIL(?:ED)?|PARTIAL)\b/im;
-  const m = (front === undefined ? null : line.exec(front)) ?? line.exec(content);
-  if (m === null) return undefined;
-  const word = m[1]!.toUpperCase();
-  return word.startsWith("PASS") ? "PASS" : word.startsWith("FAIL") ? "FAIL" : "PARTIAL";
+  const stated = front === undefined ? undefined : [...front.matchAll(line)][0]?.[1];
+  if (stated !== undefined) return word(stated);
+  const said = new Set([...content.matchAll(line)].map((m) => word(m[1]!)));
+  return said.size === 1 ? [...said][0] : undefined;
 }
 
 /**

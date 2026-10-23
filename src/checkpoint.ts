@@ -432,6 +432,12 @@ export interface Windows {
   worked: boolean;
   /** Whether a tool call in the new part works on one of the commit's files by its full repo path (`strictRoots`), not only its basename. */
   strict: boolean;
+  /** Every checkout the session worked on the commit's files at, by their path, over the whole transcript. */
+  roots: string[];
+  /** Whether the session ran the `git commit` that made the commit: a call whose command carries the commit's subject. */
+  madeCommit: boolean;
+  /** Where that `git commit` ran, when the shell's directory was known. */
+  committedAt?: string;
   /**
    * Where the commit's decisions are read: from the commit's own turn on,
    * inside what the previous checkpoint of the session left unread, only the
@@ -580,7 +586,8 @@ function shellOf(records: (TranscriptRecord | undefined)[]): Shell {
 
 /** The files of the change a command names by their repo path, as a whole path (not inside a longer one). */
 function namedIn(command: string, files: string[]): string[] {
-  return files.filter((f) => f.includes("/") && new RegExp(`(?<![\\w./-])${f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`).test(command));
+  // A plain substring test first: building a pattern per file for every command took seconds on a long session.
+  return files.filter((f) => f.includes("/") && command.includes(f) && new RegExp(`(?<![\\w./-])${f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`).test(command));
 }
 
 /**
@@ -595,28 +602,53 @@ function namedIn(command: string, files: string[]): string[] {
  * and its model and first line became the commit's.
  */
 function strictRoots(records: (TranscriptRecord | undefined)[], files: string[], shell: Shell): string[][] {
-  const deep = files.filter((f) => f.includes("/"));
-  const absolute = deep.map((f) => new RegExp(`(/[^\\s'"]*?)/${f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`));
+  // Looked up by suffix in a set, once per `/` of each word: a per-file pattern run over every command took seconds on a
+  // long session against a large change, and minutes on one long token of slashes.
+  const deep = new Set(files.filter((f) => f.includes("/")));
+  const longest = Math.max(0, ...[...deep].map((f) => f.length));
+  // Only suffixes no longer than the longest file can be one, so a long token is read from its tail.
+  const fileIn = (path: string): string | undefined => {
+    for (let i = path.indexOf("/", Math.max(0, path.length - longest - 1)); i !== -1; i = path.indexOf("/", i + 1)) if (deep.has(path.slice(i + 1))) return path.slice(i + 1);
+    return undefined;
+  };
   return records.map((r) => {
     const roots: string[] = [];
+    if (deep.size === 0) return roots;
     for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
       if (block.type !== "tool_use" || block.name === undefined) continue;
       const path = block.input?.file_path;
       if (EDIT_TOOLS.has(block.name) && typeof path === "string") {
-        const f = deep.find((file) => path.endsWith(`/${file}`));
+        const f = fileIn(path);
         if (f !== undefined) roots.push(path.slice(0, path.length - f.length - 1));
       }
       const command = block.name === "Bash" ? block.input?.command : undefined;
       if (typeof command !== "string") continue;
-      const expanded = expandAssigned(command);
-      for (const pattern of absolute) {
-        const at = pattern.exec(expanded)?.[1];
-        if (at !== undefined) roots.push(posix.normalize(at));
-      }
       const at = shell.at.get(block);
-      if (at !== undefined && namedIn(expanded, deep).length > 0) roots.push(at);
+      for (const word of pathWords(expandAssigned(command))) {
+        if (word.startsWith("/")) {
+          const f = fileIn(word);
+          if (f !== undefined) roots.push(posix.normalize(word.slice(0, word.length - f.length - 1)));
+        } else if (at !== undefined && deep.has(word)) roots.push(at);
+      }
     }
-    return roots.filter((root) => !TEMP.test(`${root}/`));
+    return roots.filter((root) => root !== "" && !TEMP.test(`${root}/`));
+  });
+}
+
+/**
+ * The words of a command that can be paths: split at blanks, quotes and shell
+ * punctuation (`;&|<>`, and `=`, `:`, `,` that join a flag or a line number to
+ * one), with a subshell's unbalanced parentheses trimmed (`$(cat a/b.ts)`). A
+ * path's own balanced parentheses (`app/(group)/x.ts`) stay.
+ */
+function pathWords(command: string): string[] {
+  const count = (w: string, c: string): number => w.split(c).length - 1;
+  return command.split(/[\s"'`;&|<>=:,]+/).flatMap((word) => {
+    let w = word;
+    while (w.startsWith("$(") && count(w, "(") > count(w, ")")) w = w.slice(2);
+    while (w.startsWith("(") && count(w, "(") > count(w, ")")) w = w.slice(1);
+    while (w.endsWith(")") && count(w, ")") > count(w, "(")) w = w.slice(0, -1);
+    return w === "" ? [] : [w];
   });
 }
 
@@ -670,7 +702,7 @@ function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], fi
     const command = block.input?.command;
     if (typeof command !== "string") return false;
     if (shell.at.get(block) === root.slice(0, -1) && namedIn(command, files).length > 0) return true;
-    return files.some((f) => new RegExp(`${`${root}${f}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`).test(command));
+    return files.some((f) => command.includes(`${root}${f}`) && new RegExp(`${`${root}${f}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`).test(command));
   }
   const path = block.input?.file_path;
   return EDIT_TOOLS.has(block.name) && typeof path === "string" && files.some((f) => path === `${root}${f}`);
@@ -863,7 +895,7 @@ function returns(block: NonNullable<TranscriptRecord["content"]>[number], root: 
  * after that call, and no other window does. Lines that are not JSON are kept;
  * every reader skips them.
  */
-export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[], scope: string[] = files, subagents: Map<string, string[]> = new Map()): Windows {
+export function windowsOf(transcript: string, read: ReadSession | undefined, files: string[], scope: string[] = files, subagents: Map<string, string[]> = new Map(), subject = ""): Windows {
   const lines = transcript.split("\n").filter((line) => line.trim() !== "");
   const records = lines.map((line): TranscriptRecord | undefined => {
     try {
@@ -877,7 +909,21 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   // The commit's own turn: from its full-path work when there is any (`intentWindow`), else back from its first work on
   // the files by basename inside the new part (or from the part's start) to the last prompt a person typed.
   const shell = shellOf(records);
-  const intent = intentWindow(records, strictRoots(records, files, shell), shell, sinceStart);
+  const strict = strictRoots(records, files, shell);
+  const intent = intentWindow(records, strict, shell, sinceStart);
+  // Where the session worked on the commit's files by their path, and whether it ran the `git commit` that made this
+  // commit: a call whose command carries the commit's subject (a squash's ` (#123)` aside), at least 10 characters so a
+  // short one cannot match by chance. A session that writes through a shell leaves Entire's `files_touched` empty, and
+  // one that only ran a test of these files and committed other work in its own checkout is not the author (a web-app
+  // PR: another ticket's session, by checkout alone, gave the commit its model and rows); the subject tells them apart.
+  const roots = [...new Set(strict.flat())];
+  const title = subject.replace(/ \(#\d+\)$/, "").trim();
+  let made = -1;
+  for (let k = records.length - 1; k >= 0 && made === -1 && title.length >= 10; k--) {
+    const r = records[k];
+    if (r?.type === "assistant" && (r.content ?? []).some((b) => b.type === "tool_use" && b.name === "Bash" && typeof b.input?.command === "string" && /\bgit\b[^\n]*\bcommit\b/.test(b.input.command) && b.input.command.includes(title))) made = k;
+  }
+  const committedAt = made === -1 ? undefined : shell.commits.filter((c) => c.at === made).at(-1)?.dir;
   const firstWork = records.findIndex((r, i) => i >= sinceStart && r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
   let turnStart = intent?.turn ?? (firstWork === -1 ? sinceStart : firstWork);
   while (intent === undefined && turnStart > 0 && !(records[turnStart] !== undefined && humanTurn(records[turnStart]!))) turnStart--;
@@ -920,6 +966,9 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
     ask: opening !== undefined && humanTurn(opening) ? askOf(opening) : "",
     worked: firstWork !== -1,
     strict: intent !== undefined,
+    roots,
+    madeCommit: made !== -1,
+    ...(committedAt !== undefined && { committedAt }),
     decisionWindow: dFirstWork === -1 ? "" : workingTurns(dLines, dRecords, Math.max(dSince, dTurnStart), scope, files),
     sinceWindow: lines.slice(sinceStart).join("\n"),
     stepWindow: lines.slice(stepStart).join("\n"),
@@ -1081,6 +1130,9 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
       touched: number;
       strict: boolean;
       worked: boolean;
+      roots: string[];
+      madeCommit: boolean;
+      committedAt: string | undefined;
       ask: string;
       narration: Narration;
       testCommands: string[];
@@ -1114,33 +1166,41 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
       return committed.get(path);
     };
     const scope = changed.length > 0 ? changed : files;
+    const subject = git(repo, ["log", "-1", "--format=%s", commit]).trim();
     for (let i = 0; i < sessionCount; i++) {
       const meta = i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata);
       const sessionId = meta.session_id ?? "";
       const before = sessionId === "" ? undefined : read.get(sessionId);
-      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, strict, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files, scope, subagents);
+      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, strict, roots, madeCommit, committedAt, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files, scope, subagents, subject);
       if (extended) readBefore++;
       sessions.push({ id: sessionId, lines, hash });
       for (const r of symbolReasonsIn(sinceWindow, symbols, contents)) reasons.set(`${r.path}\0${r.label}`, r);
       const n = narrationIn(stepWindow);
       activity += n.texts + n.tools;
       const touched = new Set((meta.files_touched ?? []).filter((f) => files.includes(f))).size;
-      parts.push({ index: i, meta, touched, strict, worked, ask: opened, narration: n, testCommands: testCommandsIn(turnWindow), decisions: decisionsIn(decisionWindow, scope) });
+      parts.push({ index: i, meta, touched, strict, worked, roots, madeCommit, committedAt, ask: opened, narration: n, testCommands: testCommandsIn(turnWindow), decisions: decisionsIn(decisionWindow, scope, contents) });
     }
     // Entire attaches every session live in the repo when the commit is made. Only the sessions that did the commit's
     // work say what it did and ran, and give its model; the rest (other tasks in the same checkout) are left out. Strongest
-    // evidence first: Entire saw the session write a committed file (and it worked on one by its path), then it worked
-    // on one by its full path, then by basename only, which another task's file of the same name also matches. Inside a
-    // tier, the session that wrote the most of the commit's files speaks first: a session can have written one shared
-    // file for an earlier ticket (a web-app PR: 2 of 23 files, against 21 by the session that made the commit).
+    // evidence first: the session ran the `git commit` that made this commit (`madeCommit`); Entire
+    // saw it write a committed file and it worked on one by its path; Entire saw it write one; it worked on one by its
+    // path; by basename only, which another task's file of the same name also matches. Inside a tier, the session that
+    // wrote the most of the commit's files speaks first: a session can have written one shared file for an earlier ticket
+    // (a web-app PR: 2 of 23 files, against 21 by the session that made the commit), and one that writes through a shell
+    // leaves `files_touched` empty, so that count alone never rules a session out.
     const byTouched = [...parts].sort((a, b) => b.touched - a.touched);
-    const tiers = [byTouched.filter((p) => p.touched > 0 && p.strict), byTouched.filter((p) => p.touched > 0), parts.filter((p) => p.strict), parts.filter((p) => p.worked), parts];
+    const committers = byTouched.filter((p) => p.madeCommit);
+    const tiers = [committers, byTouched.filter((p) => p.touched > 0 && p.strict), byTouched.filter((p) => p.touched > 0), parts.filter((p) => p.strict), parts.filter((p) => p.worked), parts];
     const own = tiers.find((t) => t.length > 0)!;
-    // Decisions come from every session in the strongest tier that has one, in session order: a session that only ran
-    // a test the commit changed, in its own worktree, names the file by its repo path too (a web-app PR: three
-    // rows from another ticket's session), so when Entire saw some session write the commit's files, only theirs count.
+    // Decisions come from the session that made the commit and any that worked at the checkout it was made in, when a
+    // session shows it; else from those Entire saw write the commit's files, else from those that worked on them by path.
+    // A session that only ran a test the commit changed, in its own worktree, names the file by its repo path too (a
+    // web-app PR: three rows from another ticket's session), and one that edited a committed file in another checkout is
+    // not this commit's.
+    const homes = committers.flatMap((p) => (p.committedAt === undefined ? [] : [p.committedAt]));
     const writers = parts.filter((p) => p.touched > 0);
-    const deciders = writers.length > 0 ? writers : parts.filter((p) => p.strict);
+    const deciders =
+      committers.length > 0 ? parts.filter((p) => p.madeCommit || homes.some((h) => p.roots.includes(h))) : writers.length > 0 ? writers : parts.filter((p) => p.strict);
     const decisions = (deciders.length > 0 ? deciders : own).flatMap((p) => p.decisions);
     const ask = own.find((p) => p.ask !== "")?.ask ?? "";
     for (const p of own) {

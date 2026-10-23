@@ -511,8 +511,11 @@ runs:
         fi
         # The PRs in other repositories the body or a commit names (an API
         # half, a web half): each one's state and review threads, read with
-        # linked-token. One the token cannot read is kept without a state, so
-        # the row says so instead of vanishing.
+        # linked-token. One whose repository the token cannot read is kept
+        # without a state, so the row says so instead of vanishing; a number
+        # the repository resolves to no pull request (an issue, a branch name
+        # like release/v2#3) is dropped. gh prints GraphQL's body on stdout
+        # even when it exits non-zero, which is what tells the two apart.
         if [ "${PR_EVENT:-false}" = "true" ] && { [ -n "${LINKED_TOKEN:-}" ] || [ -n "${GH_TOKEN:-}" ]; }; then
           # The links are context for the brief, never a gate on it.
           refs=$(bun "$GITHUB_ACTION_PATH/src/cli.ts" linked-refs "$RANGE" --repo "$repo" --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --narrative blastline-narrative.md) \
@@ -522,9 +525,13 @@ runs:
             owner=$(printf '%s' "$ref" | jq -r '.repo | split("/")[0]')
             name=$(printf '%s' "$ref" | jq -r '.repo | split("/")[1]')
             number=$(printf '%s' "$ref" | jq -r '.number')
-            state=$(GH_TOKEN="${LINKED_TOKEN:-$GH_TOKEN}" gh api graphql -F owner="$owner" -F name="$name" -F number="$number" \
+            body=$(GH_TOKEN="${LINKED_TOKEN:-$GH_TOKEN}" gh api graphql -F owner="$owner" -F name="$name" -F number="$number" \
               -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { state reviewDecision reviewThreads(first: 100) { totalCount nodes { isResolved } } } } }' \
-              --jq '.data.repository.pullRequest | {state, reviewDecision, threads: {total: .reviewThreads.totalCount, resolved: ([.reviewThreads.nodes[] | select(.isResolved)] | length)}}' 2>/dev/null) || state=''
+              2>/dev/null) || true
+            kind=$(printf '%s' "$body" | jq -r 'if (.data.repository.pullRequest // null) != null then "pr" elif (.data.repository // null) != null then "none" else "unreadable" end' 2>/dev/null) || kind=unreadable
+            [ "$kind" = "none" ] && continue
+            state='{}'
+            [ "$kind" = "pr" ] && state=$(printf '%s' "$body" | jq -c '.data.repository.pullRequest | {state, reviewDecision, threads: {total: .reviewThreads.totalCount, resolved: ([.reviewThreads.nodes[] | select(.isResolved)] | length), checked: (.reviewThreads.nodes | length)}}' 2>/dev/null)
             [ -n "$state" ] || state='{}'
             jq --argjson ref "$ref" --argjson state "$state" '. + [$ref + $state]' blastline-linked.json > blastline-linked.next && mv blastline-linked.next blastline-linked.json
           done

@@ -446,30 +446,30 @@ describe("narrative claims", () => {
   });
 
   it("finds a folder the text names in the paths inside it, so a change folder is no phantom", () => {
-    // a web-app PR's body named `openspec/changes/t-195/`; its three notes were in the diff.
-    const files = parseUnifiedDiff("diff --git a/openspec/changes/t-195/tasks.md b/openspec/changes/t-195/tasks.md\n--- a/openspec/changes/t-195/tasks.md\n+++ b/openspec/changes/t-195/tasks.md\n@@ -1 +1 @@\n-a\n+b\n");
+    // a web-app PR's body named `openspec/changes/t-7/`; its three notes were in the diff.
+    const files = parseUnifiedDiff("diff --git a/openspec/changes/t-7/tasks.md b/openspec/changes/t-7/tasks.md\n--- a/openspec/changes/t-7/tasks.md\n+++ b/openspec/changes/t-7/tasks.md\n@@ -1 +1 @@\n-a\n+b\n");
     const paths = new Set(files.map((f) => f.path));
     const claims = (text: string) => narrativeClaims([{ source: "PR body", text }], files, [], paths);
-    expect(claims("OpenSpec: `openspec/changes/t-195/`.").map((c) => c.verdict)).toEqual(["consistent"]);
-    expect(claims("See `changes/t-195`.").map((c) => c.verdict)).toEqual(["consistent"]);
+    expect(claims("OpenSpec: `openspec/changes/t-7/`.").map((c) => c.verdict)).toEqual(["consistent"]);
+    expect(claims("See `changes/t-7`.").map((c) => c.verdict)).toEqual(["consistent"]);
     expect(claims("OpenSpec: `openspec/changes/t-196/`.")).toContainEqual({ claim: "PR body names `openspec/changes/t-196/`", verdict: "refuted", evidence: "no such path in the diff (phantom change)" });
   });
 
   it("finds the PRs in other repositories a body or commit names, once each, not this repository's or a bare number", () => {
     const refs = linkedRefs(
-      ["API half is acme/api#605 (see https://github.com/acme/api/pull/605). Fixes #12 and o/r#3.", "Also https://github.com/acme/web/pull/7 and docs at https://example.com/a/b#9."],
+      ["API half is acme/api#45 (see https://github.com/acme/api/pull/45). Fixes #12 and o/r#3.", "Also https://github.com/acme/web/pull/7 and docs at https://example.com/a/b#9."],
       "https://github.com/o/r",
     );
     expect(refs).toEqual([
-      { repo: "acme/api", number: 605 },
+      { repo: "acme/api", number: 45 },
       { repo: "acme/web", number: 7 },
     ]);
     expect(linkedRefs([Array.from({ length: 9 }, (_, i) => `x/y#${i + 1}`).join(" ")], undefined)).toHaveLength(5);
   });
 
   it("reads the Action's lookups, keeping a link it could not read without a state", () => {
-    expect(linkedIn('[{"repo":"a/b","number":1,"state":"MERGED","reviewDecision":null,"threads":{"total":6,"resolved":6}},{"repo":"c/d","number":2},{"number":3}]')).toEqual([
-      { repo: "a/b", number: 1, state: "MERGED", threads: { resolved: 6, total: 6 } },
+    expect(linkedIn('[{"repo":"a/b","number":1,"state":"MERGED","reviewDecision":null,"threads":{"total":6,"resolved":6,"checked":6}},{"repo":"c/d","number":2},{"number":3}]')).toEqual([
+      { repo: "a/b", number: 1, state: "MERGED", threads: { resolved: 6, total: 6, checked: 6 } },
       { repo: "c/d", number: 2 },
     ]);
   });
