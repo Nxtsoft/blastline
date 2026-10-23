@@ -695,10 +695,19 @@ function commitTable(commits: CommitBrief[], links: Links): string {
 function decisionRow(d: BriefDecision): [string, string] {
   switch (d.kind) {
     case "tests": {
-      const passed = /^(.*) failed, then passed$/.exec(d.text);
-      if (passed) return [`${passed[1]} failed`, "**fixed**, then it passed"];
-      const failing = /^(.*) failed on its last run$/.exec(d.text);
-      return failing ? [`${failing[1]} failed`, "**committed with it failing** on its last run"] : ["tests", d.text];
+      // `decisionsIn`'s test line: `<label> failed[ in N files][, none in this change]` and how it ended.
+      const t = /^(.*?) failed((?: in \d+ files?)?)((?:, none in this change)?)(?:(, then passed)((?: when re-run)?)|( on its last run)|; (\d+) still failed when re-run)?$/.exec(d.text);
+      if (t === null) return ["tests", d.text];
+      const [, label, count, outside, passed, reran, last, still] = t;
+      const what = `${label} failed${count}${outside}`;
+      if (passed !== undefined) return [what, reran ? "**re-ran them**, then they passed" : outside ? "**passed** on a later run" : "**fixed**, then it passed"];
+      if (last !== undefined) return [what, "**committed with it failing** on its last run"];
+      if (outside) return [what, `**committed**: none of the failing files is in this change${still !== undefined ? `; ${still} still failed when re-run` : ""}`];
+      return ["tests", d.text];
+    }
+    case "verified": {
+      const split = d.text.lastIndexOf(": ");
+      return ["verified the change end to end", `**${d.text.slice(split + 2)}**, recorded in ${code(d.text.slice(0, split))}`];
     }
     case "asked":
       return ["asked you a question", `**${d.text}**`];
@@ -713,17 +722,29 @@ function decisionRow(d: BriefDecision): [string, string] {
   }
 }
 
+/** A linked PR's state in fixed words: merged or not, its review threads, GitHub's review decision. */
+function linkedState(l: NonNullable<Brief["linked"]>[number]): string {
+  if (l.state === undefined) return "_not readable with this token_";
+  const state = { MERGED: "**merged**", OPEN: "**open**", CLOSED: "**closed** without merging" }[l.state];
+  const threads = l.threads === undefined || l.threads.total === 0 ? "no review threads" : `${l.threads.resolved} of ${plural(l.threads.total, "review thread")} resolved`;
+  const decision = { APPROVED: "approved", CHANGES_REQUESTED: "changes requested", REVIEW_REQUIRED: "review required" }[l.reviewDecision ?? ""];
+  return [state, threads, ...(decision !== undefined ? [decision] : [])].join(" · ");
+}
+
 /**
- * How the PR was decided: one row per decision, in session order, with the
- * commit whose checkpoint holds it as the evidence. Undefined when no
- * checkpoint held a decision, so a range without checkpoints gets no empty section.
+ * How the PR was decided: one row per linked PR in another repository, then
+ * one per decision, in session order, with the commit whose checkpoint holds it
+ * as the evidence. Undefined when there is neither, so a range without
+ * checkpoints or links gets no empty section.
  */
 function decisionStory(brief: Brief, links: Links): string | undefined {
-  if (brief.decisions.length === 0) return undefined;
-  const rows = brief.decisions.map((d, i) => {
-    const [what, decided] = decisionRow(d);
-    return `| ${i + 1} | ${cell(what)} | ${cell(decided)} | ${links.commit(d.commit)} |`;
-  });
+  const linked = brief.linked ?? [];
+  if (brief.decisions.length === 0 && linked.length === 0) return undefined;
+  // The work this PR is half of comes first: its decisions were made across both.
+  const rows = [
+    ...linked.map((l) => [`linked PR in ${code(l.repo)}`, linkedState(l), `[${l.repo}#${l.number}](https://github.com/${l.repo}/pull/${l.number})`] as const),
+    ...brief.decisions.map((d) => [...decisionRow(d), links.commit(d.commit)] as const),
+  ].map(([what, decided, evidence], i) => `| ${i + 1} | ${cell(what)} | ${cell(decided)} | ${evidence} |`);
   const more = brief.decisionsFound > brief.decisions.length ? [`<sub>${brief.decisionsFound - brief.decisions.length} more in the checkpoints.</sub>`, ""] : [];
   return ["#### How this PR was decided", "", "| # | What happened | Decision | Evidence |", "|---:|---|---|---|", ...rows, "", ...more].join("\n");
 }

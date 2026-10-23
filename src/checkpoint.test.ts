@@ -1108,3 +1108,77 @@ describe("checkpointFor with symbols", () => {
     expect(checkpointFor(repo, commitEdited)?.reasons).toEqual([]);
   });
 });
+
+describe("checkpointFor: which session did the commit's work", () => {
+  // turing-webapp PR 859's shapes. Each checkpoint holds every session live in the checkout at commit time.
+  const tool = (name: string, input: object, output = "SECRET", status = "success"): object => ({ id: `t_${name}`, type: "tool_use", name, input, result: { output, status } });
+  const files = (id: string, sessions: { session: string; model: string; touched: string[]; transcript: string[] }[]): Record<string, string> => {
+    const dir = `/${id.slice(0, 2)}/${id.slice(2)}`;
+    const out: Record<string, string> = {
+      "metadata.json": JSON.stringify({ cli_version: "0.11.5", checkpoint_id: id, strategy: "manual-commit", files_touched: null, sessions: sessions.map((_, i) => ({ metadata: `${dir}/${i}/metadata.json` })) }),
+    };
+    sessions.forEach((s, i) => {
+      out[`${i}/metadata.json`] = JSON.stringify({ cli_version: "0.11.5", checkpoint_id: id, session_id: s.session, agent: "Claude Code", model: s.model, files_touched: s.touched });
+      out[`${i}/transcript.jsonl`] = s.transcript.join("\n") + "\n";
+      out[`${i}/prompt.txt`] = "";
+    });
+    return out;
+  };
+  const S0 = "17c27c4e-0000-4000-8000-000000000000";
+  const S1 = "b030a67d-0000-4000-8000-000000000000";
+
+  it("takes the model, the ask and the narration from the session that wrote the commit's files, not one that grepped another file of the same name", () => {
+    const id = "5a8af3219cb5";
+    execFileSync("mkdir", ["-p", join(repo, "src/new")]);
+    writeBranchCheckpoint(id, files(id, [
+      { session: S0, model: "claude-opus-5-5", touched: [], transcript: [
+        rec("user", stamp(1), [user("can you work on the mapping popup ticket")]),
+        rec("assistant", stamp(2), [text("The popup is the mapping step."), tool("Bash", { command: 'D="/Users/x/other/category-upload"; grep -n Item "$D"/types.ts' })]),
+      ] },
+      { session: S1, model: "claude-fable-5-1", touched: ["src/new/types.ts"], transcript: [
+        rec("user", stamp(3), [user("okay let's continue")]),
+        rec("assistant", stamp(4), [text("Starting the provenance ticket."), tool("Edit", { file_path: "/Users/x/wt/src/new/types.ts", old_string: "a", new_string: "b" })]),
+      ] },
+    ]));
+    const commit = commitFile("src/new/types.ts", "export type T = 1;\n", `feat: provenance\n\nEntire-Checkpoint: ${id}\n`);
+    const cp = checkpointFor(repo, commit, [], new Map(), ["src/new/types.ts"]);
+    expect(cp?.model).toBe("claude-fable-5-1");
+    expect(cp?.prompt).toBe("okay let's continue");
+    expect(cp?.narration.started).toBe("Starting the provenance ticket.");
+  });
+
+  it("starts the narration after another PR the same turn committed first, at the agent's last line before this commit's work", () => {
+    const id = "6b9bf4320dc6";
+    writeBranchCheckpoint(id, files(id, [
+      { session: S1, model: "claude-fable-5-1", touched: [], transcript: [
+        rec("user", stamp(10), [user("merge 844, then the role gate")]),
+        rec("assistant", stamp(11), [text("Finishing 844 first."), tool("Edit", { file_path: "/Users/x/wt844/src/gate.ts", old_string: "a", new_string: "b" })]),
+        rec("assistant", stamp(12), [tool("Bash", { command: "cd /Users/x/wt844 && git commit -qm 'feat: 844'" })]),
+        rec("assistant", stamp(13), [text("Merged 844. Saving the role gate for its own PR.")]),
+        rec("assistant", stamp(14), [tool("Edit", { file_path: "/Users/x/wt845/src/gate.ts", old_string: "b", new_string: "c" })]),
+      ] },
+    ]));
+    const commit = commitFile("src/gate.ts", "export const gate = 2;\n", `fix: role gate\n\nEntire-Checkpoint: ${id}\n`);
+    expect(checkpointFor(repo, commit, [], new Map(), ["src/gate.ts"])?.narration.started).toBe("Merged 844. Saving the role gate for its own PR.");
+  });
+
+  it("reads the decisions of a transcript that ends before the commit's own git commit, where the last commit shown is another repo's", () => {
+    const id = "7cac05431ed7";
+    writeBranchCheckpoint(id, files(id, [
+      { session: S1, model: "claude-fable-5-1", touched: [], transcript: [
+        rec("user", stamp(20), [user("fix b in the old tree")]),
+        rec("assistant", stamp(21), [tool("Edit", { file_path: "/Users/x/old/src/b.ts", old_string: "a", new_string: "b" }), tool("Bash", { command: "cd /Users/x/old && git commit -qm old" })]),
+        rec("user", stamp(22), [user("now the walk on the new one")]),
+        rec("assistant", stamp(23), [tool("Edit", { file_path: "/Users/x/wt/src/b.ts", old_string: "b", new_string: "c" })]),
+        rec("assistant", stamp(24), [tool("Bash", { command: "cd /Users/x/wt && bunx vitest run src/b.test.ts" }, "Tests  1 failed (1)", "error")]),
+        rec("assistant", stamp(25), [tool("Bash", { command: "cd /Users/x/wt && bunx vitest run src/b.test.ts" }, "Tests  2 passed (2)")]),
+        rec("assistant", stamp(26), [tool("Bash", { command: "cd /Users/x/api && git commit -qm 'docs: api'" })]),
+      ] },
+    ]));
+    writeFileSync(join(repo, "src/b.test.ts"), "test\n");
+    git("add", "src/b.test.ts");
+    const commit = commitFile("src/b.ts", "export const b = 3;\n", `docs: verified\n\nEntire-Checkpoint: ${id}\n`);
+    const cp = checkpointFor(repo, commit, [], new Map(), ["src/b.ts", "src/b.test.ts"]);
+    expect(cp?.decisions.map((d) => `${d.kind}: ${d.text}`)).toEqual(["tests: `vitest` on `src/b.test.ts` failed, then passed"]);
+  });
+});

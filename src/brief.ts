@@ -179,6 +179,8 @@ export interface Brief {
   decisions: BriefDecision[];
   /** How many decisions the checkpoints held before the cut to `DECISIONS_SHOWN`. */
   decisionsFound: number;
+  /** The PRs in other repositories this one names, as looked up; absent when no lookup was given. */
+  linked?: LinkedPr[];
   claims: ClaimCheck[];
   /** Present when the range resolved: owners are read from the base's history. */
   review?: ReviewState;
@@ -253,12 +255,69 @@ export interface BriefOptions extends RunOptions {
   reviews?: Review[];
   /** Annotation count, at most 50 (the Checks API ceiling per request). Default 50. */
   annotations?: number;
+  /** The PRs in other repositories the PR body or a commit message names (`linkedRefs`), as the Action looked each one up. */
+  linked?: LinkedPr[];
   /**
    * On the agent machine: a commit without a checkpoint ref takes its intent
    * from the fleet session index (agents-cli's sessions.db) instead. The path
    * of that database; nothing is written and nothing leaves the machine.
    */
   sessionsDb?: string;
+}
+
+/**
+ * A PR in another repository this one names: work split across repositories
+ * (an API half and a web half) is decided across both. The state and review
+ * counts are GitHub's, read with the token the Action was given; absent when
+ * that token cannot read the other repository, which is not the same as open.
+ */
+export interface LinkedPr {
+  /** `owner/name`. */
+  repo: string;
+  number: number;
+  state?: "OPEN" | "CLOSED" | "MERGED";
+  /** GitHub's `reviewDecision`: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED; absent when the repository requires none. */
+  reviewDecision?: string;
+  /** Review threads on it, and how many are resolved. */
+  threads?: { resolved: number; total: number };
+}
+
+/** The most linked PRs a brief looks up. */
+export const LINKED_SHOWN = 5;
+
+/**
+ * The PRs in other repositories that `texts` (the PR body, commit messages)
+ * name: `owner/name#123` or a `github.com/owner/name/pull/123` link, each
+ * once, in order, at most `LINKED_SHOWN`. A bare `#123` and this repository's
+ * own PRs (`repoUrl`) are not links to other work.
+ */
+export function linkedRefs(texts: string[], repoUrl: string | undefined): { repo: string; number: number }[] {
+  const own = repoUrl === undefined ? undefined : /github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec(repoUrl)?.[1]?.toLowerCase();
+  const seen = new Set<string>();
+  const refs: { repo: string; number: number }[] = [];
+  for (const text of texts) {
+    for (const m of text.matchAll(/(?<![\w./-])(?:https?:\/\/github\.com\/)?([A-Za-z0-9][\w.-]*\/[\w.-]+?)(?:#|\/pull\/)(\d+)\b/g)) {
+      const repo = m[1]!;
+      const key = `${repo.toLowerCase()}#${m[2]}`;
+      if (repo.toLowerCase() === own || seen.has(key) || refs.length >= LINKED_SHOWN) continue;
+      seen.add(key);
+      refs.push({ repo, number: Number(m[2]) });
+    }
+  }
+  return refs;
+}
+
+/** `[{repo, number, state?, reviewDecision?, threads?}]`: the linked PRs as the Action looked them up. */
+export function linkedIn(json: string): LinkedPr[] {
+  const rows = JSON.parse(json) as Record<string, unknown>[];
+  if (!Array.isArray(rows)) throw new Error("linked: expected a JSON array");
+  return rows.flatMap((r) => {
+    if (typeof r.repo !== "string" || typeof r.number !== "number") return [];
+    const state = r.state === "OPEN" || r.state === "CLOSED" || r.state === "MERGED" ? r.state : undefined;
+    const t = r.threads as { resolved?: unknown; total?: unknown } | undefined;
+    const threads = typeof t?.resolved === "number" && typeof t.total === "number" ? { resolved: t.resolved, total: t.total } : undefined;
+    return [{ repo: r.repo, number: r.number, ...(state !== undefined && { state }), ...(typeof r.reviewDecision === "string" && { reviewDecision: r.reviewDecision }), ...(threads !== undefined && { threads }) }];
+  });
 }
 
 /** `[{number, body}]`: the other open PRs' brief comments, as the Action collects them. */
@@ -561,7 +620,10 @@ function diffCarries(files: ChangedFile[], symbols: SymbolChange[] | undefined, 
   const inDiff = (name: string): boolean => {
     if (isPath(name)) {
       const whole = wholePath(name);
-      return changedPaths.has(name) || [...changedPaths].some((p) => p.endsWith(`/${name}`)) || basenames.has(name) || lines.some((line) => whole.test(line));
+      // A folder (`openspec/changes/x/`) is carried when a changed path sits inside it, from the top or deeper down.
+      const folder = name.replace(/^\.\//, "").replace(/\/+$/, "");
+      const holds = (p: string): boolean => p.startsWith(`${folder}/`) || p.includes(`/${folder}/`);
+      return changedPaths.has(name) || [...changedPaths].some((p) => p.endsWith(`/${name}`) || holds(p)) || basenames.has(name) || lines.some((line) => whole.test(line));
     }
     const tokens = name.match(/[A-Za-z_$][\w$]*/g) ?? [];
     return tokens.some((t) => labels.has(t) || basenames.has(t) || lines.some((line) => new RegExp(`(?<![\\w$])${t.replace(/\$/g, "\\$")}(?![\\w$])`).test(line)));
@@ -920,6 +982,7 @@ export function buildBrief(o: BriefOptions): Brief {
     commits,
     decisions: decisions.shown,
     decisionsFound: decisions.found,
+    ...(o.linked !== undefined && { linked: o.linked }),
     claims,
     ...(review !== undefined && { review }),
     ...(concurrent !== undefined && { concurrent }),

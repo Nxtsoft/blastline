@@ -600,6 +600,38 @@ describe("renderBrief: how this PR was decided", () => {
     expect(section).toContain(`| 4 | wrote a design note weighing alternatives | **kept it** in \`openspec/changes/cap/design.md\` | ${commit} |`);
   });
 
+  it("says what the commit did with failures it re-ran or left outside the change, and a verification note's status", () => {
+    const md = decided([
+      { kind: "tests", text: "`vitest` (whole suite) failed in 15 files, none in this change, then passed when re-run", at: 1, commit: sha },
+      { kind: "tests", text: "`vitest` (whole suite) failed in 2 files, none in this change; 1 still failed when re-run", at: 2, commit: sha },
+      { kind: "tests", text: "`jest` (whole suite) failed in 3 files on its last run", at: 3, commit: sha },
+      { kind: "verified", text: "openspec/changes/t-195/verification.md: PASS", at: 4, commit: sha },
+    ]);
+    expect(md).toContain(`| 1 | \`vitest\` (whole suite) failed in 15 files, none in this change | **re-ran them**, then they passed | ${commit} |`);
+    expect(md).toContain(`| 2 | \`vitest\` (whole suite) failed in 2 files, none in this change | **committed**: none of the failing files is in this change; 1 still failed when re-run | ${commit} |`);
+    expect(md).toContain(`| 3 | \`jest\` (whole suite) failed in 3 files | **committed with it failing** on its last run | ${commit} |`);
+    expect(md).toContain(`| 4 | verified the change end to end | **PASS**, recorded in \`openspec/changes/t-195/verification.md\` | ${commit} |`);
+  });
+
+  it("leads with the linked PRs in other repositories, in fixed words, and says when the token could not read one", () => {
+    const md = renderBrief(
+      {
+        ...brief,
+        decisions: [{ kind: "reverted", text: "git revert", at: 1, commit: sha }],
+        decisionsFound: 1,
+        linked: [
+          { repo: "Turing-Labs-AI/turing-api", number: 605, state: "MERGED", reviewDecision: "APPROVED", threads: { resolved: 6, total: 6 } },
+          { repo: "acme/web", number: 7 },
+        ],
+      },
+      { ...ctx, repoUrl: "https://github.com/o/r" },
+    );
+    expect(md).toContain("| 1 | linked PR in `Turing-Labs-AI/turing-api` | **merged** · 6 of 6 review threads resolved · approved | [Turing-Labs-AI/turing-api#605](https://github.com/Turing-Labs-AI/turing-api/pull/605) |");
+    expect(md).toContain("| 2 | linked PR in `acme/web` | _not readable with this token_ | [acme/web#7](https://github.com/acme/web/pull/7) |");
+    expect(md).toContain(`| 3 | undid work | **reverted** with \`git revert\` | ${commit} |`);
+    expect(renderBrief({ ...brief, linked: [{ repo: "a/b", number: 1, state: "OPEN" }] }, ctx)).toContain("#### How this PR was decided");
+  });
+
   it("says how many more the checkpoints held", () => {
     expect(decided([{ kind: "reverted", text: "git revert", at: 1, commit: sha }], 11)).toContain("<sub>10 more in the checkpoints.</sub>");
   });

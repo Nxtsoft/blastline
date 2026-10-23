@@ -12,7 +12,7 @@
  * call's output, else the call's status); a revert by a fixed label; design
  * notes by the change's own path. Tool output is read, and never leaves.
  */
-export type DecisionKind = "tests" | "asked" | "reviewed" | "reverted" | "alternatives";
+export type DecisionKind = "tests" | "verified" | "asked" | "reviewed" | "reverted" | "alternatives";
 
 export interface Decision {
   kind: DecisionKind;
@@ -51,11 +51,23 @@ const NAMED_FILES = 2;
 
 /**
  * A test runner in command position: at the start of the command, after any
- * env assignments and a launcher (`npx`, `bunx`, `pnpm exec`, `uv run`, …).
+ * env assignments and a launcher (`npx`, `bunx`, `pnpm exec`, `uv run`, …),
+ * itself possibly after `xargs` (the files come from the pipe: group 1).
  * A word like `vitest` inside an `ls`, an `echo` or a branch name is not a run.
  */
 const RUN =
-  /^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:npx|bunx|pnpm(?:\s+exec)?|yarn|npm(?:\s+exec)?|bun(?:\s+x)?|uv\s+run|poetry\s+run|python3?\s+-m)\s+)?(vitest|jest|mocha|pytest|go\s+test|cargo\s+test|ctest|\.?\/?gradlew?\s+test|mvn\s+(?:verify|test)|(?:npm|bun|pnpm|yarn)(?:\s+run)?\s+test)\b/;
+  /^(xargs(?:\s+-\S+)*\s+)?(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:npx|bunx|pnpm(?:\s+exec)?|yarn|npm(?:\s+exec)?|bun(?:\s+x)?|uv\s+run|poetry\s+run|python3?\s+-m)\s+)?(vitest|jest|mocha|pytest|go\s+test|cargo\s+test|ctest|\.?\/?gradlew?\s+test|mvn\s+(?:verify|test)|(?:npm|bun|pnpm|yarn)(?:\s+run)?\s+test)\b/;
+
+/** A redirect with its target: `> f`, `>> f`, `2> f`, `&> f`, `2>&1`, `< f`. */
+const REDIRECT = /\s*(?:(?:\d|&)?>>?|<)\s*(?:&\d|"[^"]*"|'[^']*'|[^\s;&|<>]+)/g;
+
+/** Where a run's own output goes: the file its stdout is redirected to (`> f`, `>> f`, `&> f`, `1> f`), not stderr's. */
+function stdoutTarget(stage: string): string | undefined {
+  for (const m of stage.matchAll(/(?:^|\s)(&|1)?>>?\s*("[^"]*"|'[^']*'|[^\s;&|<>]+)/g)) {
+    if (!m[2]!.startsWith("&")) return m[2]!.replace(/^["']|["']$/g, "");
+  }
+  return undefined;
+}
 
 /**
  * A command with each `$NAME` (`"$NAME"`, `${NAME}`) replaced by the literal
@@ -93,21 +105,24 @@ export function expandAssigned(command: string): string {
  * Returns the runner, the run's words (quotes stripped), and whether the
  * call's status is the run's own: a single line, `cd` steps before it
  * allowed, nothing after it, not piped (`vitest | grep FAIL` exits 1 on a
- * pass, `vitest | tail` 0 on a fail). Undefined with no run, more than one,
- * or a probe.
+ * pass, `vitest | tail` 0 on a fail). `stdin` says the run takes its files
+ * from a pipe (`xargs vitest run`), so its words do not say what it ran;
+ * `log` is the file its output went to (`> f`, `| tee f`), read by
+ * `withLogOutputs`. Undefined with no run, more than one, or a probe.
  */
-function testRun(command: string): { runner: string; words: string[]; own: boolean; cd: string | undefined } | undefined {
+function testRun(command: string): { runner: string; words: string[]; own: boolean; cd: string | undefined; stdin: boolean; log: string | undefined } | undefined {
   const expanded = expandAssigned(command);
   const steps = expanded.split(/\s*(?:&&|\|\||;|\n)\s*/).filter((step) => step !== "");
-  const runs = steps.flatMap((step, at) =>
-    step
-      .split(/\s*\|\s*/)
-      .map((stage) => stage.replace(/\s*\d?>&?\d?\S*/g, ""))
-      .flatMap((stage) => {
-        const m = RUN.exec(stage);
-        return m === null ? [] : [{ at, runner: m[1]!.replace(/\s+/g, " ").replace(/^\.?\/?/, ""), words: stage.split(/\s+/).map((w) => w.replace(/^["']|["']$/g, "")) }];
-      }),
-  );
+  const runs = steps.flatMap((step, at) => {
+    const stages = step.split(/\s*\|\s*/);
+    return stages.flatMap((raw, s) => {
+      const stage = raw.replace(REDIRECT, "");
+      const m = RUN.exec(stage);
+      if (m === null) return [];
+      const tee = /^tee\s+(?:-a\s+)?("[^"]+"|'[^']+'|[^\s;&|<>]+)/.exec(stages[s + 1] ?? "")?.[1]?.replace(/^["']|["']$/g, "");
+      return [{ at, runner: m[2]!.replace(/\s+/g, " ").replace(/^\.?\/?/, ""), words: stage.split(/\s+/).map((w) => w.replace(/^["']|["']$/g, "")), stdin: m[1] !== undefined, log: stdoutTarget(raw) ?? tee }];
+    });
+  });
   if (runs.length !== 1) return undefined;
   // A probe: code swapped in before the run (an old version written over a file, a stash, a reversed patch)
   // or put back after it, a loop's `do cp` included.
@@ -121,7 +136,83 @@ function testRun(command: string): { runner: string; words: string[]; own: boole
     .map((step) => /^(?:builtin\s+)?cd\s+("[^"]+"|'[^']+'|\S+)$/.exec(step.replace(/\s*\d?>&?\d?\S*/g, "").trim())?.[1]?.replace(/^["']|["']$/g, ""))
     .filter((t): t is string => t !== undefined)
     .pop();
-  return { runner: runs[0]!.runner, words: runs[0]!.words, own, cd };
+  return { runner: runs[0]!.runner, words: runs[0]!.words, own, cd, stdin: runs[0]!.stdin, log: runs[0]!.log };
+}
+
+/**
+ * How many test files a run's summary counts: vitest's `Test Files  1 failed | 14 passed (15)`,
+ * jest's `Test Suites: 1 failed, 14 passed, 15 total`. Undefined for a runner that prints no such line.
+ */
+function fileCounts(output: string): { failed: number; total: number } | undefined {
+  const vitest = /^[ \t]*Test Files[ \t]+(?:(\d+) failed)?[^\n]*\((\d+)\)[ \t]*$/m.exec(output);
+  if (vitest !== null) return { failed: Number(vitest[1] ?? 0), total: Number(vitest[2]) };
+  const jest = /^[ \t]*Test Suites:[ \t]+(?:(\d+) failed,)?[^\n]*?\b(\d+) total\b/m.exec(output);
+  return jest === null ? undefined : { failed: Number(jest[1] ?? 0), total: Number(jest[2]) };
+}
+
+/**
+ * The test files a failing run's output names: vitest's and jest's `FAIL <file>` lines (a vitest
+ * project tag `|web|` aside), pytest's `FAILED <file>::<test>`, each file once. Undefined when it
+ * names none, or fewer than its summary counts failing (`fileCounts`): the list was cut short
+ * (`| head`) and cannot say which failed. Read to match later runs, never shown unless the change
+ * carries the file.
+ */
+function failingFiles(output: string): string[] | undefined {
+  const files = new Set<string>();
+  for (const m of output.matchAll(/^[ \t]*FAIL(?:ED)?[ \t]+(?:\|[^|\n]+\|[ \t]+)?([^\s:]+)/gm)) {
+    const file = m[1]!.replace(/^\.\//, "");
+    if (/\.\w+$/.test(file)) files.add(file);
+  }
+  const counts = fileCounts(output);
+  if (files.size === 0 || (counts !== undefined && counts.failed !== files.size)) return undefined;
+  return [...files];
+}
+
+/** Whether a command writes to `path`: a redirect onto it or a `tee` into it. */
+function writesTo(command: string, path: string): boolean {
+  const p = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:>>?|\\btee(?:\\s+-a)?)\\s*["']?${p}(?![\\w./-])`).test(command);
+}
+
+/**
+ * The compact transcript's lines with each test run whose output went to a file (`withLogOutputs`
+ * reads `testRun`'s `log`: `vitest run > full.log 2>&1; echo done`) given the output of the first
+ * later Bash call that names that file and shows the runner's summary (`grep "Test Files" full.log`,
+ * `tail full.log`), before any call writes the file again. Probed on turing-webapp PR 859: the
+ * full-suite run before the commit and the re-run of its failures both went to logs read minutes
+ * later, so neither had an outcome. The output is read as the run's and still never shown; a line
+ * that is not JSON, or whose run printed its own summary, is kept as it is.
+ */
+export function withLogOutputs(lines: string[]): string[] {
+  const records = lines.map((line): TranscriptRecord | undefined => {
+    try {
+      return JSON.parse(line) as TranscriptRecord;
+    } catch {
+      return undefined;
+    }
+  });
+  const calls: { k: number; block: Block; command: string }[] = [];
+  records.forEach((r, k) => {
+    for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
+      if (block.type === "tool_use" && block.name === "Bash" && typeof block.input?.command === "string") calls.push({ k, block, command: expandAssigned(block.input.command) });
+    }
+  });
+  const changed = new Set<number>();
+  calls.forEach((call, i) => {
+    const run = testRun(call.block.input!.command as string);
+    const log = run?.log;
+    if (run === undefined || log === undefined || summaryStatus(run.runner, typeof call.block.result?.output === "string" ? call.block.result.output : "") !== undefined) return;
+    for (const later of calls.slice(i + 1)) {
+      if (!later.command.includes(log)) continue;
+      if (writesTo(later.command, log)) return;
+      const read = typeof later.block.result?.output === "string" ? later.block.result.output : "";
+      if (summaryStatus(run.runner, read) === undefined) continue;
+      call.block.result = { ...call.block.result, output: read };
+      changed.add(call.k);
+      return;
+    }
+  });
+  return lines.map((line, k) => (changed.has(k) ? JSON.stringify(records[k]) : line));
 }
 
 /** Flags that change how a run reports, times or schedules its tests, not which tests it runs. */
@@ -287,11 +378,16 @@ const ALTERNATIVES = /^#{1,6}\s*(?:alternatives?(?: considered)?|options conside
 export function decisionsIn(window: string, files: string[]): Decision[] {
   const out: Decision[] = [];
   const carried = (path: string): string | undefined => files.find((f) => path === f || path.endsWith(`/${f}`));
-  const tests = new Map<string, { at: number; statuses: string[]; runner: string; last: number; named: string[]; cd: string | undefined }>();
-  // Every passing run, with what it covers (`coverageOf`) and where it ran: a later pass of the same runner that
-  // covers a failure's files from the same directory closes it, and any pass of that runner from the failure's
-  // record on keeps it from being called the last word.
-  const passes: { runner: string; at: number; covered: { all: boolean; paths: string[] } | undefined; cd: string | undefined }[] = [];
+  // A runner prints paths from where it ran, which can be a folder of the repo: `src/x.test.ts` from `web/` is `web/src/x.test.ts`.
+  const inChange = (path: string): string | undefined => carried(path) ?? files.find((f) => f.endsWith(`/${path}`));
+  // One entry per run target (runner, directory, what it ran): two runs of different files never close each other.
+  const tests = new Map<string, TestGroup>();
+  // Every passing run, with what it covers (`coverageOf`), where it ran, and how many files it counts: later passes of
+  // the same runner that together cover a failure's files from the same directory close it, and any pass of that
+  // runner from the failure's record on keeps it from being called the last word.
+  const passes: { runner: string; at: number; covered: { all: boolean; paths: string[] } | undefined; cd: string | undefined; total: number | undefined }[] = [];
+  // The last verification note written per path: a note rewritten after a FAIL says the final word.
+  const verified = new Map<string, Decision>();
   // A reviewer started in the background reports later, in a task notification naming its call.
   const reviews: { id: string; at: number; reviewer: string; verdict: string | undefined }[] = [];
   const notes: string[] = [];
@@ -312,6 +408,13 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
       if (block.type !== "tool_use") continue;
       const input = block.input ?? {};
       const output = typeof block.result?.output === "string" ? block.result.output : "";
+      for (const note of notesWritten(block)) {
+        const committed = carried(note.path);
+        if (committed === undefined || !committed.endsWith(".md")) continue;
+        if (ALTERNATIVES.test(note.content)) out.push({ kind: "alternatives", text: committed, at });
+        const status = /verif/i.test(committed.slice(committed.lastIndexOf("/") + 1)) ? verificationStatus(note.content) : undefined;
+        if (status !== undefined) verified.set(committed, { kind: "verified", text: `${committed}: ${status}`, at });
+      }
       if (block.name === "AskUserQuestion") {
         for (const text of askedIn(input, output)) out.push({ kind: "asked", text, at, ...(block.id !== undefined && { call: block.id }) });
         continue;
@@ -332,17 +435,34 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
           // there. Only test files are named: a carried config file a flag points at (`--config`) is not what ran.
           const targets = run.words.slice(run.words.findIndex((w) => w === run.runner.split(" ").pop()) + 1).filter((w) => !w.startsWith("-") && /[/.]/.test(w));
           const all = targets.map(carried);
-          const named = all.every((f) => f !== undefined && TEST_FILE.test(f)) ? [...new Set(all as string[])] : [];
-          const more = named.length > NAMED_FILES ? ` and ${named.length - NAMED_FILES} more` : "";
-          const key = named.length > 0 ? `${code(run.runner)} on ${named.slice(0, NAMED_FILES).map(code).join(", ")}${more}` : code(run.runner);
-          const covered = coverageOf(run.runner, run.words);
-          if (status === "success") passes.push({ runner: run.runner, at, covered, cd: run.cd });
-          // A narrowed pass (`-t`, `-k`, `-run`, `--project`, a bare name) closes no failure, even under the same key.
-          if (status === "error" || covered !== undefined) {
-            const seen = tests.get(key) ?? { at, statuses: [], runner: run.runner, last: at, named, cd: run.cd };
+          const named = !run.stdin && all.every((f) => f !== undefined && TEST_FILE.test(f)) ? [...new Set(all as string[])] : [];
+          // Files fed through a pipe say nothing about what ran.
+          const covered = run.stdin ? undefined : coverageOf(run.runner, run.words);
+          const counts = fileCounts(output);
+          const failing = status === "error" ? failingFiles(output) : undefined;
+          if (status === "success") passes.push({ runner: run.runner, at, covered, cd: run.cd, total: counts?.total });
+          // A re-run of an earlier failure's files, fed from a list or a variable so its words do not say which: it ran as
+          // many files as that failure still had failing, and each file failing now was failing then.
+          const rerunOf =
+            covered === undefined && failing !== undefined && counts !== undefined
+              ? [...tests.values()].find((g) => g.runner === run.runner && g.cd === run.cd && g.failing !== undefined && g.failing.length === counts.total && failing.every((f) => g.failing!.includes(f)))
+              : undefined;
+          if (rerunOf !== undefined) {
+            rerunOf.last = at;
+            rerunOf.statuses.push(status);
+            rerunOf.failing = failing;
+            rerunOf.reran = true;
+          } else if (status === "error" || covered !== undefined) {
+            // A narrowed pass (`-t`, `-k`, `-run`, `--project`, a bare name) closes no failure, even of the same target.
+            const target = covered === undefined ? `?${at}` : covered.all ? "*" : [...covered.paths].sort().join("\0");
+            const key = `${run.runner}\0${run.cd ?? ""}\0${target}`;
+            const seen = tests.get(key) ?? { at, last: at, statuses: [], runner: run.runner, cd: run.cd, named, whole: covered?.all === true, failing: undefined, first: undefined, reran: false };
             seen.last = at;
-            seen.cd = run.cd;
             seen.statuses.push(status);
+            if (status === "error") {
+              seen.failing = failing;
+              seen.first ??= failing;
+            }
             tests.set(key, seen);
           }
         }
@@ -350,28 +470,91 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
         if (revert !== undefined) out.push({ kind: "reverted", text: revert[1], at });
         continue;
       }
-      if (block.name === "Write" && typeof input.file_path === "string" && input.file_path.endsWith(".md") && typeof input.content === "string" && ALTERNATIVES.test(input.content)) {
-        const committed = carried(input.file_path);
-        if (committed !== undefined) out.push({ kind: "alternatives", text: committed, at });
-      }
     }
   });
+  out.push(...verified.values());
   for (const r of reviews) {
     const reported = r.verdict ?? (r.id === "" ? undefined : notes.filter((n) => n.includes(r.id)).map(verdictOf).find((v) => v !== undefined));
     out.push({ kind: "reviewed", text: `${code(r.reviewer)}: ${reported ?? "verdict not recorded"}`, at: r.at, ...(r.id !== "" && { call: r.id }) });
   }
-  for (const [key, { at, statuses, runner, last, named, cd }] of tests) {
-    if (!statuses.includes("error")) continue;
-    // A later pass covers the failing files when, from the same directory, it runs every test of the runner or
-    // names each file or a folder holding it. Calls in one record have no known order, so only a later record closes.
-    const covers = (p: (typeof passes)[number]): boolean =>
-      p.covered !== undefined && p.cd === cd && (p.covered.all || (named.length > 0 && named.every((f) => p.covered!.paths.some((t) => f === t || f.startsWith(`${t}/`)))));
-    const same = passes.filter((p) => p.runner === runner && p.at >= last);
-    if (statuses[statuses.length - 1] === "success" || same.some((p) => p.at > last && covers(p))) out.push({ kind: "tests", text: `${key} failed, then passed`, at });
+  for (const g of tests.values()) {
+    if (!g.statuses.includes("error")) continue;
+    // Later passes close a failure when, from the same directory, one runs every test of the runner, or together they
+    // name each file still failing (by the output's own list, else the run's named files) or a folder holding it, or one
+    // fed from a list counts exactly as many files as were failing. Calls in one record have no known order, so only a
+    // later record closes.
+    const later = passes.filter((p) => p.runner === g.runner && p.cd === g.cd && p.at > g.last);
+    const need = g.failing ?? (g.named.length > 0 ? g.named : undefined);
+    const covers = (p: (typeof passes)[number], f: string): boolean => p.covered !== undefined && p.covered.paths.some((t) => f === t || f.startsWith(`${t}/`));
+    const rerun = g.failing !== undefined && later.some((p) => p.covered === undefined && p.total === g.failing!.length);
+    const closed =
+      g.statuses[g.statuses.length - 1] === "success" || later.some((p) => p.covered?.all === true) || (need !== undefined && need.every((f) => later.some((p) => covers(p, f)))) || rerun;
+    // The failing files are named when the change carries each as a test file; otherwise counted, and said to be outside
+    // the change when none of them is in it.
+    const listed = g.first?.map(inChange);
+    const shown = g.named.length > 0 ? g.named : listed !== undefined && listed.every((f) => f !== undefined && TEST_FILE.test(f)) ? [...new Set(listed as string[])] : [];
+    const more = shown.length > NAMED_FILES ? ` and ${shown.length - NAMED_FILES} more` : "";
+    const label = shown.length > 0 ? `${code(g.runner)} on ${shown.slice(0, NAMED_FILES).map(code).join(", ")}${more}` : g.whole ? `${code(g.runner)} (whole suite)` : code(g.runner);
+    const count = shown.length === 0 && g.first !== undefined ? ` in ${g.first.length} ${g.first.length === 1 ? "file" : "files"}` : "";
+    const outside = listed !== undefined && listed.every((f) => f === undefined) ? ", none in this change" : "";
+    if (closed) out.push({ kind: "tests", text: `${label} failed${count}${outside}, then passed${g.reran || rerun ? " when re-run" : ""}`, at: g.at });
+    // Failures all outside the change are said whatever ran after: the reviewer reads that the commit went in with them.
+    else if (outside !== "") out.push({ kind: "tests", text: `${label} failed${count}${outside}${g.reran && g.failing !== undefined ? `; ${g.failing.length} still failed when re-run` : ""}`, at: g.at });
     // A failure the runner passed alongside or after, on other files, is not called the last word: that run may have covered it.
-    else if (same.length === 0) out.push({ kind: "tests", text: `${key} failed on its last run`, at });
+    else if (!passes.some((p) => p.runner === g.runner && p.at >= g.last)) out.push({ kind: "tests", text: `${label} failed${count} on its last run`, at: g.at });
   }
   return out.sort((a, b) => a.at - b.at);
+}
+
+/** One run target's runs in a window: what failed in it, and whether a re-run of its failures followed. */
+interface TestGroup {
+  at: number;
+  last: number;
+  statuses: string[];
+  runner: string;
+  cd: string | undefined;
+  /** The change's test files the run named, when it named nothing else. */
+  named: string[];
+  /** It ran every test of the runner. */
+  whole: boolean;
+  /** The files its latest failing run's output named failing (`failingFiles`); undefined when that run named none. */
+  failing: string[] | undefined;
+  /** The files its first failing run named failing. */
+  first: string[] | undefined;
+  /** A re-run of its failing files followed (`decisionsIn`). */
+  reran: boolean;
+}
+
+/**
+ * The notes a tool call writes whole: a `Write`'s file, or a Bash heredoc
+ * (`cat > <file> <<'EOF'`, `cat <<'EOF' > <file>`), with the variables the
+ * command assigns read as their values. Read for headings and a status line,
+ * never shown.
+ */
+function notesWritten(block: Block): { path: string; content: string }[] {
+  const input = block.input ?? {};
+  if (block.name === "Write") return typeof input.file_path === "string" && typeof input.content === "string" ? [{ path: input.file_path, content: input.content }] : [];
+  if (block.name !== "Bash" || typeof input.command !== "string") return [];
+  const command = expandAssigned(input.command);
+  const notes: { path: string; content: string }[] = [];
+  const unquote = (s: string): string => s.replace(/^["']|["']$/g, "");
+  for (const m of command.matchAll(/\bcat\s+>\s*("[^"]+"|'[^']+'|[^\s<>;&|]+)\s*<<-?\s*(['"]?)(\w+)\2[ \t]*\n([\s\S]*?)\n\3[ \t]*(?=\n|$)/g)) notes.push({ path: unquote(m[1]!), content: m[4]! });
+  for (const m of command.matchAll(/\bcat\s+<<-?\s*(['"]?)(\w+)\1\s*>\s*("[^"]+"|'[^']+'|[^\s<>;&|]+)[ \t]*\n([\s\S]*?)\n\2[ \t]*(?=\n|$)/g)) notes.push({ path: unquote(m[3]!), content: m[4]! });
+  return notes;
+}
+
+/**
+ * The status a verification note states, in fixed words: its front matter's
+ * `status:` (or `result:`, `verdict:`) line, else such a line in its body
+ * (`**Status:** PASS`). PASS, FAIL or PARTIAL; undefined with none.
+ */
+export function verificationStatus(content: string): "PASS" | "FAIL" | "PARTIAL" | undefined {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content)?.[1];
+  const line = /^[ \t>*_-]*(?:status|result|verdict)[*_]*[ \t]*:[ \t]*[*_]*[ \t]*(PASS(?:ED)?|FAIL(?:ED)?|PARTIAL)\b/im;
+  const m = (front === undefined ? null : line.exec(front)) ?? line.exec(content);
+  if (m === null) return undefined;
+  const word = m[1]!.toUpperCase();
+  return word.startsWith("PASS") ? "PASS" : word.startsWith("FAIL") ? "FAIL" : "PARTIAL";
 }
 
 /**
@@ -379,7 +562,7 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
  * outcomes first, then questions to the person, reviews, reverts and design
  * notes. The chosen ones keep their order in the session.
  */
-const PRIORITY: DecisionKind[] = ["tests", "asked", "reviewed", "reverted", "alternatives"];
+const PRIORITY: DecisionKind[] = ["tests", "verified", "asked", "reviewed", "reverted", "alternatives"];
 
 export function chooseDecisions<T extends { kind: DecisionKind }>(all: T[], limit: number): T[] {
   if (all.length <= limit) return all;

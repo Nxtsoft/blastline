@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import type { Decision } from "./decisions.js";
-import { decisionsIn, expandAssigned, verdictOf } from "./decisions.js";
+import { decisionsIn, expandAssigned, verdictOf, withLogOutputs } from "./decisions.js";
 
 /**
  * The reviewable subset of an Entire checkpoint (github.com/entireio/cli): the
@@ -15,9 +15,9 @@ export interface Checkpoint {
   id: string;
   /** Full sha of the commit that carries the trailer. */
   commit: string;
-  /** `0/metadata.json.agent`, e.g. "Claude Code". */
+  /** `<i>/metadata.json.agent` of the first session that did the commit's work (`checkpointFor`), e.g. "Claude Code". */
   agent: string;
-  /** `0/metadata.json.model`, e.g. "claude-sonnet-5". */
+  /** `<i>/metadata.json.model` of the same session, e.g. "claude-sonnet-5". */
   model: string;
   /**
    * What a person asked for, at most 200 characters: the first line of the
@@ -295,6 +295,8 @@ interface SessionMetadata {
   agent?: string;
   model?: string;
   session_id?: string;
+  /** The repo paths this session wrote, as Entire's hooks saw them; empty for a session that only ran alongside, and also for one that wrote through a shell. */
+  files_touched?: string[];
 }
 
 /** One record of the compact transcript: a turn with its content blocks. */
@@ -428,6 +430,8 @@ export interface Windows {
   ask: string;
   /** Whether a tool call in the new part works on one of the commit's files. */
   worked: boolean;
+  /** Whether a tool call in the new part works on one of the commit's files by its full repo path (`strictRoots`), not only its basename. */
+  strict: boolean;
   /**
    * Where the commit's decisions are read: from the commit's own turn on,
    * inside what the previous checkpoint of the session left unread, only the
@@ -580,6 +584,77 @@ function namedIn(command: string, files: string[]): string[] {
 }
 
 /**
+ * Per record, the checkout roots of the work it does on `files` by their full
+ * repo path, never a basename: an edit tool whose path ends in `/<file>`, a
+ * Bash command naming `<root>/<file>` (variables it assigns read as their
+ * values), or one running in a known directory (`shellOf`) that names
+ * `<file>` by its repo path. A file at the repo's top level names no checkout
+ * (any repo has a `package.json`), and a temp path belongs to none. Probed on
+ * turing-webapp PR 859: a session on another ticket that grepped its own
+ * folder's `types.ts` matched the commit's `app/…/new/types.ts` by basename,
+ * and its model and first line became the commit's.
+ */
+function strictRoots(records: (TranscriptRecord | undefined)[], files: string[], shell: Shell): string[][] {
+  const deep = files.filter((f) => f.includes("/"));
+  const absolute = deep.map((f) => new RegExp(`(/[^\\s'"]*?)/${f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`));
+  return records.map((r) => {
+    const roots: string[] = [];
+    for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
+      if (block.type !== "tool_use" || block.name === undefined) continue;
+      const path = block.input?.file_path;
+      if (EDIT_TOOLS.has(block.name) && typeof path === "string") {
+        const f = deep.find((file) => path.endsWith(`/${file}`));
+        if (f !== undefined) roots.push(path.slice(0, path.length - f.length - 1));
+      }
+      const command = block.name === "Bash" ? block.input?.command : undefined;
+      if (typeof command !== "string") continue;
+      const expanded = expandAssigned(command);
+      for (const pattern of absolute) {
+        const at = pattern.exec(expanded)?.[1];
+        if (at !== undefined) roots.push(posix.normalize(at));
+      }
+      const at = shell.at.get(block);
+      if (at !== undefined && namedIn(expanded, deep).length > 0) roots.push(at);
+    }
+    return roots.filter((root) => !TEMP.test(`${root}/`));
+  });
+}
+
+/** Whether an assistant record carries text the agent wrote. */
+function speaks(record: TranscriptRecord | undefined): boolean {
+  return record?.type === "assistant" && (record.content ?? []).some((b) => b.type === "text" && typeof b.text === "string" && b.text.trim() !== "");
+}
+
+/**
+ * Where a commit's own work starts in a session, read from its full-path
+ * work (`strictRoots`) after `since`. The checkout is the root of the last
+ * such work; a commit made earlier at that root, with more work after it, ends
+ * what this commit can claim (that commit shipped the earlier work). `turn` is
+ * the person's prompt before the first work after that. When the session
+ * committed something else inside that turn before the work (the turn shipped
+ * another PR first), `start` is the agent's last text before the work, as a
+ * `SymbolReason` is the text before its edit; otherwise the turn's prompt.
+ * Undefined when the session did no full-path work on the files after `since`.
+ */
+function intentWindow(records: (TranscriptRecord | undefined)[], roots: string[][], shell: Shell, since: number): { turn: number; start: number } | undefined {
+  let last = -1;
+  for (let i = records.length - 1; i >= since && last === -1; i--) if (roots[i]!.length > 0) last = i;
+  if (last === -1) return undefined;
+  const root = roots[last]!.at(-1)!;
+  let cut = since;
+  for (const c of shell.commits) if (c.dir === root && c.at >= since && c.at < last) cut = Math.max(cut, c.at + 1);
+  const first = roots.findIndex((r, i) => i >= cut && r.includes(root));
+  let turn = first;
+  while (turn > 0 && !(records[turn] !== undefined && humanTurn(records[turn]!))) turn--;
+  const shipped = shell.commits.filter((c) => c.at >= turn && c.at < first).map((c) => c.at);
+  if (shipped.length === 0) return { turn, start: Math.max(since, turn) };
+  const after = Math.max(...shipped) + 1;
+  let k = first;
+  while (k > after && !speaks(records[k])) k--;
+  return { turn, start: Math.max(since, k) };
+}
+
+/**
  * Whether a tool call works on one of `files` at this repo's `root`: an edit
  * tool whose absolute path is the root plus the file, a Bash command that
  * names that absolute path, or one that runs at the root (`shellOf`) and
@@ -609,9 +684,10 @@ function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], fi
  * directory. When they name more than one (a session that also worked in
  * another checkout or worktree), the one the commit was made in
  * (`Shell.committed`) is the root, joined by another only where the change was
- * carried from it as a patch, and then only from after its last commit there. Undefined when there is
- * none, or when the commit's directory cannot be told or is not among them,
- * so no turn is read rather than the wrong one.
+ * carried from it as a patch, and then only from after its last commit there. When the last commit the
+ * transcript shows is not among them, the snapshot ended before the commit's own, and the root is where
+ * the commit's own files (`own`) were last worked on by their path. Undefined when there is none, or
+ * when that cannot be told either, so no turn is read rather than the wrong one.
  */
 /** A root of the repo and the record index its work counts from. */
 interface Root {
@@ -619,7 +695,7 @@ interface Root {
   from: number;
 }
 
-function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], shell: Shell): Root[] | undefined {
+function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], shell: Shell, own: string[]): Root[] | undefined {
   const roots = new Set<string>();
   for (const r of records) {
     for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
@@ -636,8 +712,14 @@ function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], sh
   for (const root of roots) if (TEMP.test(root)) roots.delete(root);
   if (roots.size === 0) return undefined;
   if (roots.size === 1) return [{ path: [...roots][0]!, from: 0 }];
-  if (shell.committed === undefined || !roots.has(`${shell.committed}/`)) return undefined;
-  const home = shell.committed;
+  let home = shell.committed;
+  if (home === undefined || !roots.has(`${home}/`)) {
+    // The snapshot can end before the commit's own `git commit` is logged (turing-webapp PR 859: the transcript
+    // stops 32 seconds before the commit), so the last commit it shows is other work, made in a checkout of
+    // something else. The commit's checkout is then where its own files were last worked on by their path.
+    home = strictRoots(records, own, shell).flat().at(-1);
+    if (home === undefined || !roots.has(`${home}/`)) return undefined;
+  }
   const out: Root[] = [{ path: `${home}/`, from: 0 }];
   // Another checkout counts only where the change was carried from it: a patch written there and applied
   // where the commit was made. Its work counts from after its own last commit before that, so the earlier
@@ -660,10 +742,10 @@ function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], sh
  * after the commit's work, work in another checkout) is left out whole, and
  * with no agreed root nothing is read.
  */
-function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[], start: number, files: string[]): string {
+function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[], start: number, files: string[], own: string[]): string {
   const kept: string[] = [];
   const shell = shellOf(records);
-  const roots = repoRoot(records, files, shell);
+  const roots = repoRoot(records, files, shell, own);
   if (roots === undefined) return "";
   // Away means outside every root that counts at that record; work or a `cd` at any of them is home.
   const live = (k: number): Root[] => roots.filter((r) => k >= r.from);
@@ -771,16 +853,19 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   });
   const extended = read !== undefined && read.lines <= lines.length && transcriptHash(lines.slice(0, read.lines)) === read.hash;
   const sinceStart = extended ? read.lines : 0;
-  // The commit's own turn: back from its first work on the files inside the new part (or from the part's start) to the last prompt a person typed.
+  // The commit's own turn: from its full-path work when there is any (`intentWindow`), else back from its first work on
+  // the files by basename inside the new part (or from the part's start) to the last prompt a person typed.
+  const shell = shellOf(records);
+  const intent = intentWindow(records, strictRoots(records, files, shell), shell, sinceStart);
   const firstWork = records.findIndex((r, i) => i >= sinceStart && r?.type === "assistant" && (r.content ?? []).some((block) => worksOn(block, files)));
-  let turnStart = firstWork === -1 ? sinceStart : firstWork;
-  while (turnStart > 0 && !(records[turnStart] !== undefined && humanTurn(records[turnStart]!))) turnStart--;
-  const stepStart = Math.max(sinceStart, turnStart);
+  let turnStart = intent?.turn ?? (firstWork === -1 ? sinceStart : firstWork);
+  while (intent === undefined && turnStart > 0 && !(records[turnStart] !== undefined && humanTurn(records[turnStart]!))) turnStart--;
+  const stepStart = intent?.start ?? Math.max(sinceStart, turnStart);
   // What was asked: the turn's opening prompt. With no work on the files, the commit closes the
   // transcript's last turn, so the last prompt in the new part, else (the same step as an earlier
   // commit) the turn it continues; with nothing read before either, the turn is unknown.
   let opening: TranscriptRecord | undefined;
-  if (firstWork !== -1) opening = records[turnStart];
+  if (intent !== undefined || firstWork !== -1) opening = records[turnStart];
   else if (extended) {
     let last = records.length - 1;
     while (last >= sinceStart && !(records[last] !== undefined && humanTurn(records[last]!))) last--;
@@ -788,13 +873,16 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   }
   // The decision window also reads what the session's subagents did: an agent that edits and tests through
   // subagents leaves no tool call on the files in its own transcript. `at` maps a line to its place once they are in.
+  // A test run whose output went to a log carries the output of the later call that read that log (`withLogOutputs`);
+  // only the decision window reads it, so the hashes and the other windows see the transcript as written.
+  const logged = withLogOutputs(lines);
   const dLines: string[] = [];
   const dRecords: (TranscriptRecord | undefined)[] = [];
   const at: number[] = [];
   lines.forEach((line, k) => {
     at.push(dLines.length);
-    dLines.push(line);
-    dRecords.push(records[k]);
+    dLines.push(logged[k]!);
+    dRecords.push(logged[k] === line ? records[k] : (JSON.parse(logged[k]!) as TranscriptRecord));
     for (const block of records[k]?.type === "assistant" ? (records[k]!.content ?? []) : []) {
       for (const inner of block.type === "tool_use" && block.id !== undefined ? (subagents.get(block.id) ?? []) : []) {
         dLines.push(inner);
@@ -810,7 +898,8 @@ export function windowsOf(transcript: string, read: ReadSession | undefined, fil
   return {
     ask: opening !== undefined && humanTurn(opening) ? askOf(opening) : "",
     worked: firstWork !== -1,
-    decisionWindow: dFirstWork === -1 ? "" : workingTurns(dLines, dRecords, Math.max(dSince, dTurnStart), scope),
+    strict: intent !== undefined,
+    decisionWindow: dFirstWork === -1 ? "" : workingTurns(dLines, dRecords, Math.max(dSince, dTurnStart), scope, files),
     sinceWindow: lines.slice(sinceStart).join("\n"),
     stepWindow: lines.slice(stepStart).join("\n"),
     turnWindow: lines.slice(turnStart).join("\n"),
@@ -961,14 +1050,21 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
         return "";
       }
     };
-    // The ask of a session that worked on the commit's files wins over one that only ran alongside.
-    let ask = "";
-    let askWorked = false;
-    const decisions: Decision[] = [];
     const testCommands = new Set<string>();
     let narration: Narration = { started: "", ended: "", texts: 0, tools: 0 };
     // Each session's own part, combined after the loop; `activity` counts texts and tool calls across every session.
-    const parts: { worked: boolean; narration: Narration; testCommands: string[] }[] = [];
+    const parts: {
+      index: number;
+      meta: SessionMetadata;
+      /** Entire's hooks saw it write one of the commit's files. */
+      touched: boolean;
+      strict: boolean;
+      worked: boolean;
+      ask: string;
+      narration: Narration;
+      testCommands: string[];
+      decisions: Decision[];
+    }[] = [];
     let activity = 0;
     const sessions: CheckpointSession[] = [];
     let readBefore = 0;
@@ -996,25 +1092,30 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
       }
       return committed.get(path);
     };
+    const scope = changed.length > 0 ? changed : files;
     for (let i = 0; i < sessionCount; i++) {
-      const sessionId = (i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata)).session_id ?? "";
+      const meta = i === 0 ? session : (JSON.parse(show(`${i}/metadata.json`)) as SessionMetadata);
+      const sessionId = meta.session_id ?? "";
       const before = sessionId === "" ? undefined : read.get(sessionId);
-      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files, changed.length > 0 ? changed : files, subagents);
-      decisions.push(...decisionsIn(decisionWindow, changed.length > 0 ? changed : files));
-      if (opened !== "" && (ask === "" || (worked && !askWorked))) {
-        ask = opened;
-        askWorked = worked;
-      }
+      const { sinceWindow, stepWindow, turnWindow, lines, hash, extended, ask: opened, worked, strict, decisionWindow } = windowsOf(show(`${i}/transcript.jsonl`), before, files, scope, subagents);
       if (extended) readBefore++;
       sessions.push({ id: sessionId, lines, hash });
       for (const r of symbolReasonsIn(sinceWindow, symbols, contents)) reasons.set(`${r.path}\0${r.label}`, r);
       const n = narrationIn(stepWindow);
       activity += n.texts + n.tools;
-      parts.push({ worked, narration: n, testCommands: testCommandsIn(turnWindow) });
+      const touched = (meta.files_touched ?? []).some((f) => files.includes(f));
+      parts.push({ index: i, meta, touched, strict, worked, ask: opened, narration: n, testCommands: testCommandsIn(turnWindow), decisions: decisionsIn(decisionWindow, scope) });
     }
-    // Entire attaches every session live in the repo when the commit is made. When some worked on the commit's
-    // files, only theirs say what the commit's session did and ran; the rest (other tasks in the same checkout) are left out.
-    const own = parts.some((p) => p.worked) ? parts.filter((p) => p.worked) : parts;
+    // Entire attaches every session live in the repo when the commit is made. Only the sessions that did the commit's
+    // work say what it did and ran, and give its model; the rest (other tasks in the same checkout) are left out. Strongest
+    // evidence first: Entire saw the session write a committed file (and it worked on one by its path), then it worked
+    // on one by its full path, then by basename only, which another task's file of the same name also matches.
+    const tiers = [parts.filter((p) => p.touched && p.strict), parts.filter((p) => p.touched), parts.filter((p) => p.strict), parts.filter((p) => p.worked), parts];
+    const own = tiers.find((t) => t.length > 0)!;
+    // Decisions are bound to work at the commit's checkout already (`decisionWindow`); every session with evidence it did the work keeps its own.
+    const deciders = parts.filter((p) => p.touched || p.strict);
+    const decisions = (deciders.length > 0 ? deciders : own).flatMap((p) => p.decisions);
+    const ask = own.find((p) => p.ask !== "")?.ask ?? "";
     for (const p of own) {
       for (const c of p.testCommands) testCommands.add(c);
       narration = {
@@ -1026,14 +1127,14 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     }
     if (narration.ended === narration.started) narration.ended = "";
     let prompt = ask;
-    for (let i = 0; prompt === "" && i < sessionCount; i++) prompt = typed(i);
+    for (const i of [...own.map((p) => p.index), ...parts.map((p) => p.index)]) if (prompt === "") prompt = typed(i);
     // The same step: every session's transcript extends what an earlier commit read, and nothing came after.
     const sameStep = readBefore > 0 && readBefore === sessions.length && activity === 0 ? read.get(sessions[0]!.id)?.sha : undefined;
     return {
       id,
       commit: git(repo, ["rev-parse", `${commit}^{commit}`]).trim(),
-      agent: session.agent ?? "",
-      model: session.model ?? "",
+      agent: own[0]?.meta.agent ?? "",
+      model: own[0]?.meta.model ?? "",
       prompt,
       narration,
       sessions,
