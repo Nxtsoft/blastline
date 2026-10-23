@@ -857,7 +857,7 @@ describe("windowsOf and narrationIn", () => {
   it("keeps an unstamped transcript whole and counts texts and tool calls", () => {
     const t = [JSON.stringify({ type: "assistant", content: [text("a"), bash("ls")] }), "not json", JSON.stringify({ type: "assistant", content: [text("b")] })].join("\n");
     const lines = t.split("\n");
-    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "", worked: false, decisionWindow: "" });
+    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "", worked: false, strict: false, roots: [], madeCommit: false, decisionWindow: "" });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: transcriptHash(lines.slice(0, 2)) }, ["x.ts"])).toMatchObject({ sinceWindow: lines[2], extended: true });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: "not the prefix" }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
     expect(windowsOf(t, { sha: "a", lines: 9, hash: transcriptHash(lines) }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
@@ -1106,5 +1106,238 @@ describe("checkpointFor with symbols", () => {
     expect(JSON.stringify(cp)).not.toContain("SECRET-EDIT-RESULT");
     expect(JSON.stringify(cp)).not.toContain("Second line");
     expect(checkpointFor(repo, commitEdited)?.reasons).toEqual([]);
+  });
+});
+
+describe("checkpointFor: which session did the commit's work", () => {
+  // a web-app PR's shapes. Each checkpoint holds every session live in the checkout at commit time.
+  const tool = (name: string, input: object, output = "SECRET", status = "success"): object => ({ id: `t_${name}`, type: "tool_use", name, input, result: { output, status } });
+  const files = (id: string, sessions: { session: string; model: string; touched: string[]; transcript: string[] }[]): Record<string, string> => {
+    const dir = `/${id.slice(0, 2)}/${id.slice(2)}`;
+    const out: Record<string, string> = {
+      "metadata.json": JSON.stringify({ cli_version: "0.11.5", checkpoint_id: id, strategy: "manual-commit", files_touched: null, sessions: sessions.map((_, i) => ({ metadata: `${dir}/${i}/metadata.json` })) }),
+    };
+    sessions.forEach((s, i) => {
+      out[`${i}/metadata.json`] = JSON.stringify({ cli_version: "0.11.5", checkpoint_id: id, session_id: s.session, agent: "Claude Code", model: s.model, files_touched: s.touched });
+      out[`${i}/transcript.jsonl`] = s.transcript.join("\n") + "\n";
+      out[`${i}/prompt.txt`] = "";
+    });
+    return out;
+  };
+  const S0 = "17c27c4e-0000-4000-8000-000000000000";
+  const S1 = "b030a67d-0000-4000-8000-000000000000";
+
+  it("takes the model, the ask and the narration from the session that wrote the commit's files, not one that grepped another file of the same name", () => {
+    const id = "5a8af3219cb5";
+    execFileSync("mkdir", ["-p", join(repo, "src/new")]);
+    writeBranchCheckpoint(id, files(id, [
+      { session: S0, model: "claude-opus-5-5", touched: [], transcript: [
+        rec("user", stamp(1), [user("can you work on the mapping popup ticket")]),
+        rec("assistant", stamp(2), [text("The popup is the mapping step."), tool("Bash", { command: 'D="/Users/x/other/uploads"; grep -n Item "$D"/types.ts' })]),
+      ] },
+      { session: S1, model: "claude-fable-5-1", touched: ["src/new/types.ts"], transcript: [
+        rec("user", stamp(3), [user("okay let's continue")]),
+        rec("assistant", stamp(4), [text("Starting the ticket."), tool("Edit", { file_path: "/Users/x/wt/src/new/types.ts", old_string: "a", new_string: "b" })]),
+      ] },
+    ]));
+    const commit = commitFile("src/new/types.ts", "export type T = 1;\n", `feat: ticket\n\nEntire-Checkpoint: ${id}\n`);
+    const cp = checkpointFor(repo, commit, [], new Map(), ["src/new/types.ts"]);
+    expect(cp?.model).toBe("claude-fable-5-1");
+    expect(cp?.prompt).toBe("okay let's continue");
+    expect(cp?.narration.started).toBe("Starting the ticket.");
+  });
+
+  it("starts the narration after another PR the same turn committed first, at the agent's last line before this commit's work", () => {
+    const id = "6b9bf4320dc6";
+    writeBranchCheckpoint(id, files(id, [
+      { session: S1, model: "claude-fable-5-1", touched: [], transcript: [
+        rec("user", stamp(10), [user("merge the first PR, then the gate")]),
+        rec("assistant", stamp(11), [text("Finishing the first PR."), tool("Edit", { file_path: "/Users/x/wtA/src/gate.ts", old_string: "a", new_string: "b" })]),
+        rec("assistant", stamp(12), [tool("Bash", { command: "cd /Users/x/wtA && git commit -qm 'feat: first'" })]),
+        rec("assistant", stamp(13), [text("Merged the first PR. Saving the gate for its own PR.")]),
+        rec("assistant", stamp(14), [tool("Edit", { file_path: "/Users/x/wtB/src/gate.ts", old_string: "b", new_string: "c" })]),
+      ] },
+    ]));
+    const commit = commitFile("src/gate.ts", "export const gate = 2;\n", `fix: gate\n\nEntire-Checkpoint: ${id}\n`);
+    expect(checkpointFor(repo, commit, [], new Map(), ["src/gate.ts"])?.narration.started).toBe("Merged the first PR. Saving the gate for its own PR.");
+  });
+
+  it("reads the decisions of a transcript that ends before the commit's own git commit, where the last commit shown is another repo's", () => {
+    const id = "7cac05431ed7";
+    writeBranchCheckpoint(id, files(id, [
+      { session: S1, model: "claude-fable-5-1", touched: [], transcript: [
+        rec("user", stamp(20), [user("fix b in the old tree")]),
+        rec("assistant", stamp(21), [tool("Edit", { file_path: "/Users/x/old/src/b.ts", old_string: "a", new_string: "b" }), tool("Bash", { command: "cd /Users/x/old && git commit -qm old" })]),
+        rec("user", stamp(22), [user("now the walk on the new one")]),
+        rec("assistant", stamp(23), [tool("Edit", { file_path: "/Users/x/wt/src/b.ts", old_string: "b", new_string: "c" })]),
+        rec("assistant", stamp(24), [tool("Bash", { command: "cd /Users/x/wt && bunx vitest run src/b.test.ts" }, "Tests  1 failed (1)", "error")]),
+        rec("assistant", stamp(25), [tool("Bash", { command: "cd /Users/x/wt && bunx vitest run src/b.test.ts" }, "Tests  2 passed (2)")]),
+        rec("assistant", stamp(26), [tool("Bash", { command: "cd /Users/x/api && git commit -qm 'docs: api'" })]),
+      ] },
+    ]));
+    writeFileSync(join(repo, "src/b.test.ts"), "test\n");
+    git("add", "src/b.test.ts");
+    const commit = commitFile("src/b.ts", "export const b = 3;\n", `docs: verified\n\nEntire-Checkpoint: ${id}\n`);
+    const cp = checkpointFor(repo, commit, [], new Map(), ["src/b.ts", "src/b.test.ts"]);
+    expect(cp?.decisions.map((d) => `${d.kind}: ${d.text}`)).toEqual(["tests: `vitest` on `src/b.test.ts` failed, then passed"]);
+  });
+});
+
+describe("windowsOf: calls made in another checkout", () => {
+  it("leaves out a call that cds into another worktree, even right after work at the commit's own", () => {
+    const run = (cmd: string, output: string, status = "success"): object => ({ id: "r", type: "tool_use", name: "Bash", input: { command: cmd }, result: { output, status } });
+    const t = [
+      rec("user", stamp(1), [user("fix the cap")]),
+      rec("assistant", stamp(2), [{ id: "e", type: "tool_use", name: "Edit", input: { file_path: "/Users/x/wt/src/b.ts", old_string: "a", new_string: "b" }, result: { output: "", status: "success" } }]),
+      rec("assistant", stamp(3), [run("cd /Users/x/other && bunx vitest run src/b.test.ts", "Tests  1 failed (1)", "error")]),
+      rec("assistant", stamp(4), [run("cd /Users/x/wt && bunx vitest run src/b.test.ts", "Tests  1 failed (1)", "error"), run("cd /Users/x/other && git status", "")]),
+      rec("assistant", stamp(5), [run("cd /Users/x/wt && git commit -qm cap", "")]),
+    ].join("\n");
+    const window = windowsOf(t, undefined, ["src/b.ts", "src/b.test.ts"]).decisionWindow;
+    expect(window).not.toContain("/Users/x/other && bunx");
+    expect(window).toContain("/Users/x/wt && bunx");
+    expect(window).not.toContain("git status");
+  });
+});
+
+describe("checkpointFor: a committer that wrote through the shell", () => {
+  it("keeps the model and decisions of the session that made the commit, over one that edited a committed file elsewhere", () => {
+    const tool = (name: string, input: object, output = "SECRET", status = "success"): object => ({ id: `t_${name}`, type: "tool_use", name, input, result: { output, status } });
+    const id = "8dbd16542fe8";
+    const dir = `/${id.slice(0, 2)}/${id.slice(2)}`;
+    const session = (i: number, sid: string, model: string, touched: string[], transcript: string[]): Record<string, string> => ({
+      [`${i}/metadata.json`]: JSON.stringify({ cli_version: "0.11.5", checkpoint_id: id, session_id: sid, agent: "Claude Code", model, files_touched: touched }),
+      [`${i}/transcript.jsonl`]: transcript.join("\n") + "\n",
+      [`${i}/prompt.txt`]: "",
+    });
+    writeBranchCheckpoint(id, {
+      "metadata.json": JSON.stringify({ cli_version: "0.11.5", checkpoint_id: id, files_touched: null, sessions: [{ metadata: `${dir}/0/metadata.json` }, { metadata: `${dir}/1/metadata.json` }] }),
+      // The committer: edits with sed, runs the test red then green, commits. Entire saw it write nothing.
+      ...session(0, "aa000000-0000-4000-8000-000000000000", "own-model", [], [
+        rec("user", stamp(40), [user("fix the gate")]),
+        rec("assistant", stamp(41), [text("Fixing the gate."), tool("Bash", { command: "cd /Users/x/wt && sed -i 's/a/b/' src/gate.ts" })]),
+        rec("assistant", stamp(42), [tool("Bash", { command: "cd /Users/x/wt && bunx vitest run src/gate.test.ts" }, "Tests  1 failed (1)", "error")]),
+        rec("assistant", stamp(43), [tool("Bash", { command: "cd /Users/x/wt && bunx vitest run src/gate.test.ts" }, "Tests  2 passed (2)")]),
+        rec("assistant", stamp(44), [tool("Bash", { command: "cd /Users/x/wt && git commit -qm 'fix: the gate takes nine'" })]),
+      ]),
+      // Another ticket's session edited one committed file in its own checkout, and its test failed there.
+      ...session(1, "bb000000-0000-4000-8000-000000000000", "other-model", ["src/h.ts"], [
+        rec("user", stamp(45), [user("the other ticket")]),
+        rec("assistant", stamp(46), [text("On the other ticket."), tool("Edit", { file_path: "/Users/y/other/src/h.ts", old_string: "a", new_string: "b" })]),
+        rec("assistant", stamp(47), [tool("Bash", { command: "cd /Users/y/other && bunx vitest run src/h.test.ts" }, "Tests  1 failed (1)", "error")]),
+        // It committed its own work in its own checkout: a commit, but not this one.
+        rec("assistant", stamp(48), [tool("Bash", { command: "cd /Users/y/other && git commit -qm 'feat: the other ticket lands'" })]),
+      ]),
+    });
+    for (const f of ["src/gate.test.ts", "src/h.ts", "src/h.test.ts"]) {
+      writeFileSync(join(repo, f), `${f}\n`);
+      git("add", f);
+    }
+    const commit = commitFile("src/gate.ts", "export const gate = 9;\n", `fix: the gate takes nine\n\nEntire-Checkpoint: ${id}\n`);
+    const cp = checkpointFor(repo, commit, [], new Map(), ["src/gate.ts", "src/gate.test.ts", "src/h.ts", "src/h.test.ts"]);
+    expect(cp?.model).toBe("own-model");
+    expect(cp?.narration.started).toBe("Fixing the gate.");
+    expect(cp?.decisions.map((d) => d.text)).toEqual(["`vitest` on `src/gate.test.ts` failed, then passed"]);
+  });
+
+  it("reads the status a verification note has in the commit, after an edit changed it", () => {
+    const id = "9ece27653af9";
+    const dir = `/${id.slice(0, 2)}/${id.slice(2)}`;
+    const tool = (name: string, input: object): object => ({ id: `t_${name}`, type: "tool_use", name, input, result: { output: "ok", status: "success" } });
+    writeBranchCheckpoint(id, {
+      "metadata.json": JSON.stringify({ cli_version: "0.11.5", checkpoint_id: id, files_touched: null, sessions: [{ metadata: `${dir}/0/metadata.json` }] }),
+      "0/metadata.json": JSON.stringify({ cli_version: "0.11.5", checkpoint_id: id, session_id: "cc000000-0000-4000-8000-000000000000", agent: "Claude Code", model: "m", files_touched: ["docs/verification.md"] }),
+      "0/transcript.jsonl": [
+        rec("user", stamp(50), [user("record the walk")]),
+        rec("assistant", stamp(51), [tool("Write", { file_path: "/Users/x/wt/docs/verification.md", content: "---\nstatus: PASS\n---\n" })]),
+        rec("assistant", stamp(52), [tool("Edit", { file_path: "/Users/x/wt/docs/verification.md", old_string: "status: PASS", new_string: "status: FAIL" })]),
+        rec("assistant", stamp(53), [tool("Bash", { command: "cd /Users/x/wt && git commit -qm walk" })]),
+      ].join("\n") + "\n",
+      "0/prompt.txt": "",
+    });
+    execFileSync("mkdir", ["-p", join(repo, "docs")]);
+    const commit = commitFile("docs/verification.md", "---\nstatus: FAIL\n---\n", `docs: walk\n\nEntire-Checkpoint: ${id}\n`);
+    expect(checkpointFor(repo, commit, [], new Map(), ["docs/verification.md"])?.decisions.map((d) => d.text)).toEqual(["docs/verification.md: FAIL"]);
+  });
+});
+
+describe("windowsOf: speed on long transcripts", () => {
+  it("reads a long session against many files, and a command holding a long run of slashes, quickly", () => {
+    const files = Array.from({ length: 400 }, (_, i) => `src/area${i % 20}/module${i}.ts`);
+    const call = (k: number): string => rec("assistant", `2026-09-27T00:00:${String(k % 60).padStart(2, "0")}.${String(k).padStart(6, "0")}Z`, [{ id: `b${k}`, type: "tool_use", name: "Bash", input: { command: `cd /Users/x/wt && grep -n thing src/area${k % 20}/module${k % 400}.ts | head -3` }, result: { output: "", status: "success" } }]);
+    const long = [rec("user", stamp(1), [user("go")]), ...Array.from({ length: 15000 }, (_, k) => call(k))].join("\n");
+    let started = Date.now();
+    windowsOf(long, undefined, files.slice(0, 5), files);
+    expect(Date.now() - started).toBeLessThan(6000);
+    const slashes = "/a".repeat(5000);
+    const blob = [rec("user", stamp(1), [user("go")]), rec("assistant", stamp(2), [{ id: "s", type: "tool_use", name: "Bash", input: { command: `echo ${slashes}; cat <<'EOF' > /tmp/x\n${slashes}\nEOF` }, result: { output: "", status: "success" } }])].join("\n");
+    started = Date.now();
+    windowsOf(blob, undefined, files.slice(0, 5), files);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe("windowsOf: which git commit made this commit", () => {
+  const SHA = "abc1234def5678900000000000000000000000ff";
+  const run = (cmd: string, output = ""): object => ({ id: "c", type: "tool_use", name: "Bash", input: { command: cmd }, result: { output, status: "success" } });
+  const made = (cmd: string, output: string, subject: string, sha = SHA): boolean =>
+    windowsOf([rec("user", stamp(1), [user("ship it")]), rec("assistant", stamp(2), [run(cmd, output)])].join("\n"), undefined, ["src/a.ts"], ["src/a.ts"], new Map(), subject, sha).madeCommit;
+
+  it("knows the commit by the short sha git prints, whatever the message flags say", () => {
+    expect(made("cd /Users/x/wt && git commit -F /tmp/msg.txt", "[feat/x abc1234] fix: the reader keeps the tail\n 1 file changed", "fix: the reader keeps the tail")).toBe(true);
+    expect(made("cd /Users/x/wt && git commit --amend --no-edit", "[feat/x abc1234d] fix: the reader keeps the tail\n Date: Thu", "fix: the reader keeps the tail")).toBe(true);
+    expect(made("git commit -m 'first'", "[main (root-commit) abc1234] first", "first commit of the repo")).toBe(true);
+    // A sha in the output that is another commit's: not this one, whatever the subject says.
+    expect(made("git commit -m 'fix: the reader keeps the tail'", "[feat/x 9999999] fix: the reader keeps the tail", "fix: the reader keeps the tail")).toBe(false);
+  });
+
+  it("falls back to the whole message when git printed no sha, unescaping quotes, never a prefix", () => {
+    expect(made('git commit -q -m "fix: handle \\"quoted\\" names"', "", 'fix: handle "quoted" names')).toBe(true);
+    expect(made("git commit -qm 'fix: flaky tests in the parser'", "", "fix: flaky tests")).toBe(false);
+    expect(made("git commit -qm 'fix: flaky tests'", "", "fix: flaky tests in the parser")).toBe(false);
+    expect(made("git commit -q -F - <<'EOF'\nfix: flaky tests in the parser\n\nBody.\nEOF", "", "fix: flaky tests in the parser")).toBe(true);
+    expect(made('git commit -q -m "$(cat <<\'EOF\'\nfix: flaky tests in the parser\n\nBody.\nEOF\n)"', "", "fix: flaky tests in the parser")).toBe(true);
+  });
+});
+
+describe("checkpointFor: two sessions that committed the same subject", () => {
+  it("keeps the one whose commit ran where it worked on the files, not the one Entire saw write more", () => {
+    const tool = (name: string, input: object, output = "", status = "success"): object => ({ id: `t_${name}`, type: "tool_use", name, input, result: { output, status } });
+    const id = "1f2e3d4c5b6a";
+    const dir = `/${id.slice(0, 2)}/${id.slice(2)}`;
+    const session = (i: number, sid: string, model: string, touched: string[], transcript: string[]): Record<string, string> => ({
+      [`${i}/metadata.json`]: JSON.stringify({ cli_version: "0.11.5", checkpoint_id: id, session_id: sid, agent: "Claude Code", model, files_touched: touched }),
+      [`${i}/transcript.jsonl`]: transcript.join("\n") + "\n",
+      [`${i}/prompt.txt`]: "",
+    });
+    writeBranchCheckpoint(id, {
+      "metadata.json": JSON.stringify({ cli_version: "0.11.5", checkpoint_id: id, files_touched: null, sessions: [{ metadata: `${dir}/0/metadata.json` }, { metadata: `${dir}/1/metadata.json` }] }),
+      // Committed the same subject in a scratch clone where it never worked on the files; Entire still listed it.
+      ...session(0, "dd000000-0000-4000-8000-000000000000", "impostor-model", ["src/flaky.ts"], [
+        rec("user", stamp(60), [user("try it in a scratch clone")]),
+        rec("assistant", stamp(61), [text("Trying it elsewhere."), tool("Bash", { command: "cd /Users/x/scratch && git commit -qm 'fix: flaky tests are retried once'" })]),
+      ]),
+      ...session(1, "ee000000-0000-4000-8000-000000000000", "real-model", [], [
+        rec("user", stamp(62), [user("fix the flaky tests")]),
+        rec("assistant", stamp(63), [text("Retrying flaky tests once."), tool("Edit", { file_path: "/Users/x/wt/src/flaky.ts", old_string: "a", new_string: "b" })]),
+        rec("assistant", stamp(64), [tool("Bash", { command: "cd /Users/x/wt && git commit -qm 'fix: flaky tests are retried once'" })]),
+      ]),
+    });
+    const commit = commitFile("src/flaky.ts", "export const retries = 1;\n", `fix: flaky tests are retried once\n\nEntire-Checkpoint: ${id}\n`);
+    const cp = checkpointFor(repo, commit, [], new Map(), ["src/flaky.ts"]);
+    expect(cp?.model).toBe("real-model");
+    expect(cp?.narration.started).toBe("Retrying flaky tests once.");
+  });
+});
+
+describe("windowsOf: path matching, pinned", () => {
+  const roots = (cmd: string): string[] =>
+    windowsOf([rec("user", stamp(1), [user("go")]), rec("assistant", stamp(2), [{ id: "p", type: "tool_use", name: "Bash", input: { command: cmd }, result: { output: "", status: "success" } }])].join("\n"), undefined, ["src/a.ts"]).roots;
+  it("reads an absolute path only as a word of its own, so a flag glued to it, a bracket, or a longer name is no match", () => {
+    expect(roots("sed -n 1p /Users/x/wt/src/a.ts")).toEqual(["/Users/x/wt"]);
+    expect(roots("tsc --outFile=/Users/x/wt/src/a.ts")).toEqual(["/Users/x/wt"]);
+    expect(roots("cc -I/Users/x/wt/src/a.ts")).toEqual([]);
+    expect(roots("echo [/Users/x/wt/src/a.ts]")).toEqual([]);
+    expect(roots("cp /Users/x/wt/src/a.ts.orig /tmp/x")).toEqual([]);
   });
 });

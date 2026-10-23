@@ -1,7 +1,8 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { buildBrief, othersIn, resolveRange, reviewsIn } from "./brief.js";
+import { buildBrief, linkedIn, linkedRefs, othersIn, resolveRange, reviewsIn } from "./brief.js";
 import { runCheck } from "./check.js";
 import { renderBrief, renderCheckRun, renderComment } from "./comment.js";
 import { checkpointRef, checkpointTrailer } from "./checkpoint.js";
@@ -79,6 +80,12 @@ brief options:
   --reviews <file>     the PR's reviews as GitHub's reviews API lists them (user.login, state), any order
   --narrative <file>   the PR body, checked with each commit message against the diff: a name in code font
                        nothing in the diff carries, changed code the text never names, placeholder text
+  --linked <file>      the PRs in other repositories the PR body or a commit names, as looked up:
+                       [{repo, number, state?, reviewDecision?, threads?: {resolved, total}}]; no state = not readable
+
+linked-refs <base>..<head> [--narrative <file>] [--repo-url <url>]
+  prints the PRs in other repositories the PR body and the range's commit messages name, as JSON
+  [{repo, number}], at most 5: what the Action looks up for --linked
   --selection <file>   reuse a saved --json selection for the reach instead of computing one
   --annotations <n>    check-run annotations on the highest-reach changed lines (default and ceiling 50)
   --json               {brief, markdown, check_run}: check_run is the Checks API POST body for the head sha
@@ -150,6 +157,19 @@ if (command === "mcp") {
   console.log(`wrote ${written.ref}`);
   console.log(intent === undefined ? "intent: no session was working here at commit time" : `intent: ${intent.session.agent} ${intent.session.id.slice(0, 8)} · ${intent.step?.text.slice(0, 120) ?? "(no timeline step)"}`);
   console.log(written.trailerWritten ? `trailer: Entire-Checkpoint: ${written.id} on ${written.commit.slice(0, 7)}` : "trailer: not written (commit is not HEAD, or is already pushed)");
+  process.exit(0);
+} else if (command === "linked-refs") {
+  const range = argv.slice(1).find((a) => a.includes("..") && !a.startsWith("--"));
+  if (range === undefined) fail("blastline linked-refs: provide <base>..<head>\n\n" + USAGE);
+  const repo = resolve(opt("repo") ?? process.cwd());
+  const texts: string[] = [];
+  if (opt("narrative") !== undefined) texts.push(readFileSync(opt("narrative") as string, "utf8"));
+  try {
+    texts.push(execFileSync("git", ["-C", repo, "log", "--no-merges", "--format=%B%x00", range], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));
+  } catch (e) {
+    fail(`blastline linked-refs: cannot read the commits of ${range}: ${(e as Error).message}`);
+  }
+  console.log(JSON.stringify(linkedRefs(texts, opt("repo-url"))));
   process.exit(0);
 } else if (command === "check") {
   const claim = argv[1];
@@ -246,6 +266,7 @@ if (command === "mcp") {
           ...(opt("author") !== undefined && { author: opt("author") as string }),
           ...(opt("reviews") !== undefined && { reviews: reviewsIn(readFileSync(opt("reviews") as string, "utf8")) }),
           ...(opt("narrative") !== undefined && { narrative: readFileSync(opt("narrative") as string, "utf8") }),
+          ...(opt("linked") !== undefined && { linked: linkedIn(readFileSync(opt("linked") as string, "utf8")) }),
           ...(opt("annotations") !== undefined && { annotations: Number(opt("annotations")) }),
           ...(argv.includes("--local") && { sessionsDb: opt("sessions-db") ?? DEFAULT_SESSIONS_DB }),
         })
