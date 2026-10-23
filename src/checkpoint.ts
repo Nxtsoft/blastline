@@ -590,7 +590,7 @@ function namedIn(command: string, files: string[]): string[] {
  * values), or one running in a known directory (`shellOf`) that names
  * `<file>` by its repo path. A file at the repo's top level names no checkout
  * (any repo has a `package.json`), and a temp path belongs to none. Probed on
- * turing-webapp PR 859: a session on another ticket that grepped its own
+ * a web-app PR: a session on another ticket that grepped its own
  * folder's `types.ts` matched the commit's `app/…/new/types.ts` by basename,
  * and its model and first line became the commit's.
  */
@@ -628,9 +628,8 @@ function speaks(record: TranscriptRecord | undefined): boolean {
 /**
  * Where a commit's own work starts in a session, read from its full-path
  * work (`strictRoots`) after `since`. The checkout is the root of the last
- * such work; a commit made earlier at that root, with more work after it, ends
- * what this commit can claim (that commit shipped the earlier work). `turn` is
- * the person's prompt before the first work after that. When the session
+ * such work; `turn` is the person's prompt before the first work at that root
+ * after `since`. When the session
  * committed something else inside that turn before the work (the turn shipped
  * another PR first), `start` is the agent's last text before the work, as a
  * `SymbolReason` is the text before its edit; otherwise the turn's prompt.
@@ -641,9 +640,9 @@ function intentWindow(records: (TranscriptRecord | undefined)[], roots: string[]
   for (let i = records.length - 1; i >= since && last === -1; i--) if (roots[i]!.length > 0) last = i;
   if (last === -1) return undefined;
   const root = roots[last]!.at(-1)!;
-  let cut = since;
-  for (const c of shell.commits) if (c.dir === root && c.at >= since && c.at < last) cut = Math.max(cut, c.at + 1);
-  const first = roots.findIndex((r, i) => i >= cut && r.includes(root));
+  // Not cut at an earlier commit made at the same checkout: an agent that commits, opens the PR and then redoes the
+  // commit (amend, reset) would start this one's turn after its own work (a web-app PR: "PR #44 is open").
+  const first = roots.findIndex((r, i) => i >= since && r.includes(root));
   let turn = first;
   while (turn > 0 && !(records[turn] !== undefined && humanTurn(records[turn]!))) turn--;
   const shipped = shell.commits.filter((c) => c.at >= turn && c.at < first).map((c) => c.at);
@@ -685,9 +684,10 @@ function worksOnPath(block: NonNullable<TranscriptRecord["content"]>[number], fi
  * another checkout or worktree), the one the commit was made in
  * (`Shell.committed`) is the root, joined by another only where the change was
  * carried from it as a patch, and then only from after its last commit there. When the last commit the
- * transcript shows is not among them, the snapshot ended before the commit's own, and the root is where
- * the commit's own files (`own`) were last worked on by their path. Undefined when there is none, or
- * when that cannot be told either, so no turn is read rather than the wrong one.
+ * transcript shows was made outside all of them, the snapshot ended before the commit's own, and the root
+ * is where the commit's own files (`own`) were last worked on by their path. Undefined when there is none,
+ * when the transcript shows no commit, or when that cannot be told either, so no turn is read rather than
+ * the wrong one.
  */
 /** A root of the repo and the record index its work counts from. */
 interface Root {
@@ -712,13 +712,16 @@ function repoRoot(records: (TranscriptRecord | undefined)[], files: string[], sh
   for (const root of roots) if (TEMP.test(root)) roots.delete(root);
   if (roots.size === 0) return undefined;
   if (roots.size === 1) return [{ path: [...roots][0]!, from: 0 }];
+  if (shell.committed === undefined) return undefined;
   let home = shell.committed;
-  if (home === undefined || !roots.has(`${home}/`)) {
-    // The snapshot can end before the commit's own `git commit` is logged (turing-webapp PR 859: the transcript
-    // stops 32 seconds before the commit), so the last commit it shows is other work, made in a checkout of
-    // something else. The commit's checkout is then where its own files were last worked on by their path.
-    home = strictRoots(records, own, shell).flat().at(-1);
-    if (home === undefined || !roots.has(`${home}/`)) return undefined;
+  if (!roots.has(`${home}/`)) {
+    // The snapshot can end before the commit's own `git commit` is logged (a web-app PR: the transcript
+    // stops 32 seconds before the commit), so the last commit it shows is other work, made in a checkout that is
+    // none of this change's. The commit's checkout is then where its own files were last worked on by their path.
+    // With no commit shown at all, nothing tells the checkouts apart, and nothing is read.
+    const last = strictRoots(records, own, shell).flat().at(-1);
+    if (last === undefined || !roots.has(`${last}/`)) return undefined;
+    home = last;
   }
   const out: Root[] = [{ path: `${home}/`, from: 0 }];
   // Another checkout counts only where the change was carried from it: a patch written there and applied
@@ -752,19 +755,37 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
   const leavesAll = (block: NonNullable<TranscriptRecord["content"]>[number], k: number): boolean => live(k).every((r) => leaves(block, r.path));
   const worksAt = (block: NonNullable<TranscriptRecord["content"]>[number], k: number): boolean => live(k).some((r) => worksOnPath(block, files, r.path, shell));
   const returnsTo = (block: NonNullable<TranscriptRecord["content"]>[number], k: number): boolean => live(k).some((r) => returns(block, r.path));
-  // Whether the agent is away from this repo before each record, over the whole transcript: the shell keeps its directory
-  // across turns. It starts away, leaves on any step outside the root, and is back only on work at the root or a `cd` to it.
-  const away: boolean[] = [];
+  // An explicit move into a directory outside every root (`cd`, `pushd`, `git -C` to an absolute path) that the command
+  // never comes back from: the call runs there.
+  const movesElsewhere = (block: NonNullable<TranscriptRecord["content"]>[number], k: number): boolean => {
+    const command = block.type === "tool_use" && block.name === "Bash" ? block.input?.command : undefined;
+    if (typeof command !== "string" || returnsTo(block, k)) return false;
+    return targetsOf(expandAssigned(command)).some((t) => /^(?:\/|~\/)/.test(t) && live(k).every((r) => !t.startsWith(r.path) && t !== r.path.slice(0, -1)));
+  };
+  // Where the agent stands at each tool call, over the whole transcript: the shell keeps its directory across turns. It
+  // starts away, leaves on any step outside the root, and is back only on work at the root or a `cd` to it. A call counts
+  // as made at home when the agent stood there before or after it, unless it moves into another checkout outright: that
+  // call runs there, whatever came before it (a web-app PR: another ticket's worktree run, right after work at home, gave a
+  // failure row). The other signs of leaving (a `../` or `${x}/` in a heredoc's code, an absolute path in its text) only
+  // say where the agent stands next. A record keeps only the calls made at home; one with no call (text, a
+  // notification) is kept when the agent stands at home.
+  const home: (string | undefined)[] = [];
   let out = true;
   records.forEach((r, k) => {
-    // Blocks run in order: a record counts as home when the agent is home before or after any of its calls.
-    let home = !out;
-    for (const block of r?.type === "assistant" ? (r.content ?? []) : []) {
+    const blocks = r?.type === "assistant" ? (r.content ?? []) : [];
+    const calls = blocks.filter((b) => b.type === "tool_use");
+    if (calls.length === 0) {
+      home[k] = out ? undefined : lines[k];
+      return;
+    }
+    const at = new Set<(typeof blocks)[number]>();
+    for (const block of calls) {
+      const before = !out;
       if (leavesAll(block, k)) out = true;
       else if (worksAt(block, k) || returnsTo(block, k)) out = false;
-      home = home || !out;
+      if ((before || !out) && !movesElsewhere(block, k)) at.add(block);
     }
-    away[k] = !home;
+    home[k] = at.size === calls.length ? lines[k] : at.size === 0 ? undefined : JSON.stringify({ ...r, content: blocks.filter((b) => b.type !== "tool_use" || at.has(b)) });
   });
   let from = start;
   for (let i = start + 1; i <= records.length; i++) {
@@ -774,7 +795,7 @@ function workingTurns(lines: string[], records: (TranscriptRecord | undefined)[]
     while (opened > 0 && !(records[opened] !== undefined && humanTurn(records[opened]!))) opened--;
     if (records.slice(opened, i).some((r, d) => r?.type === "assistant" && (r.content ?? []).some((block) => worksAt(block, opened + d)))) {
       // Inside the turn, what the agent does while away from this repo is not read.
-      for (let k = from; k < i; k++) if (!away[k]) kept.push(lines[k]!);
+      for (let k = from; k < i; k++) if (home[k] !== undefined) kept.push(home[k]!);
     }
     from = i;
   }
@@ -1056,8 +1077,8 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
     const parts: {
       index: number;
       meta: SessionMetadata;
-      /** Entire's hooks saw it write one of the commit's files. */
-      touched: boolean;
+      /** How many of the commit's files Entire's hooks saw it write. */
+      touched: number;
       strict: boolean;
       worked: boolean;
       ask: string;
@@ -1103,17 +1124,23 @@ export function checkpointFor(repo: string, commit: string, symbols: SymbolAt[] 
       for (const r of symbolReasonsIn(sinceWindow, symbols, contents)) reasons.set(`${r.path}\0${r.label}`, r);
       const n = narrationIn(stepWindow);
       activity += n.texts + n.tools;
-      const touched = (meta.files_touched ?? []).some((f) => files.includes(f));
+      const touched = new Set((meta.files_touched ?? []).filter((f) => files.includes(f))).size;
       parts.push({ index: i, meta, touched, strict, worked, ask: opened, narration: n, testCommands: testCommandsIn(turnWindow), decisions: decisionsIn(decisionWindow, scope) });
     }
     // Entire attaches every session live in the repo when the commit is made. Only the sessions that did the commit's
     // work say what it did and ran, and give its model; the rest (other tasks in the same checkout) are left out. Strongest
     // evidence first: Entire saw the session write a committed file (and it worked on one by its path), then it worked
-    // on one by its full path, then by basename only, which another task's file of the same name also matches.
-    const tiers = [parts.filter((p) => p.touched && p.strict), parts.filter((p) => p.touched), parts.filter((p) => p.strict), parts.filter((p) => p.worked), parts];
+    // on one by its full path, then by basename only, which another task's file of the same name also matches. Inside a
+    // tier, the session that wrote the most of the commit's files speaks first: a session can have written one shared
+    // file for an earlier ticket (a web-app PR: 2 of 23 files, against 21 by the session that made the commit).
+    const byTouched = [...parts].sort((a, b) => b.touched - a.touched);
+    const tiers = [byTouched.filter((p) => p.touched > 0 && p.strict), byTouched.filter((p) => p.touched > 0), parts.filter((p) => p.strict), parts.filter((p) => p.worked), parts];
     const own = tiers.find((t) => t.length > 0)!;
-    // Decisions are bound to work at the commit's checkout already (`decisionWindow`); every session with evidence it did the work keeps its own.
-    const deciders = parts.filter((p) => p.touched || p.strict);
+    // Decisions come from every session in the strongest tier that has one, in session order: a session that only ran
+    // a test the commit changed, in its own worktree, names the file by its repo path too (a web-app PR: three
+    // rows from another ticket's session), so when Entire saw some session write the commit's files, only theirs count.
+    const writers = parts.filter((p) => p.touched > 0);
+    const deciders = writers.length > 0 ? writers : parts.filter((p) => p.strict);
     const decisions = (deciders.length > 0 ? deciders : own).flatMap((p) => p.decisions);
     const ask = own.find((p) => p.ask !== "")?.ask ?? "";
     for (const p of own) {

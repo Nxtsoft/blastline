@@ -857,7 +857,7 @@ describe("windowsOf and narrationIn", () => {
   it("keeps an unstamped transcript whole and counts texts and tool calls", () => {
     const t = [JSON.stringify({ type: "assistant", content: [text("a"), bash("ls")] }), "not json", JSON.stringify({ type: "assistant", content: [text("b")] })].join("\n");
     const lines = t.split("\n");
-    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "", worked: false, decisionWindow: "" });
+    expect(windowsOf(t, undefined, ["x.ts"])).toEqual({ sinceWindow: t, stepWindow: t, turnWindow: t, lines: 3, hash: transcriptHash(lines), extended: false, ask: "", worked: false, strict: false, decisionWindow: "" });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: transcriptHash(lines.slice(0, 2)) }, ["x.ts"])).toMatchObject({ sinceWindow: lines[2], extended: true });
     expect(windowsOf(t, { sha: "a", lines: 2, hash: "not the prefix" }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
     expect(windowsOf(t, { sha: "a", lines: 9, hash: transcriptHash(lines) }, ["x.ts"])).toMatchObject({ sinceWindow: t, extended: false });
@@ -1110,7 +1110,7 @@ describe("checkpointFor with symbols", () => {
 });
 
 describe("checkpointFor: which session did the commit's work", () => {
-  // turing-webapp PR 859's shapes. Each checkpoint holds every session live in the checkout at commit time.
+  // a web-app PR's shapes. Each checkpoint holds every session live in the checkout at commit time.
   const tool = (name: string, input: object, output = "SECRET", status = "success"): object => ({ id: `t_${name}`, type: "tool_use", name, input, result: { output, status } });
   const files = (id: string, sessions: { session: string; model: string; touched: string[]; transcript: string[] }[]): Record<string, string> => {
     const dir = `/${id.slice(0, 2)}/${id.slice(2)}`;
@@ -1180,5 +1180,22 @@ describe("checkpointFor: which session did the commit's work", () => {
     const commit = commitFile("src/b.ts", "export const b = 3;\n", `docs: verified\n\nEntire-Checkpoint: ${id}\n`);
     const cp = checkpointFor(repo, commit, [], new Map(), ["src/b.ts", "src/b.test.ts"]);
     expect(cp?.decisions.map((d) => `${d.kind}: ${d.text}`)).toEqual(["tests: `vitest` on `src/b.test.ts` failed, then passed"]);
+  });
+});
+
+describe("windowsOf: calls made in another checkout", () => {
+  it("leaves out a call that cds into another worktree, even right after work at the commit's own", () => {
+    const run = (cmd: string, output: string, status = "success"): object => ({ id: "r", type: "tool_use", name: "Bash", input: { command: cmd }, result: { output, status } });
+    const t = [
+      rec("user", stamp(1), [user("fix the cap")]),
+      rec("assistant", stamp(2), [{ id: "e", type: "tool_use", name: "Edit", input: { file_path: "/Users/x/wt/src/b.ts", old_string: "a", new_string: "b" }, result: { output: "", status: "success" } }]),
+      rec("assistant", stamp(3), [run("cd /Users/x/other && bunx vitest run src/b.test.ts", "Tests  1 failed (1)", "error")]),
+      rec("assistant", stamp(4), [run("cd /Users/x/wt && bunx vitest run src/b.test.ts", "Tests  1 failed (1)", "error"), run("cd /Users/x/other && git status", "")]),
+      rec("assistant", stamp(5), [run("cd /Users/x/wt && git commit -qm cap", "")]),
+    ].join("\n");
+    const window = windowsOf(t, undefined, ["src/b.ts", "src/b.test.ts"]).decisionWindow;
+    expect(window).not.toContain("/Users/x/other && bunx");
+    expect(window).toContain("/Users/x/wt && bunx");
+    expect(window).not.toContain("git status");
   });
 });

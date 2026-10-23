@@ -620,13 +620,13 @@ describe("renderBrief: how this PR was decided", () => {
         decisions: [{ kind: "reverted", text: "git revert", at: 1, commit: sha }],
         decisionsFound: 1,
         linked: [
-          { repo: "Turing-Labs-AI/turing-api", number: 605, state: "MERGED", reviewDecision: "APPROVED", threads: { resolved: 6, total: 6 } },
+          { repo: "acme/api", number: 605, state: "MERGED", reviewDecision: "APPROVED", threads: { resolved: 6, total: 6 } },
           { repo: "acme/web", number: 7 },
         ],
       },
       { ...ctx, repoUrl: "https://github.com/o/r" },
     );
-    expect(md).toContain("| 1 | linked PR in `Turing-Labs-AI/turing-api` | **merged** · 6 of 6 review threads resolved · approved | [Turing-Labs-AI/turing-api#605](https://github.com/Turing-Labs-AI/turing-api/pull/605) |");
+    expect(md).toContain("| 1 | linked PR in `acme/api` | **merged** · 6 of 6 review threads resolved · approved | [acme/api#605](https://github.com/acme/api/pull/605) |");
     expect(md).toContain("| 2 | linked PR in `acme/web` | _not readable with this token_ | [acme/web#7](https://github.com/acme/web/pull/7) |");
     expect(md).toContain(`| 3 | undid work | **reverted** with \`git revert\` | ${commit} |`);
     expect(renderBrief({ ...brief, linked: [{ repo: "a/b", number: 1, state: "OPEN" }] }, ctx)).toContain("#### How this PR was decided");

@@ -178,7 +178,7 @@ function writesTo(command: string, path: string): boolean {
  * The compact transcript's lines with each test run whose output went to a file (`withLogOutputs`
  * reads `testRun`'s `log`: `vitest run > full.log 2>&1; echo done`) given the output of the first
  * later Bash call that names that file and shows the runner's summary (`grep "Test Files" full.log`,
- * `tail full.log`), before any call writes the file again. Probed on turing-webapp PR 859: the
+ * `tail full.log`), before any call writes the file again. Probed on a web-app PR: the
  * full-suite run before the commit and the re-run of its failures both went to logs read minutes
  * later, so neither had an outcome. The output is read as the run's and still never shown; a line
  * that is not JSON, or whose run printed its own summary, is kept as it is.
@@ -445,7 +445,7 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
           // many files as that failure still had failing, and each file failing now was failing then.
           const rerunOf =
             covered === undefined && failing !== undefined && counts !== undefined
-              ? [...tests.values()].find((g) => g.runner === run.runner && g.cd === run.cd && g.failing !== undefined && g.failing.length === counts.total && failing.every((f) => g.failing!.includes(f)))
+              ? [...tests.values()].find((g) => g.runner === run.runner && sameDir(g.cd, run.cd) && g.failing !== undefined && g.failing.length === counts.total && failing.every((f) => g.failing!.includes(f)))
               : undefined;
           if (rerunOf !== undefined) {
             rerunOf.last = at;
@@ -454,10 +454,13 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
             rerunOf.reran = true;
           } else if (status === "error" || covered !== undefined) {
             // A narrowed pass (`-t`, `-k`, `-run`, `--project`, a bare name) closes no failure, even of the same target.
+            // Not keyed by the command's own `cd`: the shell keeps its directory between calls, so a run that repeats
+            // the `cd` and one that relies on it can be the same run.
             const target = covered === undefined ? `?${at}` : covered.all ? "*" : [...covered.paths].sort().join("\0");
-            const key = `${run.runner}\0${run.cd ?? ""}\0${target}`;
+            const key = `${run.runner}\0${target}`;
             const seen = tests.get(key) ?? { at, last: at, statuses: [], runner: run.runner, cd: run.cd, named, whole: covered?.all === true, failing: undefined, first: undefined, reran: false };
             seen.last = at;
+            seen.cd = run.cd;
             seen.statuses.push(status);
             if (status === "error") {
               seen.failing = failing;
@@ -483,7 +486,7 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
     // name each file still failing (by the output's own list, else the run's named files) or a folder holding it, or one
     // fed from a list counts exactly as many files as were failing. Calls in one record have no known order, so only a
     // later record closes.
-    const later = passes.filter((p) => p.runner === g.runner && p.cd === g.cd && p.at > g.last);
+    const later = passes.filter((p) => p.runner === g.runner && sameDir(p.cd, g.cd) && p.at > g.last);
     const need = g.failing ?? (g.named.length > 0 ? g.named : undefined);
     const covers = (p: (typeof passes)[number], f: string): boolean => p.covered !== undefined && p.covered.paths.some((t) => f === t || f.startsWith(`${t}/`));
     const rerun = g.failing !== undefined && later.some((p) => p.covered === undefined && p.total === g.failing!.length);
@@ -504,6 +507,14 @@ export function decisionsIn(window: string, files: string[]): Decision[] {
     else if (!passes.some((p) => p.runner === g.runner && p.at >= g.last)) out.push({ kind: "tests", text: `${label} failed${count} on its last run`, at: g.at });
   }
   return out.sort((a, b) => a.at - b.at);
+}
+
+/**
+ * Whether two runs can have run in the same directory: the same `cd`, or one with none, which runs wherever
+ * the shell already stood (it keeps its directory between calls). Two different `cd`s never match.
+ */
+function sameDir(a: string | undefined, b: string | undefined): boolean {
+  return a === undefined || b === undefined || a === b;
 }
 
 /** One run target's runs in a window: what failed in it, and whether a re-run of its failures followed. */
