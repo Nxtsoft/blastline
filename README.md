@@ -182,6 +182,8 @@ permissions:
   pull-requests: write   # the comment
 ```
 
+A token that cannot comment, such as a fork PR's read-only one, gets a warning in the job log instead of a failed job; the selection is still on the `kind` and `tests` outputs.
+
 With `graph-root`, the build is cached via `actions/cache` keyed on the tree hash of `graph-root` (`git rev-parse HEAD:<graph-root>`) rather than the graph's own content-root hash, since that hash lives inside `graph.json` and isn't known until after the build runs. `cgraph-version` (default `bin-v0.9.5`; `bin-v0.5.0` is the oldest that works, the first with repo-relative node ids so base and head graphs share ids, and `bin-v0.4.0` the first with `change-context`) pins the `Nxtsoft/CGraph` release tag the turnkey build installs from; currently Linux x64 runners only. With `graph-path`, supply your own graph from a cache keyed on your source tree, or let the run fail open honestly when no graph exists.
 
 `base-graph-command` automates deletion mapping: the action checks out the

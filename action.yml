@@ -62,7 +62,10 @@ inputs:
     required: false
     default: ""
   comment:
-    description: post/update the PR comment (needs github-token, pull_request event)
+    description: >-
+      post/update the PR comment (needs github-token with pull-requests: write,
+      pull_request event). A fork's read-only token cannot post it, and the run
+      warns instead of failing.
     required: false
     default: "true"
   github-token:
@@ -580,13 +583,21 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         EXISTING: ${{ steps.existing.outputs.id }}
+      # A fork PR's token is read-only and cannot comment. The Action gates
+      # nothing, so a refused comment is a warning: the selection is already
+      # on the outputs and the brief on disk.
       run: |
         set -euo pipefail
         if [ -n "${EXISTING:-}" ]; then
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$EXISTING" -F body=@blastline-comment.md > /dev/null
-          echo "updated comment $EXISTING"
+          if gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$EXISTING" -F body=@blastline-comment.md > /dev/null; then
+            echo "updated comment $EXISTING"
+          else
+            echo "::warning::blastline: could not update the PR comment (github-token needs pull-requests: write; a fork PR's token is read-only); the selection is still on the outputs"
+          fi
         else
-          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@blastline-comment.md --jq '"posted comment " + (.id|tostring)'
+          if ! gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@blastline-comment.md --jq '"posted comment " + (.id|tostring)'; then
+            echo "::warning::blastline: could not post the PR comment (github-token needs pull-requests: write; a fork PR's token is read-only); the selection is still on the outputs"
+          fi
         fi
 
     - name: Post the check run

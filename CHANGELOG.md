@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.25.1
+
+A PR comment the token cannot post is a warning, not a failed job.
+
+- **Fork PRs:** a fork PR's `GITHUB_TOKEN` is read-only, so posting or updating the comment was refused and the job went red, on an Action that gates nothing. The refusal is now a warning in the job log, like the check run and the reach figure already were, and the selection is still on the `kind` and `tests` outputs. Consumers no longer need `comment: ${{ !github.event.pull_request.head.repo.fork }}` to keep fork PRs green ([#25](https://github.com/Nxtsoft/blastline/issues/25)).
+- **CI:** a new self-test runs the Action with a token granted only read permissions, standing in for a fork's, and asserts the job passes with the selection and the brief intact.
+
 ## 0.25.0
 
 **How this PR was decided** now reads what a long agent session did for the PR: the full-suite runs it sent to logs, the failures it re-ran, the verification note it wrote, and the PR in another repository the work was split with. The Intent and the model come from the session that did the commit's work. Replayed on the 29 checkpointed PRs of a web-app repository from one week, briefs with the section went from 18 to 22 and rows from 29 to 40 (11 verification notes), and rows naming only the runner went from 8 to 3. Every changed row on 12 of those PRs was checked by hand against its transcript.
