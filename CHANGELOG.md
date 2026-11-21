@@ -5,6 +5,7 @@
 A PR comment the token cannot post is a warning, not a failed job.
 
 - **Fork PRs:** a fork PR's `GITHUB_TOKEN` is read-only, so posting or updating the comment was refused and the job went red, on an Action that gates nothing. The refusal is now a warning in the job log, like the check run and the reach figure already were, and the selection is still on the `kind` and `tests` outputs. Consumers no longer need `comment: ${{ !github.event.pull_request.head.repo.fork }}` to keep fork PRs green ([#25](https://github.com/Nxtsoft/blastline/issues/25)).
+- **Check run:** a refused check run's warning never reached the job's annotations. `gh` prints the refusal's JSON body to stdout without a newline, so the `::warning::` landed on the end of that line and GitHub did not read it as a command. Its output is now captured, and the warning stands on its own line.
 - **CI:** a new self-test runs the Action with a token granted only read permissions, standing in for a fork's, and asserts the job passes with the selection and the brief intact.
 
 ## 0.25.0

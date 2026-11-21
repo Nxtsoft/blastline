@@ -595,7 +595,11 @@ runs:
             echo "::warning::blastline: could not update the PR comment (github-token needs pull-requests: write; a fork PR's token is read-only); the selection is still on the outputs"
           fi
         else
-          if ! gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@blastline-comment.md --jq '"posted comment " + (.id|tostring)'; then
+          # gh prints a refusal's JSON body to stdout with no newline, which
+          # would swallow a warning echoed after it; stdout is captured.
+          if posted=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@blastline-comment.md --jq '"posted comment " + (.id|tostring)'); then
+            echo "$posted"
+          else
             echo "::warning::blastline: could not post the PR comment (github-token needs pull-requests: write; a fork PR's token is read-only); the selection is still on the outputs"
           fi
         fi
@@ -610,7 +614,11 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
       run: |
         set -euo pipefail
-        if ! gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" --input blastline-check-run.json \
-          --jq '"check run " + (.id|tostring) + " on " + .head_sha[0:7] + ": " + (.output.annotations_count|tostring) + " annotations"'; then
+        # gh prints a refusal's JSON body to stdout with no newline, which
+        # would swallow the warning echoed after it; stdout is captured.
+        if posted=$(gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" --input blastline-check-run.json \
+          --jq '"check run " + (.id|tostring) + " on " + .head_sha[0:7] + ": " + (.output.annotations_count|tostring) + " annotations"'); then
+          echo "$posted"
+        else
           echo "::warning::blastline: could not post the check run (github-token needs checks: write)"
         fi
